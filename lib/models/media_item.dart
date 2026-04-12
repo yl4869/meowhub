@@ -1,4 +1,5 @@
 import 'cast.dart';
+import '../domain/entities/watch_history_item.dart';
 
 enum MediaType {
   movie,
@@ -37,6 +38,7 @@ class MediaItem {
     required this.originalTitle,
     required this.type,
     this.cast = const [],
+    this.sourceType = WatchSourceType.emby,
     this.posterUrl,
     this.backdropUrl,
     this.rating = 0,
@@ -51,6 +53,7 @@ class MediaItem {
   final String originalTitle;
   final MediaType type;
   final List<Cast> cast;
+  final WatchSourceType sourceType;
   final String? posterUrl;
   final String? backdropUrl;
   final double rating;
@@ -79,6 +82,9 @@ class MediaItem {
         _readValue(json, keys: const ['type', 'mediaType', 'media_type']),
       ),
       cast: _readCastList(json),
+      sourceType: WatchSourceType.fromJson(
+        _readValue(json, keys: const ['sourceType', 'source_type']),
+      ),
       posterUrl: _readString(
         json,
         keys: const ['posterUrl', 'poster_url', 'posterPath', 'poster_path'],
@@ -122,6 +128,7 @@ class MediaItem {
       'originalTitle': originalTitle,
       'type': type.toJson(),
       'cast': cast.map((member) => member.toJson()).toList(growable: false),
+      'sourceType': sourceType.toJson(),
       'posterUrl': posterUrl,
       'backdropUrl': backdropUrl,
       'rating': rating,
@@ -138,6 +145,7 @@ class MediaItem {
     String? originalTitle,
     MediaType? type,
     List<Cast>? cast,
+    WatchSourceType? sourceType,
     String? posterUrl,
     String? backdropUrl,
     double? rating,
@@ -152,6 +160,7 @@ class MediaItem {
       originalTitle: originalTitle ?? this.originalTitle,
       type: type ?? this.type,
       cast: cast ?? this.cast,
+      sourceType: sourceType ?? this.sourceType,
       posterUrl: posterUrl ?? this.posterUrl,
       backdropUrl: backdropUrl ?? this.backdropUrl,
       rating: rating ?? this.rating,

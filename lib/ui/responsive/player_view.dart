@@ -98,6 +98,9 @@ class _PlayerViewState extends State<PlayerView> {
       mediaId: widget.mediaItem.id,
       position: status.position,
       duration: status.duration,
+      title: widget.mediaItem.title,
+      poster: widget.mediaItem.posterUrl ?? '',
+      sourceType: widget.mediaItem.sourceType,
     );
     _lastSavedPosition = status.position;
     _lastSavedDuration = status.duration;

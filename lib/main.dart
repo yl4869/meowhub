@@ -5,6 +5,10 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'data/datasources/emby_watch_history_remote_data_source.dart';
+import 'data/datasources/local_watch_history_data_source.dart';
+import 'data/repositories/watch_history_repository_impl.dart';
+import 'domain/entities/watch_history_item.dart';
 import 'models/media_item.dart';
 import 'providers/app_provider.dart';
 import 'providers/movie_provider.dart';
@@ -19,6 +23,32 @@ const List<Locale> _supportedLocales = [Locale('zh', 'CN'), Locale('en', 'US')];
 const String _devicePreviewMode = String.fromEnvironment(
   'DEVICE_PREVIEW',
   defaultValue: 'auto',
+);
+
+final _watchHistoryRepository = WatchHistoryRepositoryImpl(
+  embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(
+    initialHistory: [
+      WatchHistoryItem(
+        id: '1002',
+        title: 'Moonlit Harbor',
+        poster: '',
+        position: Duration(minutes: 34, seconds: 12),
+        duration: Duration(hours: 1, minutes: 52, seconds: 18),
+        updatedAt: DateTime(2026, 4, 12, 20, 30),
+        sourceType: WatchSourceType.emby,
+      ),
+      WatchHistoryItem(
+        id: '1007',
+        title: 'Glass Kingdom',
+        poster: '',
+        position: Duration(minutes: 12, seconds: 5),
+        duration: Duration(hours: 2, minutes: 6, seconds: 40),
+        updatedAt: DateTime(2026, 4, 11, 21, 10),
+        sourceType: WatchSourceType.emby,
+      ),
+    ],
+  ),
+  localDataSource: InMemoryLocalWatchHistoryDataSource(),
 );
 
 final GoRouter _router = GoRouter(
@@ -77,7 +107,11 @@ class MeowHubApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AppProvider()),
+        ChangeNotifierProvider(
+          create: (_) => AppProvider(
+            watchHistoryRepository: _watchHistoryRepository,
+          ),
+        ),
         ChangeNotifierProvider(
           create: (_) => MovieProvider()..loadInitialMovies(),
         ),

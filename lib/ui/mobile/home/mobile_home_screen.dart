@@ -118,27 +118,37 @@ class MobileHomeScreen extends StatelessWidget {
                             icon: Icons.history_rounded,
                             message: '开始播放后，这里会出现宽卡片续播货架',
                           )
-                        : ListView.separated(
+                        : SingleChildScrollView(
                             padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
                             scrollDirection: Axis.horizontal,
                             physics: const BouncingScrollPhysics(),
-                            itemCount: recentWatching.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(width: 14),
-                            itemBuilder: (context, index) {
-                              final mediaItem = recentWatching[index];
-                              final progress = context
-                                  .select<AppProvider, double>(
-                                    (provider) => provider.progressFractionFor(
-                                      mediaItem.id,
-                                    ),
-                                  );
-                              return _RecentWatchCard(
-                                mediaItem: mediaItem,
-                                progress: progress,
-                                onTap: () => onMovieTap(mediaItem),
-                              );
-                            },
+                            child: Row(
+                              children: [
+                                for (var index = 0;
+                                    index < recentWatching.length;
+                                    index++) ...[
+                                  Builder(
+                                    builder: (context) {
+                                      final mediaItem = recentWatching[index];
+                                      final progress = context
+                                          .select<AppProvider, double>(
+                                            (provider) => provider
+                                                .progressFractionFor(
+                                                  mediaItem.id,
+                                                ),
+                                          );
+                                      return _RecentWatchCard(
+                                        mediaItem: mediaItem,
+                                        progress: progress,
+                                        onTap: () => onMovieTap(mediaItem),
+                                      );
+                                    },
+                                  ),
+                                  if (index != recentWatching.length - 1)
+                                    const SizedBox(width: 14),
+                                ],
+                              ],
+                            ),
                           ),
                   ),
                 ),

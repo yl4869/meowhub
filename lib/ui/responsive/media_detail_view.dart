@@ -31,9 +31,21 @@ class MediaDetailView extends StatelessWidget {
         .select<AppProvider, MediaPlaybackProgress?>(
           (provider) => provider.playbackProgressFor(mediaItem.id),
         );
+    final initialEpisodeIndex = context.select<AppProvider, int>(
+      (provider) => provider.episodeIndexFor(mediaItem.id),
+    );
+    final hasRecentWatchRecord = context.select<AppProvider, bool>(
+      (provider) => provider.recentPlaybackMediaIds.contains(mediaItem.id),
+    );
 
-    void handlePlayPressed() {
-      context.read<AppProvider>().markRecentlyWatched(mediaItem.id);
+    void handlePlayPressed(int episodeIndex) {
+      context.read<AppProvider>().markRecentlyWatched(
+        mediaItem.id,
+        episodeIndex: episodeIndex,
+        title: mediaItem.title,
+        poster: mediaItem.posterUrl ?? '',
+        sourceType: mediaItem.sourceType,
+      );
       context.push(PlayerView.locationFor(mediaItem.id), extra: mediaItem);
     }
 
@@ -41,7 +53,7 @@ class MediaDetailView extends StatelessWidget {
       context.read<AppProvider>().toggleFavorite(mediaItem);
     }
 
-    VoidCallback? resolvePlayPressed() {
+    ValueChanged<int>? resolvePlayPressed() {
       if (!hasPlayableUrl) {
         return null;
       }
@@ -54,6 +66,8 @@ class MediaDetailView extends StatelessWidget {
           mediaItem: mediaItem,
           selectedServer: selectedServer,
           isFavorite: isFavorite,
+          hasRecentWatchRecord: hasRecentWatchRecord,
+          initialEpisodeIndex: initialEpisodeIndex,
           playbackProgress: playbackProgress,
           onPlayPressed: resolvePlayPressed(),
           onToggleFavorite: handleToggleFavorite,
@@ -65,6 +79,8 @@ class MediaDetailView extends StatelessWidget {
           mediaItem: mediaItem,
           selectedServer: selectedServer,
           isFavorite: isFavorite,
+          hasRecentWatchRecord: hasRecentWatchRecord,
+          initialEpisodeIndex: initialEpisodeIndex,
           playbackProgress: playbackProgress,
           onPlayPressed: resolvePlayPressed(),
           onToggleFavorite: handleToggleFavorite,

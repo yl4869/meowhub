@@ -17,6 +17,8 @@ class TabletMediaDetailScreen extends StatefulWidget {
     required this.mediaItem,
     required this.selectedServer,
     required this.isFavorite,
+    required this.hasRecentWatchRecord,
+    required this.initialEpisodeIndex,
     required this.playbackProgress,
     required this.onPlayPressed,
     required this.onToggleFavorite,
@@ -26,8 +28,10 @@ class TabletMediaDetailScreen extends StatefulWidget {
   final MediaItem mediaItem;
   final MediaServerInfo selectedServer;
   final bool isFavorite;
+  final bool hasRecentWatchRecord;
+  final int initialEpisodeIndex;
   final MediaPlaybackProgress? playbackProgress;
-  final VoidCallback? onPlayPressed;
+  final ValueChanged<int>? onPlayPressed;
   final VoidCallback onToggleFavorite;
 
   @override
@@ -36,12 +40,22 @@ class TabletMediaDetailScreen extends StatefulWidget {
 }
 
 class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
-  int _selectedEpisode = 0;
+  late int _selectedEpisode;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedEpisode = widget.initialEpisodeIndex;
+  }
 
   @override
   Widget build(BuildContext context) {
     final episodes = _buildEpisodes(widget.mediaItem);
     final cast = widget.mediaItem.cast;
+    final clampedEpisode = _selectedEpisode.clamp(0, episodes.length - 1);
+    if (clampedEpisode != _selectedEpisode) {
+      _selectedEpisode = clampedEpisode;
+    }
 
     return Scaffold(
       body: CustomScrollView(
@@ -79,11 +93,20 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                             children: [
                               Expanded(
                                 child: FilledButton(
-                                  onPressed: widget.onPlayPressed,
+                                  onPressed: widget.onPlayPressed == null
+                                      ? null
+                                      : () =>
+                                            widget.onPlayPressed!(
+                                              _selectedEpisode,
+                                            ),
                                   style: FilledButton.styleFrom(
                                     minimumSize: const Size.fromHeight(54),
                                   ),
-                                  child: const Text('立即播放'),
+                                  child: Text(
+                                    widget.hasRecentWatchRecord
+                                        ? '继续播放'
+                                        : '立即播放',
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),

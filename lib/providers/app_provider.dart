@@ -2,6 +2,13 @@ import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
+import '../data/datasources/emby_watch_history_remote_data_source.dart';
+import '../data/datasources/local_watch_history_data_source.dart';
+import '../data/repositories/watch_history_repository_impl.dart';
+import '../domain/entities/watch_history_item.dart';
+import '../domain/repositories/watch_history_repository.dart';
+import '../domain/usecases/get_unified_history.dart';
+import '../domain/usecases/update_watch_progress.dart';
 import '../models/media_item.dart';
 
 class MediaServerInfo {
@@ -42,19 +49,15 @@ class MediaPlaybackProgress {
 }
 
 class AppProvider extends ChangeNotifier {
-  AppProvider()
+  AppProvider({WatchHistoryRepository? watchHistoryRepository})
     : _selectedServer = _defaultServers.first,
-      _recentMediaIds = [1002, 1007],
-      _playbackProgress = {
-        1002: const MediaPlaybackProgress(
-          position: Duration(minutes: 34, seconds: 12),
-          duration: Duration(hours: 1, minutes: 52, seconds: 18),
-        ),
-        1007: const MediaPlaybackProgress(
-          position: Duration(minutes: 12, seconds: 5),
-          duration: Duration(hours: 2, minutes: 6, seconds: 40),
-        ),
-      };
+      _recentEpisodeIndices = {'1002': 2, '1007': 0} {
+    _watchHistoryRepository =
+        watchHistoryRepository ?? _buildDefaultWatchHistoryRepository();
+    _getUnifiedHistory = GetUnifiedHistoryUseCase(_watchHistoryRepository);
+    _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
+    loadWatchHistory();
+  }
 
   static const List<MediaServerInfo> _defaultServers = [
     MediaServerInfo(
@@ -78,9 +81,13 @@ class AppProvider extends ChangeNotifier {
   ];
 
   final Map<int, MediaItem> _favoriteItems = {};
-  final Map<int, MediaPlaybackProgress> _playbackProgress;
-  final List<int> _recentMediaIds;
+  final Map<String, int> _recentEpisodeIndices;
+  late final WatchHistoryRepository _watchHistoryRepository;
+  late final GetUnifiedHistoryUseCase _getUnifiedHistory;
+  late final UpdateWatchProgressUseCase _updateWatchProgress;
+
   MediaServerInfo _selectedServer;
+  List<WatchHistoryItem> _watchHistory = const [];
 
   UnmodifiableListView<MediaServerInfo> get availableServers {
     return UnmodifiableListView(_defaultServers);
@@ -92,33 +99,52 @@ class AppProvider extends ChangeNotifier {
     return UnmodifiableListView(_favoriteItems.values);
   }
 
+  UnmodifiableListView<WatchHistoryItem> get watchHistory {
+    return UnmodifiableListView(_watchHistory);
+  }
+
   int get favoriteCount => _favoriteItems.length;
 
   int get inProgressCount {
-    return _playbackProgress.values
-        .where((progress) => progress.position > Duration.zero)
+    return _watchHistory
+        .where((item) => item.position > Duration.zero)
         .length;
   }
 
   List<int> get recentPlaybackMediaIds {
-    return List<int>.unmodifiable(_recentMediaIds);
+    return _watchHistory
+        .map((item) => int.tryParse(item.id))
+        .whereType<int>()
+        .toList(growable: false);
   }
 
   int? get latestRecentMediaId {
-    if (_recentMediaIds.isEmpty) {
+    if (_watchHistory.isEmpty) {
       return null;
     }
-    return _recentMediaIds.first;
+    return int.tryParse(_watchHistory.first.id);
   }
 
   bool isFavorite(int mediaId) => _favoriteItems.containsKey(mediaId);
 
   MediaPlaybackProgress? playbackProgressFor(int mediaId) {
-    return _playbackProgress[mediaId];
+    final item = _watchHistoryItemFor(mediaId.toString());
+    if (item == null) {
+      return null;
+    }
+
+    return MediaPlaybackProgress(
+      position: item.position,
+      duration: item.duration,
+    );
+  }
+
+  int episodeIndexFor(int mediaId) {
+    return _recentEpisodeIndices[mediaId.toString()] ?? 0;
   }
 
   double progressFractionFor(int mediaId) {
-    return _playbackProgress[mediaId]?.fraction ?? 0;
+    return playbackProgressFor(mediaId)?.fraction ?? 0;
   }
 
   void selectServer(MediaServerInfo server) {
@@ -142,12 +168,34 @@ class AppProvider extends ChangeNotifier {
     return true;
   }
 
-  void updatePlaybackProgress({
+  Future<void> loadWatchHistory() async {
+    _watchHistory = await _getUnifiedHistory();
+    notifyListeners();
+  }
+
+  Future<void> refreshWatchHistory() async {
+    await loadWatchHistory();
+  }
+
+  Future<void> updateProgress(
+    WatchHistoryItem item, {
+    int? episodeIndex,
+  }) async {
+    _upsertWatchHistory(item, episodeIndex: episodeIndex);
+    await _updateWatchProgress(item);
+    await loadWatchHistory();
+  }
+
+  Future<void> updatePlaybackProgress({
     required int mediaId,
     required Duration position,
     Duration duration = Duration.zero,
-  }) {
-    final previous = _playbackProgress[mediaId];
+    int? episodeIndex,
+    String? title,
+    String? poster,
+    WatchSourceType sourceType = WatchSourceType.emby,
+  }) async {
+    final previous = _watchHistoryItemFor(mediaId.toString(), sourceType: sourceType);
     final normalizedPosition = position < Duration.zero
         ? Duration.zero
         : position;
@@ -155,27 +203,103 @@ class AppProvider extends ChangeNotifier {
         ? duration
         : previous?.duration ?? Duration.zero;
 
-    _playbackProgress[mediaId] = MediaPlaybackProgress(
+    final historyItem = WatchHistoryItem(
+      id: mediaId.toString(),
+      title: title ?? previous?.title ?? '未知视频',
+      poster: poster ?? previous?.poster ?? '',
       position: normalizedPosition,
       duration: normalizedDuration,
+      updatedAt: DateTime.now(),
+      sourceType: sourceType,
     );
-    _markRecent(mediaId);
-    notifyListeners();
+
+    await updateProgress(historyItem, episodeIndex: episodeIndex);
   }
 
-  void markRecentlyWatched(int mediaId) {
-    _markRecent(mediaId);
-    notifyListeners();
+  Future<void> markRecentlyWatched(
+    int mediaId, {
+    int episodeIndex = 0,
+    String? title,
+    String? poster,
+    WatchSourceType sourceType = WatchSourceType.emby,
+  }) async {
+    final previous = _watchHistoryItemFor(mediaId.toString(), sourceType: sourceType);
+    final historyItem = WatchHistoryItem(
+      id: mediaId.toString(),
+      title: title ?? previous?.title ?? '未知视频',
+      poster: poster ?? previous?.poster ?? '',
+      position: previous?.position ?? Duration.zero,
+      duration: previous?.duration ?? Duration.zero,
+      updatedAt: DateTime.now(),
+      sourceType: sourceType,
+    );
+
+    await updateProgress(historyItem, episodeIndex: episodeIndex);
   }
 
   void clearPlaybackProgress(int mediaId) {
-    if (_playbackProgress.remove(mediaId) != null) {
+    final targetId = mediaId.toString();
+    final previousLength = _watchHistory.length;
+    _watchHistory = _watchHistory
+        .where((item) => item.id != targetId)
+        .toList(growable: false);
+    _recentEpisodeIndices.remove(targetId);
+
+    if (previousLength != _watchHistory.length) {
       notifyListeners();
     }
   }
 
-  void _markRecent(int mediaId) {
-    _recentMediaIds.remove(mediaId);
-    _recentMediaIds.insert(0, mediaId);
+  WatchHistoryItem? _watchHistoryItemFor(
+    String id, {
+    WatchSourceType? sourceType,
+  }) {
+    for (final item in _watchHistory) {
+      if (item.id == id && (sourceType == null || item.sourceType == sourceType)) {
+        return item;
+      }
+    }
+    return null;
+  }
+
+  void _upsertWatchHistory(WatchHistoryItem item, {int? episodeIndex}) {
+    _watchHistory = <WatchHistoryItem>[
+      item,
+      ..._watchHistory.where((historyItem) => historyItem.uniqueKey != item.uniqueKey),
+    ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+
+    if (episodeIndex != null) {
+      _recentEpisodeIndices[item.id] = episodeIndex;
+    }
+
+    notifyListeners();
+  }
+
+  static WatchHistoryRepository _buildDefaultWatchHistoryRepository() {
+    return WatchHistoryRepositoryImpl(
+      embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(
+        initialHistory: [
+          WatchHistoryItem(
+            id: '1002',
+            title: 'Moonlit Harbor',
+            poster: '',
+            position: Duration(minutes: 34, seconds: 12),
+            duration: Duration(hours: 1, minutes: 52, seconds: 18),
+            updatedAt: DateTime(2026, 4, 12, 20, 30),
+            sourceType: WatchSourceType.emby,
+          ),
+          WatchHistoryItem(
+            id: '1007',
+            title: 'Glass Kingdom',
+            poster: '',
+            position: Duration(minutes: 12, seconds: 5),
+            duration: Duration(hours: 2, minutes: 6, seconds: 40),
+            updatedAt: DateTime(2026, 4, 11, 21, 10),
+            sourceType: WatchSourceType.emby,
+          ),
+        ],
+      ),
+      localDataSource: InMemoryLocalWatchHistoryDataSource(),
+    );
   }
 }
