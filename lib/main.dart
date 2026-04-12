@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'data/datasources/emby_watch_history_remote_data_source.dart';
 import 'data/datasources/local_watch_history_data_source.dart';
@@ -89,19 +90,23 @@ final GoRouter _router = GoRouter(
   ],
 );
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final preferences = await SharedPreferences.getInstance();
   runApp(
     DevicePreview(
       enabled: _isDevicePreviewEnabled(),
       defaultDevice: Devices.ios.iPhone13,
       availableLocales: _supportedLocales,
-      builder: (context) => const MeowHubApp(),
+      builder: (context) => MeowHubApp(preferences: preferences),
     ),
   );
 }
 
 class MeowHubApp extends StatelessWidget {
-  const MeowHubApp({super.key});
+  const MeowHubApp({super.key, required this.preferences});
+
+  final SharedPreferences preferences;
 
   @override
   Widget build(BuildContext context) {
@@ -110,6 +115,7 @@ class MeowHubApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => AppProvider(
             watchHistoryRepository: _watchHistoryRepository,
+            preferences: preferences,
           ),
         ),
         ChangeNotifierProvider(

@@ -1,6 +1,7 @@
 import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/datasources/emby_watch_history_remote_data_source.dart';
 import '../data/datasources/local_watch_history_data_source.dart';
@@ -49,15 +50,21 @@ class MediaPlaybackProgress {
 }
 
 class AppProvider extends ChangeNotifier {
-  AppProvider({WatchHistoryRepository? watchHistoryRepository})
-    : _selectedServer = _defaultServers.first,
-      _recentEpisodeIndices = {'1002': 2, '1007': 0} {
+  AppProvider({
+    WatchHistoryRepository? watchHistoryRepository,
+    SharedPreferences? preferences,
+  }) : _selectedServer = _defaultServers.first,
+       _selectedWatchSource = WatchSourceType.emby,
+       _recentEpisodeIndices = {'1002': 2, '1007': 0},
+       _preferences = preferences {
     _watchHistoryRepository =
         watchHistoryRepository ?? _buildDefaultWatchHistoryRepository();
     _getUnifiedHistory = GetUnifiedHistoryUseCase(_watchHistoryRepository);
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
-    loadWatchHistory();
+    _initializeWatchSource();
   }
+
+  static const String _watchSourceKey = 'selected_watch_source';
 
   static const List<MediaServerInfo> _defaultServers = [
     MediaServerInfo(
@@ -85,8 +92,10 @@ class AppProvider extends ChangeNotifier {
   late final WatchHistoryRepository _watchHistoryRepository;
   late final GetUnifiedHistoryUseCase _getUnifiedHistory;
   late final UpdateWatchProgressUseCase _updateWatchProgress;
+  final SharedPreferences? _preferences;
 
   MediaServerInfo _selectedServer;
+  WatchSourceType _selectedWatchSource;
   List<WatchHistoryItem> _watchHistory = const [];
 
   UnmodifiableListView<MediaServerInfo> get availableServers {
@@ -94,6 +103,8 @@ class AppProvider extends ChangeNotifier {
   }
 
   MediaServerInfo get selectedServer => _selectedServer;
+
+  WatchSourceType get selectedWatchSource => _selectedWatchSource;
 
   UnmodifiableListView<MediaItem> get favoriteItems {
     return UnmodifiableListView(_favoriteItems.values);
@@ -156,6 +167,32 @@ class AppProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void selectWatchSource(WatchSourceType sourceType) {
+    if (_selectedWatchSource == sourceType) {
+      return;
+    }
+
+    _selectedWatchSource = sourceType;
+    _saveWatchSource();
+    loadWatchHistory();
+  }
+
+  Future<void> _initializeWatchSource() async {
+    if (_preferences != null) {
+      final savedSource = _preferences!.getString(_watchSourceKey);
+      if (savedSource != null) {
+        _selectedWatchSource = WatchSourceType.fromJson(savedSource);
+      }
+    }
+    await loadWatchHistory();
+  }
+
+  Future<void> _saveWatchSource() async {
+    if (_preferences != null) {
+      await _preferences!.setString(_watchSourceKey, _selectedWatchSource.toJson());
+    }
+  }
+
   bool toggleFavorite(MediaItem mediaItem) {
     if (isFavorite(mediaItem.id)) {
       _favoriteItems.remove(mediaItem.id);
@@ -169,7 +206,7 @@ class AppProvider extends ChangeNotifier {
   }
 
   Future<void> loadWatchHistory() async {
-    _watchHistory = await _getUnifiedHistory();
+    _watchHistory = await _watchHistoryRepository.getHistoryBySource(_selectedWatchSource);
     notifyListeners();
   }
 
