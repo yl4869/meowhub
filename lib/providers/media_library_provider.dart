@@ -1,10 +1,11 @@
 import 'package:flutter/foundation.dart';
 
+import '../domain/repositories/media_service_manager.dart';
 import '../models/media_item.dart';
 import '../services/mock_media_service.dart';
 
-class MovieState {
-  const MovieState({
+class MediaLibraryState {
+  const MediaLibraryState({
     this.movies = const [],
     this.series = const [],
     this.isLoading = false,
@@ -16,13 +17,13 @@ class MovieState {
   final bool isLoading;
   final String? errorMessage;
 
-  MovieState copyWith({
+  MediaLibraryState copyWith({
     List<MediaItem>? movies,
     List<MediaItem>? series,
     bool? isLoading,
     Object? errorMessage = _sentinel,
   }) {
-    return MovieState(
+    return MediaLibraryState(
       movies: movies ?? this.movies,
       series: series ?? this.series,
       isLoading: isLoading ?? this.isLoading,
@@ -33,19 +34,28 @@ class MovieState {
   }
 }
 
-class MovieProvider extends ChangeNotifier {
-  MovieProvider({
+class MediaLibraryProvider extends ChangeNotifier {
+  MediaLibraryProvider({
+    MediaServiceManager? mediaServiceManager,
     Future<List<MediaItem>> Function()? fetchMovies,
     Future<List<MediaItem>> Function()? fetchSeries,
-  }) : _fetchMovies = fetchMovies ?? MockService.getMockMovies,
+  }) : _fetchMovies =
+           fetchMovies ??
+           (() async {
+             final service = mediaServiceManager?.currentService;
+             if (service != null) {
+               return service.getMovies();
+             }
+             return MockService.getMockMovies();
+           }),
        _fetchSeries = fetchSeries ?? MockService.getMockSeries;
 
   final Future<List<MediaItem>> Function() _fetchMovies;
   final Future<List<MediaItem>> Function() _fetchSeries;
 
-  MovieState _state = const MovieState();
+  MediaLibraryState _state = const MediaLibraryState();
 
-  MovieState get state => _state;
+  MediaLibraryState get state => _state;
 
   Future<void> loadInitialMovies() async {
     if (_state.isLoading) {

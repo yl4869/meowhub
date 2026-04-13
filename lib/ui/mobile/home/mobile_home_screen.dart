@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../../models/media_item.dart';
 import '../../../providers/app_provider.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/poster_card.dart';
@@ -124,17 +125,19 @@ class MobileHomeScreen extends StatelessWidget {
                             physics: const BouncingScrollPhysics(),
                             child: Row(
                               children: [
-                                for (var index = 0;
-                                    index < recentWatching.length;
-                                    index++) ...[
+                                for (
+                                  var index = 0;
+                                  index < recentWatching.length;
+                                  index++
+                                ) ...[
                                   Builder(
                                     builder: (context) {
                                       final mediaItem = recentWatching[index];
                                       final progress = context
-                                          .select<AppProvider, double>(
+                                          .select<UserDataProvider, double>(
                                             (provider) => provider
-                                                .progressFractionFor(
-                                                  mediaItem.id,
+                                                .progressFractionForItem(
+                                                  mediaItem,
                                                 ),
                                           );
                                       return _RecentWatchCard(
@@ -250,15 +253,15 @@ class _PosterShelf extends StatelessWidget {
             width: 136,
             child: Builder(
               builder: (context) {
-                final isFavorite = context.select<AppProvider, bool>(
+                final isFavorite = context.select<UserDataProvider, bool>(
                   (provider) => provider.isFavorite(mediaItem.id),
                 );
-                final progress = context.select<AppProvider, double>(
-                  (provider) => provider.progressFractionFor(mediaItem.id),
+                final progress = context.select<UserDataProvider, double>(
+                  (provider) => provider.progressFractionForItem(mediaItem),
                 );
-                final isRecent = context.select<AppProvider, bool>(
+                final isRecent = context.select<UserDataProvider, bool>(
                   (provider) =>
-                      provider.latestRecentMediaId == mediaItem.id,
+                      provider.latestRecentMediaKey == mediaItem.mediaKey,
                 );
 
                 return PosterCard(

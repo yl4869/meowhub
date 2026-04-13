@@ -4,7 +4,8 @@ import 'package:provider/provider.dart';
 
 import '../../models/media_item.dart';
 import '../../providers/app_provider.dart';
-import '../../providers/movie_provider.dart';
+import '../../providers/media_library_provider.dart';
+import '../../providers/media_with_user_data_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
 import '../mobile/home/mobile_home_screen.dart';
@@ -28,58 +29,49 @@ class _HomeViewState extends State<HomeView> {
   @override
   Widget build(BuildContext context) {
     final appProvider = context.read<AppProvider>();
-    final movieState = context.select<MovieProvider, MovieState>(
-      (provider) => provider.state,
-    );
-    final movieProvider = context.read<MovieProvider>();
-    final recentPlaybackMediaIds = context.select<AppProvider, List<int>>(
-      (provider) => provider.recentPlaybackMediaIds,
-    );
+    final mediaWithUserData = context.watch<MediaWithUserDataProvider>();
+    final mediaLibraryProvider = context.read<MediaLibraryProvider>();
+
     final selectedServer = context.select<AppProvider, MediaServerInfo>(
       (provider) => provider.selectedServer,
     );
     final availableServers = appProvider.availableServers.toList(growable: false);
-    final favoriteCount = context.select<AppProvider, int>(
-      (provider) => provider.favoriteCount,
-    );
-    final inProgressCount = context.select<AppProvider, int>(
-      (provider) => provider.inProgressCount,
-    );
-    final favoriteItems = context.select<AppProvider, List<MediaItem>>(
-      (provider) => provider.favoriteItems.toList(growable: false),
-    );
-    final onServerSelected = appProvider.selectServer;
-    final allItems = [...movieState.series, ...movieState.movies];
-    final itemById = {for (final mediaItem in allItems) mediaItem.id: mediaItem};
-    final recentWatching = recentPlaybackMediaIds
-        .map((id) => itemById[id])
-        .whereType<MediaItem>()
-        .toList(growable: false);
+    final favoriteCount = mediaWithUserData.allItems
+        .where((item) => item.isFavorite)
+        .length;
+    final inProgressCount = mediaWithUserData.allItems
+        .where((item) => item.playbackProgress != null && item.playbackProgress!.position > Duration.zero)
+        .length;
 
     final tabs = <Widget>[
       _MediaLibraryTab(
-        movieState: movieState,
-        recentWatching: recentWatching,
+        movies: mediaWithUserData.enrichedMovies,
+        series: mediaWithUserData.enrichedSeries,
+        recentWatching: mediaWithUserData.recentWatching,
+        isLoading: mediaWithUserData.isLoading,
+        errorMessage: mediaWithUserData.errorMessage,
         selectedServer: selectedServer,
         availableServers: availableServers,
         favoriteCount: favoriteCount,
         inProgressCount: inProgressCount,
-        onRefresh: movieProvider.refreshMovies,
-        onRetry: movieProvider.loadInitialMovies,
+        onRefresh: mediaLibraryProvider.refreshMovies,
+        onRetry: mediaLibraryProvider.loadInitialMovies,
         onMovieTap: (mediaItem) => _openMovie(context, mediaItem),
-        onServerSelected: onServerSelected,
+        onServerSelected: appProvider.selectServer,
         onOpenMobileSample: () => _openMobileSample(context),
       ),
       _FileSourceTab(
         selectedServer: selectedServer,
         availableServers: availableServers,
-        onServerSelected: onServerSelected,
+        onServerSelected: appProvider.selectServer,
       ),
       _MyTab(
-        favoriteItems: favoriteItems,
+        favoriteItems: mediaWithUserData.allItems
+            .where((item) => item.isFavorite)
+            .toList(),
         favoriteCount: favoriteCount,
         inProgressCount: inProgressCount,
-        recentWatchingCount: recentWatching.length,
+        recentWatchingCount: mediaWithUserData.recentWatching.length,
         onMovieTap: (mediaItem) => _openMovie(context, mediaItem),
       ),
     ];
@@ -128,8 +120,11 @@ class _HomeViewState extends State<HomeView> {
 
 class _MediaLibraryTab extends StatelessWidget {
   const _MediaLibraryTab({
-    required this.movieState,
+    required this.movies,
+    required this.series,
     required this.recentWatching,
+    required this.isLoading,
+    required this.errorMessage,
     required this.selectedServer,
     required this.availableServers,
     required this.favoriteCount,
@@ -141,8 +136,11 @@ class _MediaLibraryTab extends StatelessWidget {
     required this.onOpenMobileSample,
   });
 
-  final MovieState movieState;
+  final List<MediaItem> movies;
+  final List<MediaItem> series;
   final List<MediaItem> recentWatching;
+  final bool isLoading;
+  final String? errorMessage;
   final MediaServerInfo selectedServer;
   final List<MediaServerInfo> availableServers;
   final int favoriteCount;
@@ -159,11 +157,11 @@ class _MediaLibraryTab extends StatelessWidget {
       mobileBuilder: (context, maxWidth) {
         return MobileHomeScreen(
           maxWidth: maxWidth,
-          movies: movieState.movies,
-          series: movieState.series,
+          movies: movies,
+          series: series,
           recentWatching: recentWatching,
-          isLoading: movieState.isLoading,
-          errorMessage: movieState.errorMessage,
+          isLoading: isLoading,
+          errorMessage: errorMessage,
           selectedServer: selectedServer,
           availableServers: availableServers,
           favoriteCount: favoriteCount,
@@ -178,9 +176,9 @@ class _MediaLibraryTab extends StatelessWidget {
       tabletBuilder: (context, maxWidth) {
         return TabletHomeScreen(
           maxWidth: maxWidth,
-          movies: movieState.movies,
-          isLoading: movieState.isLoading,
-          errorMessage: movieState.errorMessage,
+          movies: movies,
+          isLoading: isLoading,
+          errorMessage: errorMessage,
           selectedServer: selectedServer,
           availableServers: availableServers,
           favoriteCount: favoriteCount,

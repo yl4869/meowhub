@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../models/media_item.dart';
-import '../../../providers/app_provider.dart';
-import '../../../providers/movie_provider.dart';
+import '../../../providers/media_library_provider.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/info_chip.dart';
@@ -19,18 +19,18 @@ class MobileUiSampleView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final movieState = context.select<MovieProvider, MovieState>(
+    final mediaLibraryState = context.select<MediaLibraryProvider, MediaLibraryState>(
       (provider) => provider.state,
     );
-    final movieProvider = context.read<MovieProvider>();
-    final featured = movieState.movies.length > 1
-        ? movieState.movies[1]
-        : (movieState.movies.isNotEmpty ? movieState.movies.first : null);
-    final continueWatching = movieState.movies.take(3).toList();
-    final recommendations = movieState.movies.length > 3
-        ? movieState.movies.skip(3).take(6).toList()
-        : movieState.movies;
-    final isInitialLoading = movieState.isLoading && movieState.movies.isEmpty;
+    final mediaLibraryProvider = context.read<MediaLibraryProvider>();
+    final featured = mediaLibraryState.movies.length > 1
+        ? mediaLibraryState.movies[1]
+        : (mediaLibraryState.movies.isNotEmpty ? mediaLibraryState.movies.first : null);
+    final continueWatching = mediaLibraryState.movies.take(3).toList();
+    final recommendations = mediaLibraryState.movies.length > 3
+        ? mediaLibraryState.movies.skip(3).take(6).toList()
+        : mediaLibraryState.movies;
+    final isInitialLoading = mediaLibraryState.isLoading && mediaLibraryState.movies.isEmpty;
 
     return Scaffold(
       body: DecoratedBox(
@@ -64,7 +64,7 @@ class MobileUiSampleView extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                '由 MovieProvider 驱动的推荐、续播和双列海报瀑布',
+                                '由 MediaLibraryProvider 驱动的推荐、续播和双列海报瀑布',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ],
@@ -78,8 +78,8 @@ class MobileUiSampleView extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (movieState.errorMessage != null &&
-                      movieState.movies.isEmpty)
+                  if (mediaLibraryState.errorMessage != null &&
+                      mediaLibraryState.movies.isEmpty)
                     SliverFillRemaining(
                       hasScrollBody: false,
                       child: Center(
@@ -96,14 +96,14 @@ class MobileUiSampleView extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 14),
                                 Text(
-                                  movieState.errorMessage!,
+                                  mediaLibraryState.errorMessage!,
                                   textAlign: TextAlign.center,
                                   style: Theme.of(context).textTheme.bodyLarge,
                                 ),
                                 const SizedBox(height: 18),
                                 FilledButton(
                                   onPressed: () {
-                                    movieProvider.loadInitialMovies();
+                                    mediaLibraryProvider.loadInitialMovies();
                                   },
                                   child: const Text('重新加载'),
                                 ),
@@ -149,7 +149,7 @@ class MobileUiSampleView extends StatelessWidget {
 
                             final mediaItem = continueWatching[index];
                             final progress = context
-                                .select<AppProvider, double>(
+                                .select<UserDataProvider, double>(
                                   (provider) => provider.progressFractionFor(
                                     mediaItem.id,
                                   ),
@@ -206,12 +206,12 @@ class MobileUiSampleView extends StatelessWidget {
                           itemBuilder: (context, index) {
                             final mediaItem = recommendations[index];
                             final isFavorite = context
-                                .select<AppProvider, bool>(
+                                .select<UserDataProvider, bool>(
                                   (provider) =>
                                       provider.isFavorite(mediaItem.id),
                                 );
                             final progress = context
-                                .select<AppProvider, double>(
+                                .select<UserDataProvider, double>(
                                   (provider) => provider.progressFractionFor(
                                     mediaItem.id,
                                   ),

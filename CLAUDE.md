@@ -61,8 +61,32 @@ GoRouter with named routes defined in `main.dart`:
 
 ### Data Flow
 
-Watch history merges two sources via `GetUnifiedHistoryUseCase`: `EmbyWatchHistoryRemoteDataSource` (currently mocked) and `LocalWatchHistoryDataSource` (in-memory). Results are sorted by `updatedAt` descending.
+Watch history merges two sources via `GetUnifiedHistoryUseCase`: `EmbyWatchHistoryRemoteDataSource` (real API or mock) and `LocalWatchHistoryDataSource` (in-memory). Results are sorted by `updatedAt` descending.
+
+### Media Service Architecture
+
+MeowHub uses a **pluggable media service architecture** to support multiple media providers (Emby, Plex, Jellyfin, etc.):
+
+- `lib/domain/entities/media_service_config.dart` — Configuration for media services
+- `lib/domain/repositories/media_service.dart` — Abstract `MediaService` interface and `MediaServiceFactory`
+- `lib/domain/repositories/media_service_manager.dart` — Manages service lifecycle and persistence
+- `lib/data/datasources/emby_api_client.dart` — Emby API implementation
+- `lib/data/datasources/emby_watch_history_remote_data_source.dart` — Adapter for backward compatibility
+- `lib/ui/screens/media_service_config_screen.dart` — Configuration UI
+
+**Key Design Principles:**
+- All services implement the `MediaService` interface
+- `MediaServiceFactory` creates service instances based on config
+- `MediaServiceManager` handles persistence and initialization
+- `RemoteWatchHistoryDataSourceAdapter` bridges new services to existing repository layer
+- Easy to add new providers: implement `MediaService`, update factory, add UI option
+
+See `MEDIA_SERVICE_ARCHITECTURE.md` for detailed documentation and extension guide.
 
 ### Current State
 
-All data sources are mocked — no real API integration exists yet. Device preview is enabled by default on desktop/web for development.
+- ✅ Emby service architecture implemented (API calls need completion)
+- ✅ Mock data sources available for development
+- ⏳ Plex/Jellyfin support (extension points ready)
+- Device preview enabled by default on desktop/web for development
+

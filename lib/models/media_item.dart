@@ -1,5 +1,6 @@
 import 'cast.dart';
 import '../domain/entities/watch_history_item.dart';
+import '../providers/user_data_provider.dart';
 
 enum MediaType {
   movie,
@@ -39,6 +40,7 @@ class MediaItem {
     required this.type,
     this.cast = const [],
     this.sourceType = WatchSourceType.emby,
+    this.sourceId,
     this.posterUrl,
     this.backdropUrl,
     this.rating = 0,
@@ -46,6 +48,7 @@ class MediaItem {
     this.overview = '',
     this.isFavorite = false,
     this.playUrl,
+    this.playbackProgress,
   });
 
   final int id;
@@ -54,6 +57,7 @@ class MediaItem {
   final MediaType type;
   final List<Cast> cast;
   final WatchSourceType sourceType;
+  final String? sourceId;
   final String? posterUrl;
   final String? backdropUrl;
   final double rating;
@@ -61,6 +65,7 @@ class MediaItem {
   final String overview;
   final bool isFavorite;
   final String? playUrl;
+  final MediaPlaybackProgress? playbackProgress;
 
   factory MediaItem.fromJson(Map<String, dynamic> json) {
     final title = _readString(json, keys: const ['title', 'name']);
@@ -84,6 +89,10 @@ class MediaItem {
       cast: _readCastList(json),
       sourceType: WatchSourceType.fromJson(
         _readValue(json, keys: const ['sourceType', 'source_type']),
+      ),
+      sourceId: _readString(
+        json,
+        keys: const ['sourceId', 'source_id', 'embyId', 'emby_id'],
       ),
       posterUrl: _readString(
         json,
@@ -129,6 +138,7 @@ class MediaItem {
       'type': type.toJson(),
       'cast': cast.map((member) => member.toJson()).toList(growable: false),
       'sourceType': sourceType.toJson(),
+      'sourceId': sourceId,
       'posterUrl': posterUrl,
       'backdropUrl': backdropUrl,
       'rating': rating,
@@ -146,6 +156,7 @@ class MediaItem {
     MediaType? type,
     List<Cast>? cast,
     WatchSourceType? sourceType,
+    String? sourceId,
     String? posterUrl,
     String? backdropUrl,
     double? rating,
@@ -153,6 +164,7 @@ class MediaItem {
     String? overview,
     bool? isFavorite,
     String? playUrl,
+    MediaPlaybackProgress? playbackProgress,
   }) {
     return MediaItem(
       id: id ?? this.id,
@@ -161,6 +173,7 @@ class MediaItem {
       type: type ?? this.type,
       cast: cast ?? this.cast,
       sourceType: sourceType ?? this.sourceType,
+      sourceId: sourceId ?? this.sourceId,
       posterUrl: posterUrl ?? this.posterUrl,
       backdropUrl: backdropUrl ?? this.backdropUrl,
       rating: rating ?? this.rating,
@@ -168,8 +181,13 @@ class MediaItem {
       overview: overview ?? this.overview,
       isFavorite: isFavorite ?? this.isFavorite,
       playUrl: playUrl ?? this.playUrl,
+      playbackProgress: playbackProgress ?? this.playbackProgress,
     );
   }
+
+  String get dataSourceId => sourceId ?? id.toString();
+
+  String get mediaKey => '${sourceType.name}:$dataSourceId';
 
   static dynamic _readValue(
     Map<String, dynamic> json, {

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/media_item.dart';
 import '../../providers/app_provider.dart';
+import '../../providers/user_data_provider.dart';
 import '../atoms/meow_video_player.dart';
 import '../mobile/player/mobile_player_screen.dart';
 import '../tablet/player/tablet_player_screen.dart';
@@ -22,7 +23,7 @@ class PlayerView extends StatefulWidget {
 }
 
 class _PlayerViewState extends State<PlayerView> {
-  late final AppProvider _appProvider;
+  late final UserDataProvider _userDataProvider;
   late final Duration _initialPosition;
   MeowVideoPlaybackStatus? _latestStatus;
   Duration _lastSavedPosition = Duration.zero;
@@ -32,8 +33,10 @@ class _PlayerViewState extends State<PlayerView> {
   @override
   void initState() {
     super.initState();
-    _appProvider = context.read<AppProvider>();
-    final savedProgress = _appProvider.playbackProgressFor(widget.mediaItem.id);
+    _userDataProvider = context.read<UserDataProvider>();
+    final savedProgress = _userDataProvider.playbackProgressForItem(
+      widget.mediaItem,
+    );
     _initialPosition = savedProgress?.position ?? Duration.zero;
     _lastSavedPosition = savedProgress?.position ?? Duration.zero;
     _lastSavedDuration = savedProgress?.duration ?? Duration.zero;
@@ -63,7 +66,7 @@ class _PlayerViewState extends State<PlayerView> {
         _completedPlayback = true;
         _lastSavedPosition = Duration.zero;
         _lastSavedDuration = Duration.zero;
-        _appProvider.clearPlaybackProgress(widget.mediaItem.id);
+        _userDataProvider.clearPlaybackProgressForItem(widget.mediaItem);
       }
       return;
     }
@@ -94,13 +97,10 @@ class _PlayerViewState extends State<PlayerView> {
   }
 
   void _persistPlaybackProgress(MeowVideoPlaybackStatus status) {
-    _appProvider.updatePlaybackProgress(
-      mediaId: widget.mediaItem.id,
+    _userDataProvider.updatePlaybackProgressForItem(
+      widget.mediaItem,
       position: status.position,
       duration: status.duration,
-      title: widget.mediaItem.title,
-      poster: widget.mediaItem.posterUrl ?? '',
-      sourceType: widget.mediaItem.sourceType,
     );
     _lastSavedPosition = status.position;
     _lastSavedDuration = status.duration;
@@ -111,9 +111,10 @@ class _PlayerViewState extends State<PlayerView> {
     final selectedServer = context.select<AppProvider, MediaServerInfo>(
       (provider) => provider.selectedServer,
     );
-    final savedProgress = context.select<AppProvider, MediaPlaybackProgress?>(
-      (provider) => provider.playbackProgressFor(widget.mediaItem.id),
-    );
+    final savedProgress = context
+        .select<UserDataProvider, MediaPlaybackProgress?>(
+          (provider) => provider.playbackProgressForItem(widget.mediaItem),
+        );
 
     return ResponsiveLayoutBuilder(
       mobileBuilder: (context, maxWidth) {

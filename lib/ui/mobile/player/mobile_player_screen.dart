@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../models/media_item.dart';
 import '../../../providers/app_provider.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/duration_formatter.dart';

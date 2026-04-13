@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../../models/media_item.dart';
 import '../../../providers/app_provider.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/poster_card.dart';
@@ -179,20 +180,20 @@ class TabletHomeScreen extends StatelessWidget {
                             return Builder(
                               builder: (context) {
                                 final isFavorite = context
-                                    .select<AppProvider, bool>(
+                                    .select<UserDataProvider, bool>(
                                       (provider) =>
                                           provider.isFavorite(mediaItem.id),
                                     );
                                 final progress = context
-                                    .select<AppProvider, double>(
+                                    .select<UserDataProvider, double>(
                                       (provider) => provider
-                                          .progressFractionFor(mediaItem.id),
+                                          .progressFractionForItem(mediaItem),
                                     );
                                 final isRecent = context
-                                    .select<AppProvider, bool>(
-                                      (provider) => provider
-                                          .latestRecentMediaId ==
-                                              mediaItem.id,
+                                    .select<UserDataProvider, bool>(
+                                      (provider) =>
+                                          provider.latestRecentMediaKey ==
+                                          mediaItem.mediaKey,
                                     );
 
                                 return PosterCard(

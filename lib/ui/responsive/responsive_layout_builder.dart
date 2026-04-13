@@ -11,8 +11,8 @@ class AppResponsiveBreakpoints {
   static bool isTabletWidth(double width) => width >= tablet;
 }
 
-class ResponsiveLayoutBuilder extends StatelessWidget {
-  const ResponsiveLayoutBuilder({
+class ResponsiveLayout extends StatelessWidget {
+  const ResponsiveLayout({
     super.key,
     required this.mobileBuilder,
     required this.tabletBuilder,
@@ -26,11 +26,48 @@ class ResponsiveLayoutBuilder extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth;
-        if (AppResponsiveBreakpoints.isTabletWidth(maxWidth)) {
-          return tabletBuilder(context, maxWidth);
-        }
-        return mobileBuilder(context, maxWidth);
+        final isTablet = AppResponsiveBreakpoints.isTabletWidth(maxWidth);
+
+        return IndexedStack(
+          index: isTablet ? 1 : 0,
+          sizing: StackFit.expand,
+          children: [
+            KeyedSubtree(
+              key: const ValueKey('responsive-mobile'),
+              child: TickerMode(
+                enabled: !isTablet,
+                child: mobileBuilder(context, maxWidth),
+              ),
+            ),
+            KeyedSubtree(
+              key: const ValueKey('responsive-tablet'),
+              child: TickerMode(
+                enabled: isTablet,
+                child: tabletBuilder(context, maxWidth),
+              ),
+            ),
+          ],
+        );
       },
+    );
+  }
+}
+
+class ResponsiveLayoutBuilder extends StatelessWidget {
+  const ResponsiveLayoutBuilder({
+    super.key,
+    required this.mobileBuilder,
+    required this.tabletBuilder,
+  });
+
+  final ResponsivePageBuilder mobileBuilder;
+  final ResponsivePageBuilder tabletBuilder;
+
+  @override
+  Widget build(BuildContext context) {
+    return ResponsiveLayout(
+      mobileBuilder: mobileBuilder,
+      tabletBuilder: tabletBuilder,
     );
   }
 }

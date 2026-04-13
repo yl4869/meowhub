@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/media_item.dart';
 import '../../providers/app_provider.dart';
+import '../../providers/user_data_provider.dart';
 import '../mobile/detail/mobile_media_detail_screen.dart';
 import '../tablet/detail/tablet_media_detail_screen.dart';
 import 'player_view.dart';
@@ -24,33 +25,32 @@ class MediaDetailView extends StatelessWidget {
     final selectedServer = context.select<AppProvider, MediaServerInfo>(
       (provider) => provider.selectedServer,
     );
-    final isFavorite = context.select<AppProvider, bool>(
+    final userDataProvider = context.read<UserDataProvider>();
+    final isFavorite = context.select<UserDataProvider, bool>(
       (provider) => provider.isFavorite(mediaItem.id),
     );
     final playbackProgress = context
-        .select<AppProvider, MediaPlaybackProgress?>(
-          (provider) => provider.playbackProgressFor(mediaItem.id),
+        .select<UserDataProvider, MediaPlaybackProgress?>(
+          (provider) => provider.playbackProgressForItem(mediaItem),
         );
-    final initialEpisodeIndex = context.select<AppProvider, int>(
-      (provider) => provider.episodeIndexFor(mediaItem.id),
+    final initialEpisodeIndex = context.select<UserDataProvider, int>(
+      (provider) => provider.episodeIndexForItem(mediaItem),
     );
-    final hasRecentWatchRecord = context.select<AppProvider, bool>(
-      (provider) => provider.recentPlaybackMediaIds.contains(mediaItem.id),
+    final hasRecentWatchRecord = context.select<UserDataProvider, bool>(
+      (provider) =>
+          provider.recentPlaybackMediaKeys.contains(mediaItem.mediaKey),
     );
 
     void handlePlayPressed(int episodeIndex) {
-      context.read<AppProvider>().markRecentlyWatched(
-        mediaItem.id,
+      userDataProvider.markRecentlyWatchedItem(
+        mediaItem,
         episodeIndex: episodeIndex,
-        title: mediaItem.title,
-        poster: mediaItem.posterUrl ?? '',
-        sourceType: mediaItem.sourceType,
       );
       context.push(PlayerView.locationFor(mediaItem.id), extra: mediaItem);
     }
 
     void handleToggleFavorite() {
-      context.read<AppProvider>().toggleFavorite(mediaItem);
+      userDataProvider.toggleFavorite(mediaItem);
     }
 
     ValueChanged<int>? resolvePlayPressed() {
