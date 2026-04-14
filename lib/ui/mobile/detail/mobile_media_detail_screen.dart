@@ -96,7 +96,29 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 14),
-                    _MetaChipRow(mediaItem: widget.mediaItem),
+                    _MetaChipRow(
+                      mediaItem: widget.mediaItem,
+                      trailing: SizedBox(
+                        width: 104,
+                        child: _SubtitleDropdown(
+                          loading: _loadingSubtitles,
+                          options: _subtitleOptions,
+                          value: _selectedSubtitleIndex ?? -1,
+                          onChanged: (v) {
+                            setState(() => _selectedSubtitleIndex = v);
+                            final udp = context.read<UserDataProvider>();
+                            final item = widget.playableItems[_selectedEpisode];
+                            udp.setTrackSelectionForItem(
+                              item,
+                              subtitleIndex: v,
+                              audioIndex: udp
+                                  .trackSelectionForItem(item)
+                                  ?.audioIndex,
+                            );
+                          },
+                        ),
+                      ),
+                    ),
                     const SizedBox(height: 18),
                     Row(
                       children: [
@@ -114,12 +136,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                           ),
                         ),
                         const SizedBox(width: 12),
-                        _ActionIconButton(
-                          icon: Icons.subtitles_outlined,
-                          onTap: () =>
-                              widget.onOpenTrackSelector(_selectedEpisode),
-                        ),
-                        const SizedBox(width: 10),
                         _ActionIconButton(
                           icon: widget.isFavorite
                               ? Icons.favorite_rounded
@@ -226,43 +242,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                         onViewAll: () => _showAllCast(context, cast),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 18),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.closed_caption_outlined,
-                            color: Colors.white70,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            '字幕',
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          const Spacer(),
-                          _SubtitleDropdown(
-                            loading: _loadingSubtitles,
-                            options: _subtitleOptions,
-                            value: _selectedSubtitleIndex ?? -1,
-                            onChanged: (v) {
-                              setState(() => _selectedSubtitleIndex = v);
-                              final udp = context.read<UserDataProvider>();
-                              final item =
-                                  widget.playableItems[_selectedEpisode];
-                              udp.setTrackSelectionForItem(
-                                item,
-                                subtitleIndex: v,
-                                audioIndex: udp
-                                    .trackSelectionForItem(item)
-                                    ?.audioIndex,
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
                     const SizedBox(height: 18),
                     _InfoSection(
                       mediaItem: widget.mediaItem,
@@ -344,6 +323,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   Future<void> _refreshSubtitleOptions() async {
     final item = widget.playableItems[_selectedEpisode];
     final manager = context.read<MediaServiceManager>();
+    final udp = context.read<UserDataProvider>();
     final config = manager.getSavedConfig();
     if (config == null || config.type != MediaServiceType.emby) {
       setState(() {
@@ -374,9 +354,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
           '[Detail] subs fetched=${plan.subtitleStreams.length} item=${item.dataSourceId}',
         );
       }
-      final saved = context.read<UserDataProvider>().trackSelectionForItem(
-        item,
-      );
+      final saved = udp.trackSelectionForItem(item);
       setState(() {
         _subtitleOptions = plan.subtitleStreams;
         _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
@@ -403,10 +381,20 @@ class _SubtitleDropdown extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (loading) {
-      return const SizedBox(
-        height: 28,
-        width: 28,
-        child: CircularProgressIndicator(strokeWidth: 2),
+      return Container(
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: AppTheme.cardColor,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white24),
+        ),
+        alignment: Alignment.center,
+        child: const SizedBox(
+          height: 16,
+          width: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
       );
     }
     final items = <DropdownMenuItem<int>>[
@@ -415,15 +403,31 @@ class _SubtitleDropdown extends StatelessWidget {
         (s) => DropdownMenuItem<int>(value: s.index, child: Text(s.title)),
       ),
     ];
-    return DropdownButton<int>(
-      value: value,
-      items: items,
-      onChanged: (v) {
-        if (v != null) onChanged(v);
-      },
-      dropdownColor: AppTheme.cardColor,
-      borderRadius: BorderRadius.circular(12),
-      underline: const SizedBox.shrink(),
+    return Container(
+      height: 32,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.cardColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white24),
+      ),
+      alignment: Alignment.center,
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<int>(
+          value: value,
+          isExpanded: true,
+          iconSize: 18,
+          style: Theme.of(
+            context,
+          ).textTheme.labelMedium?.copyWith(color: Colors.white),
+          items: items,
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+          dropdownColor: AppTheme.cardColor,
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
     );
   }
 }
@@ -471,35 +475,47 @@ class _PosterHeader extends StatelessWidget {
 }
 
 class _MetaChipRow extends StatelessWidget {
-  const _MetaChipRow({required this.mediaItem});
+  const _MetaChipRow({required this.mediaItem, this.trailing});
 
   final MediaItem mediaItem;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      alignment: WrapAlignment.center,
-      spacing: 8,
-      runSpacing: 8,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        InfoChip(
-          icon: Icons.star_rounded,
-          label: mediaItem.rating > 0
-              ? mediaItem.rating.toStringAsFixed(1)
-              : '--',
-          color: AppTheme.accentColor,
-        ),
-        if (mediaItem.year != null)
-          InfoChip(
-            icon: Icons.calendar_today_rounded,
-            label: mediaItem.year.toString(),
+        Expanded(
+          child: Wrap(
+            alignment: WrapAlignment.start,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              InfoChip(
+                icon: Icons.star_rounded,
+                label: mediaItem.rating > 0
+                    ? mediaItem.rating.toStringAsFixed(1)
+                    : '--',
+                color: AppTheme.accentColor,
+              ),
+              if (mediaItem.year != null)
+                InfoChip(
+                  icon: Icons.calendar_today_rounded,
+                  label: mediaItem.year.toString(),
+                ),
+              InfoChip(
+                icon: mediaItem.type == MediaType.movie
+                    ? Icons.movie_creation_outlined
+                    : Icons.live_tv_rounded,
+                label: mediaItem.type == MediaType.movie ? '电影' : '剧集',
+              ),
+            ],
           ),
-        InfoChip(
-          icon: mediaItem.type == MediaType.movie
-              ? Icons.movie_creation_outlined
-              : Icons.live_tv_rounded,
-          label: mediaItem.type == MediaType.movie ? '电影' : '剧集',
         ),
+        if (trailing != null) ...[
+          const SizedBox(width: 18),
+          Align(alignment: Alignment.topRight, child: trailing!),
+        ],
       ],
     );
   }
