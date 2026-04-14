@@ -1,3 +1,6 @@
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+
 import '../../domain/entities/media_service_config.dart';
 import '../../core/services/security_service.dart';
 import '../../core/session/session_expired_notifier.dart';
@@ -12,18 +15,69 @@ class EmbyWatchHistoryRemoteDataSourceImpl
     required MediaServiceConfig config,
     required SecurityService securityService,
     required SessionExpiredNotifier sessionExpiredNotifier,
-  }) : _apiClient = EmbyApiClient(
+  }) : _config = config,
+       _securityService = securityService,
+       _apiClient = EmbyApiClient(
          config: config,
          securityService: securityService,
          sessionExpiredNotifier: sessionExpiredNotifier,
        );
 
+  final MediaServiceConfig _config;
+  final SecurityService _securityService;
   final EmbyApiClient _apiClient;
 
   @override
   Future<List<EmbyResumeItemDto>> getHistory() async {
-    final items = await _apiClient.getResumeItems();
-    return items.map(_parseResumeItem).toList(growable: false);
+    final rawUserId = await _securityService.readUserId();
+    final userId = rawUserId?.trim() ?? '';
+    if (userId.isEmpty) {
+      debugPrint(
+        '[EmbyHistory] userId is empty, skip requesting /Users/{userId}/Items',
+      );
+      return const [];
+    }
+
+    final path = '/emby/Users/$userId/Items';
+    final queryParameters = <String, dynamic>{
+      'Recursive': true,
+      'MediaTypes': 'Video',
+      'SortBy': 'DatePlayed',
+      'SortOrder': 'Descending',
+      'Filters': 'IsPlayed',
+      'EnableUserData': true,
+      'EnableImages': true,
+      'EnableImageTypes': 'Primary',
+      'ImageTypeLimit': 1,
+      'Limit': 200,
+    };
+    final headers = await _buildDebugHeaders();
+
+    debugPrint('[EmbyHistory] baseUrl=${_config.normalizedServerUrl}');
+    debugPrint('[EmbyHistory] path=$path');
+    debugPrint('[EmbyHistory] queryParameters=$queryParameters');
+    debugPrint('[EmbyHistory] headers=$headers');
+
+    try {
+      final response = await _apiClient.get<Map<String, dynamic>>(
+        path,
+        queryParameters: queryParameters,
+      );
+      final data = response.data ?? <String, dynamic>{};
+      final items = (data['Items'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList(growable: false);
+      return items.map(_parseResumeItem).toList(growable: false);
+    } on DioException catch (e) {
+      final statusCode = e.response?.statusCode;
+      debugPrint(
+        '[EmbyHistory] DioException status=$statusCode message=${e.message}',
+      );
+      if (statusCode == 500) {
+        debugPrint('[EmbyHistory] 500 response body=${e.response?.data}');
+      }
+      rethrow;
+    }
   }
 
   @override
@@ -69,6 +123,26 @@ class EmbyWatchHistoryRemoteDataSourceImpl
     }
 
     return '${_apiClient.serverUrl}/emby/Items/$itemId/Images/Primary?tag=$imageTag&maxHeight=300';
+  }
+
+  Future<Map<String, String>> _buildDebugHeaders() async {
+    final token = (await _securityService.readAccessToken())?.trim() ?? '';
+    final deviceId = _normalizedDeviceId;
+    return <String, String>{
+      'Content-Type': 'application/json',
+      'X-Emby-Authorization':
+          'MediaBrowser Client="MeowHub", Device="MeowHub", DeviceId="$deviceId", Version="1.0.0"',
+      'X-Emby-Device-Id': deviceId,
+      if (token.isNotEmpty) 'X-Emby-Token': token,
+    };
+  }
+
+  String get _normalizedDeviceId {
+    final deviceId = _config.deviceId?.trim();
+    if (deviceId == null || deviceId.isEmpty) {
+      return 'meowhub-device';
+    }
+    return deviceId;
   }
 }
 

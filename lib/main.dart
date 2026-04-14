@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'core/bootstrap/mock_emby_bootstrap_config.dart';
 import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
 import 'data/datasources/emby_api_client.dart';
@@ -25,16 +26,6 @@ import 'ui/responsive/home_view.dart';
 import 'ui/responsive/media_detail_view.dart';
 import 'ui/responsive/player_view.dart';
 import 'ui/screens/media_service_config_screen.dart';
-
-// 在 main.dart 的顶部或 build 逻辑之前定义
-const _hardcodedEmbyConfig = MediaServiceConfig(
-  type: MediaServiceType.emby,
-  serverUrl: 'http://172.22.73.65:8096', // 你的服务器地址
-  username: 'yunlang', // 你的用户名
-  password: 'Asadashino', // 填入你的真实密码
-  // 使用 GUID 格式的 DeviceId 避免服务器解析 500
-  deviceId: '7fb3a52c-d922-4a0d-852a-9e69397621f3',
-);
 
 const List<Locale> _supportedLocales = [Locale('zh', 'CN'), Locale('en', 'US')];
 
@@ -56,9 +47,26 @@ void main() async {
     sessionExpiredNotifier: sessionExpiredNotifier,
   );
   await mediaServiceManager.initialize();
-  // Ensure MediaServiceManager has a valid config so PlayerView can build PlaybackPlan.
-  // In dev, we use the hardcoded Emby config; in production this is set via the login screen.
-  await mediaServiceManager.setConfig(_hardcodedEmbyConfig);
+  final bootstrapConfig = await loadMockEmbyBootstrapConfig();
+  await mediaServiceManager.setConfig(bootstrapConfig.toMediaServiceConfig());
+  final savedConfig = mediaServiceManager.getSavedConfig();
+  if (savedConfig == null || savedConfig.type != MediaServiceType.emby) {
+    throw StateError('Failed to load Emby config from bootstrap file');
+  }
+  final bootstrapApiClient = EmbyApiClient(
+    config: savedConfig,
+    securityService: securityService,
+    sessionExpiredNotifier: sessionExpiredNotifier,
+  );
+  await bootstrapApiClient.authenticate();
+  final resolvedUserId = (await securityService.readUserId())?.trim() ?? '';
+  if (kDebugMode) {
+    debugPrint(
+      '🚀 MeowHub: bootstrap auth completed, '
+      'fileUserId=${bootstrapConfig.userId}, resolvedUserId=$resolvedUserId',
+    );
+  }
+  sessionExpiredNotifier.markAuthenticated();
   final mediaRepository = _buildMediaRepository(
     mediaServiceManager: mediaServiceManager,
     securityService: securityService,
@@ -222,7 +230,10 @@ IMediaRepository _buildMediaRepository({
     return const MockMediaRepositoryImpl();
   }
 
-  const config = _hardcodedEmbyConfig;
+  final config = mediaServiceManager.getSavedConfig();
+  if (config == null || config.type != MediaServiceType.emby) {
+    throw StateError('No Emby config available when building repository');
+  }
 
   // 3. 实例化真正的 Emby 客户端
   final apiClient = EmbyApiClient(
