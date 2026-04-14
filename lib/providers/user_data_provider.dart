@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 
 import '../data/datasources/emby_watch_history_remote_data_source.dart';
-import '../data/models/emby/emby_resume_item_dto.dart';
 import '../data/datasources/local_watch_history_data_source.dart';
 import '../data/repositories/watch_history_repository_impl.dart';
 import '../domain/entities/watch_history_item.dart';
@@ -18,15 +17,19 @@ class UserDataProvider extends ChangeNotifier {
     required MediaServiceManager mediaServiceManager,
     WatchHistoryRepository? watchHistoryRepository,
   }) : _mediaServiceManager = mediaServiceManager {
+    _activeConfigNamespace = mediaServiceManager
+        .getSavedConfig()
+        ?.credentialNamespace;
     _watchHistoryRepository =
         watchHistoryRepository ?? _buildWatchHistoryRepository();
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
     _loadWatchHistory();
   }
 
-  final MediaServiceManager _mediaServiceManager;
-  late final WatchHistoryRepository _watchHistoryRepository;
-  late final UpdateWatchProgressUseCase _updateWatchProgress;
+  MediaServiceManager _mediaServiceManager;
+  late WatchHistoryRepository _watchHistoryRepository;
+  late UpdateWatchProgressUseCase _updateWatchProgress;
+  String? _activeConfigNamespace;
 
   final Map<int, MediaItem> _favoriteItems = {};
   final Map<String, int> _recentEpisodeIndices = {'1002': 2, '1007': 0};
@@ -299,6 +302,23 @@ class UserDataProvider extends ChangeNotifier {
     await _loadWatchHistory();
   }
 
+  void updateMediaServiceManager(MediaServiceManager manager) {
+    final nextNamespace = manager.getSavedConfig()?.credentialNamespace;
+    if (identical(_mediaServiceManager, manager) &&
+        _activeConfigNamespace == nextNamespace) {
+      return;
+    }
+
+    _mediaServiceManager = manager;
+    _activeConfigNamespace = nextNamespace;
+    _watchHistoryRepository = _buildWatchHistoryRepository();
+    _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
+    _watchHistory = const [];
+    _isLoading = false;
+    notifyListeners();
+    _loadWatchHistory();
+  }
+
   void clearPlaybackProgress(int mediaId) {
     final targetId = mediaId.toString();
     final previousLength = _watchHistory.length;
@@ -398,40 +418,7 @@ class UserDataProvider extends ChangeNotifier {
     }
 
     return WatchHistoryRepositoryImpl(
-      embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(
-        initialHistory: [
-          EmbyResumeItemDto(
-            id: '1002',
-            name: 'Moonlit Harbor',
-            primaryImageUrl: '',
-            playbackPositionTicks:
-                const Duration(minutes: 34, seconds: 12).inMilliseconds * 10000,
-            runTimeTicks:
-                const Duration(
-                  hours: 1,
-                  minutes: 52,
-                  seconds: 18,
-                ).inMilliseconds *
-                10000,
-            lastPlayedDate: DateTime(2026, 4, 12, 20, 30).toIso8601String(),
-          ),
-          EmbyResumeItemDto(
-            id: '1007',
-            name: 'Glass Kingdom',
-            primaryImageUrl: '',
-            playbackPositionTicks:
-                const Duration(minutes: 12, seconds: 5).inMilliseconds * 10000,
-            runTimeTicks:
-                const Duration(
-                  hours: 2,
-                  minutes: 6,
-                  seconds: 40,
-                ).inMilliseconds *
-                10000,
-            lastPlayedDate: DateTime(2026, 4, 11, 21, 10).toIso8601String(),
-          ),
-        ],
-      ),
+      embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(),
       localDataSource: InMemoryLocalWatchHistoryDataSource(),
     );
   }

@@ -48,6 +48,37 @@ class MediaServiceConfig {
       ? serverUrl.substring(0, serverUrl.length - 1)
       : serverUrl;
 
+  String get credentialNamespace {
+    final normalizedUser = username?.trim().toLowerCase() ?? '';
+    return '${type.name}:${normalizedServerUrl.toLowerCase()}:$normalizedUser';
+  }
+
+  Map<String, dynamic> toJson({bool includePassword = false}) {
+    return <String, dynamic>{
+      'type': type.name,
+      'serverUrl': normalizedServerUrl,
+      if (username != null) 'username': username,
+      if (includePassword && password != null) 'password': password,
+      if (deviceId != null) 'deviceId': deviceId,
+    };
+  }
+
+  factory MediaServiceConfig.fromJson(Map<String, dynamic> json) {
+    final typeName = json['type']?.toString().trim();
+    final type = MediaServiceType.values.firstWhere(
+      (value) => value.name == typeName,
+      orElse: () => MediaServiceType.emby,
+    );
+
+    return MediaServiceConfig(
+      type: type,
+      serverUrl: json['serverUrl']?.toString().trim() ?? '',
+      username: json['username']?.toString().trim(),
+      password: json['password']?.toString(),
+      deviceId: json['deviceId']?.toString().trim(),
+    );
+  }
+
   MediaServiceConfig copyWith({
     MediaServiceType? type,
     String? serverUrl,

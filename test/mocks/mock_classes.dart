@@ -17,7 +17,7 @@ class MockDio extends Mock implements Dio {
   BaseOptions get options => BaseOptions();
 
   @override
-  set options(BaseOptions? _options) {}
+  set options(BaseOptions? options) {}
 
   @override
   Interceptors get interceptors => Interceptors();
@@ -29,8 +29,8 @@ class MockResponse<T> extends Mock implements Response<T> {
     when(() => this.data).thenReturn(data);
     when(() => this.headers).thenReturn(
       headers != null
-        ? Headers.fromMap(headers.map((k, v) => MapEntry(k, [v.toString()])))
-        : Headers.fromMap({})
+          ? Headers.fromMap(headers.map((k, v) => MapEntry(k, [v.toString()])))
+          : Headers.fromMap({}),
     );
   }
 }

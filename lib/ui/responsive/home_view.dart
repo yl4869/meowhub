@@ -8,10 +8,14 @@ import '../../providers/media_library_provider.dart';
 import '../../providers/media_with_user_data_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
+import '../atoms/section_header.dart';
+import '../file_source/add_file_source_sheet.dart';
+import '../file_source/file_source_tile.dart';
 import '../mobile/home/mobile_home_screen.dart';
 import '../mobile/sample/mobile_ui_sample_view.dart';
 import '../tablet/home/tablet_home_screen.dart';
 import 'media_detail_view.dart';
+import 'media_library_collection_view.dart';
 import 'responsive_layout_builder.dart';
 
 class HomeView extends StatefulWidget {
@@ -41,13 +45,7 @@ class _HomeViewState extends State<HomeView> {
     final favoriteCount = mediaWithUserData.allItems
         .where((item) => item.isFavorite)
         .length;
-    final inProgressCount = mediaWithUserData.allItems
-        .where(
-          (item) =>
-              item.playbackProgress != null &&
-              item.playbackProgress!.position > Duration.zero,
-        )
-        .length;
+    final inProgressCount = mediaWithUserData.recentWatching.length;
 
     final tabs = <Widget>[
       _MediaLibraryTab(
@@ -63,6 +61,8 @@ class _HomeViewState extends State<HomeView> {
         onRefresh: mediaLibraryProvider.refreshMovies,
         onRetry: mediaLibraryProvider.loadInitialMovies,
         onMovieTap: (mediaItem) => _openMovie(context, mediaItem),
+        onOpenLibraryCollection: (mediaType) =>
+            _openLibraryCollection(context, mediaType),
         onServerSelected: appProvider.selectServer,
         onOpenMobileSample: () => _openMobileSample(context),
       ),
@@ -122,6 +122,10 @@ class _HomeViewState extends State<HomeView> {
   void _openMobileSample(BuildContext context) {
     context.push(MobileUiSampleView.routePath);
   }
+
+  void _openLibraryCollection(BuildContext context, MediaType mediaType) {
+    context.push(MediaLibraryCollectionView.locationFor(mediaType));
+  }
 }
 
 class _MediaLibraryTab extends StatelessWidget {
@@ -138,6 +142,7 @@ class _MediaLibraryTab extends StatelessWidget {
     required this.onRefresh,
     required this.onRetry,
     required this.onMovieTap,
+    required this.onOpenLibraryCollection,
     required this.onServerSelected,
     required this.onOpenMobileSample,
   });
@@ -154,6 +159,7 @@ class _MediaLibraryTab extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final VoidCallback onRetry;
   final ValueChanged<MediaItem> onMovieTap;
+  final ValueChanged<MediaType> onOpenLibraryCollection;
   final ValueChanged<MediaServerInfo> onServerSelected;
   final VoidCallback onOpenMobileSample;
 
@@ -175,8 +181,8 @@ class _MediaLibraryTab extends StatelessWidget {
           onRefresh: onRefresh,
           onRetry: onRetry,
           onMovieTap: onMovieTap,
+          onOpenLibraryCollection: onOpenLibraryCollection,
           onServerSelected: onServerSelected,
-          onOpenMobileSample: onOpenMobileSample,
         );
       },
       tabletBuilder: (context, maxWidth) {
@@ -218,15 +224,25 @@ class _FileSourceTab extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 20, 16, 28),
         physics: const BouncingScrollPhysics(),
         children: [
-          Text('文件源', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 8),
-          Text(
-            '管理当前接入的媒体线路与文件源。',
-            style: Theme.of(context).textTheme.bodyMedium,
+          SectionHeader(
+            title: '文件源',
+            subtitle: '管理当前接入的媒体线路与文件源。',
+            action: FilledButton.icon(
+              onPressed: () => _openAddSourceSheet(context),
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('添加'),
+            ),
           ),
           const SizedBox(height: 20),
+          AppSurfaceCard(
+            child: Text(
+              '当前支持添加 Emby 服务器，配置项拆分为名称、协议、地址、端口、用户名和密码，方便后续单独复用或修改其中一个组件。',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+          const SizedBox(height: 16),
           for (final server in availableServers) ...[
-            _ServerSourceTile(
+            FileSourceTile(
               server: server,
               isSelected: server.id == selectedServer.id,
               onTap: () => onServerSelected(server),
@@ -235,6 +251,24 @@ class _FileSourceTab extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+
+  Future<void> _openAddSourceSheet(BuildContext context) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.cardColor,
+      builder: (_) {
+        return AddFileSourceSheet(
+          onSubmitted: (draft) {
+            context.read<AppProvider>().addConfiguredServer(
+              customName: draft.name,
+              config: draft.config,
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -300,56 +334,6 @@ class _MyTab extends StatelessWidget {
               const SizedBox(height: 12),
             ],
         ],
-      ),
-    );
-  }
-}
-
-class _ServerSourceTile extends StatelessWidget {
-  const _ServerSourceTile({
-    required this.server,
-    required this.isSelected,
-    required this.onTap,
-  });
-
-  final MediaServerInfo server;
-  final bool isSelected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(24),
-        child: AppSurfaceCard(
-          child: Row(
-            children: [
-              Icon(
-                isSelected ? Icons.radio_button_checked : Icons.dns_rounded,
-                color: isSelected ? AppTheme.accentColor : Colors.white70,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      server.name,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${server.region} · ${server.baseUrl}',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

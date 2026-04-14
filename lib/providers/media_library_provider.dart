@@ -7,24 +7,28 @@ class MediaLibraryState {
   const MediaLibraryState({
     this.movies = const [],
     this.series = const [],
+    this.recentWatching = const [],
     this.isLoading = false,
     this.errorMessage,
   });
 
   final List<MediaItem> movies;
   final List<MediaItem> series;
+  final List<MediaItem> recentWatching;
   final bool isLoading;
   final String? errorMessage;
 
   MediaLibraryState copyWith({
     List<MediaItem>? movies,
     List<MediaItem>? series,
+    List<MediaItem>? recentWatching,
     bool? isLoading,
     Object? errorMessage = _sentinel,
   }) {
     return MediaLibraryState(
       movies: movies ?? this.movies,
       series: series ?? this.series,
+      recentWatching: recentWatching ?? this.recentWatching,
       isLoading: isLoading ?? this.isLoading,
       errorMessage: identical(errorMessage, _sentinel)
           ? this.errorMessage
@@ -40,11 +44,22 @@ class MediaLibraryProvider extends ChangeNotifier {
   MediaLibraryProvider({required IMediaRepository mediaRepository})
     : _mediaRepository = mediaRepository;
 
-  final IMediaRepository _mediaRepository;
+  IMediaRepository _mediaRepository;
 
   MediaLibraryState _state = const MediaLibraryState();
 
   MediaLibraryState get state => _state;
+
+  void updateRepository(IMediaRepository mediaRepository) {
+    if (identical(_mediaRepository, mediaRepository)) {
+      return;
+    }
+
+    _mediaRepository = mediaRepository;
+    _state = const MediaLibraryState();
+    notifyListeners();
+    loadInitialMovies();
+  }
 
   Future<void> loadInitialMovies() async {
     if (_state.isLoading) {

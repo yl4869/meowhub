@@ -22,6 +22,10 @@ class TabletPlayerScreen extends StatefulWidget {
     this.playUrlOverride,
     this.onShowTrackSelector,
     this.selectionRequest,
+    this.subtitleUri,
+    this.subtitleTitle,
+    this.subtitleLanguage,
+    this.disableSubtitleTrack = false,
   });
 
   final double maxWidth;
@@ -32,7 +36,12 @@ class TabletPlayerScreen extends StatefulWidget {
   final MeowVideoPlaybackStatusChanged onPlaybackStatusChanged;
   final String? playUrlOverride;
   final VoidCallback? onShowTrackSelector;
-  final Object? selectionRequest; // removed feature; keep param slot stable
+  // 播放页移除音轨/字幕选择
+  final Object? selectionRequest;
+  final String? subtitleUri;
+  final String? subtitleTitle;
+  final String? subtitleLanguage;
+  final bool disableSubtitleTrack;
 
   @override
   State<TabletPlayerScreen> createState() => _TabletPlayerScreenState();
@@ -54,7 +63,7 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     _udp = context.read<UserDataProvider>();
   }
 
-  // Subtitle feature removed for stability
+  // 播放页移除本地字幕切换
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
     _latestStatus = status;
@@ -125,10 +134,14 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
                           },
                           overlayCcButton: widget.onShowTrackSelector != null,
                           onTapCc: widget.onShowTrackSelector,
+                          subtitleUri: widget.subtitleUri,
+                          subtitleTitle: widget.subtitleTitle,
+                          subtitleLanguage: widget.subtitleLanguage,
+                          disableSubtitleTrack: widget.disableSubtitleTrack,
                         )
                       else
                         _UnavailablePlayerCard(title: widget.mediaItem.title),
-                      if (widget.onShowTrackSelector != null) ...[
+                                            if (widget.onShowTrackSelector != null) ...[
                         const SizedBox(height: 12),
                         Align(
                           alignment: Alignment.centerRight,

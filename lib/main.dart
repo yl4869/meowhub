@@ -6,10 +6,11 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'core/bootstrap/mock_emby_bootstrap_config.dart';
+import 'core/persistence/file_source_store.dart';
 import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
 import 'data/datasources/emby_api_client.dart';
+import 'data/repositories/empty_media_repository_impl.dart';
 import 'data/repositories/emby_media_repository_impl.dart';
 import 'data/repositories/mock_media_repository_impl.dart';
 import 'domain/entities/media_item.dart';
@@ -24,6 +25,7 @@ import 'theme/app_theme.dart';
 import 'ui/mobile/sample/mobile_ui_sample_view.dart';
 import 'ui/responsive/home_view.dart';
 import 'ui/responsive/media_detail_view.dart';
+import 'ui/responsive/media_library_collection_view.dart';
 import 'ui/responsive/player_view.dart';
 import 'ui/screens/media_service_config_screen.dart';
 
@@ -40,6 +42,7 @@ void main() async {
   final preferences = await SharedPreferences.getInstance();
   final securityService = SecurityService();
   final sessionExpiredNotifier = SessionExpiredNotifier();
+  final fileSourceStore = FileSourceStore();
 
   final mediaServiceManager = MediaServiceManager(
     preferences: preferences,
@@ -47,31 +50,23 @@ void main() async {
     sessionExpiredNotifier: sessionExpiredNotifier,
   );
   await mediaServiceManager.initialize();
-  final bootstrapConfig = await loadMockEmbyBootstrapConfig();
-  await mediaServiceManager.setConfig(bootstrapConfig.toMediaServiceConfig());
-  final savedConfig = mediaServiceManager.getSavedConfig();
-  if (savedConfig == null || savedConfig.type != MediaServiceType.emby) {
-    throw StateError('Failed to load Emby config from bootstrap file');
-  }
-  final bootstrapApiClient = EmbyApiClient(
-    config: savedConfig,
-    securityService: securityService,
-    sessionExpiredNotifier: sessionExpiredNotifier,
-  );
-  await bootstrapApiClient.authenticate();
-  final resolvedUserId = (await securityService.readUserId())?.trim() ?? '';
-  if (kDebugMode) {
-    debugPrint(
-      '🚀 MeowHub: bootstrap auth completed, '
-      'fileUserId=${bootstrapConfig.userId}, resolvedUserId=$resolvedUserId',
-    );
-  }
-  sessionExpiredNotifier.markAuthenticated();
-  final mediaRepository = _buildMediaRepository(
+  final fileSourceBootstrap = await _loadFileSourceBootstrap(
+    fileSourceStore: fileSourceStore,
     mediaServiceManager: mediaServiceManager,
-    securityService: securityService,
-    sessionExpiredNotifier: sessionExpiredNotifier,
   );
+
+  final selectedServer = fileSourceBootstrap.selectedServer;
+  if (selectedServer?.config case final selectedConfig?) {
+    final currentConfig = mediaServiceManager.getSavedConfig();
+    if (currentConfig?.credentialNamespace !=
+        selectedConfig.credentialNamespace) {
+      try {
+        await mediaServiceManager.setConfig(selectedConfig);
+      } catch (_) {
+        // Fall back to an empty library when persisted credentials are incomplete.
+      }
+    }
+  }
 
   runApp(
     DevicePreview(
@@ -82,7 +77,9 @@ void main() async {
         preferences: preferences,
         securityService: securityService,
         mediaServiceManager: mediaServiceManager,
-        mediaRepository: mediaRepository,
+        fileSourceStore: fileSourceStore,
+        initialServers: fileSourceBootstrap.servers,
+        initialSelectedServerId: fileSourceBootstrap.selectedServer?.id,
         sessionExpiredNotifier: sessionExpiredNotifier,
       ),
     ),
@@ -95,14 +92,18 @@ class MeowHubApp extends StatefulWidget {
     required this.preferences,
     required this.securityService,
     required this.mediaServiceManager,
-    required this.mediaRepository,
+    required this.fileSourceStore,
+    required this.initialServers,
+    required this.initialSelectedServerId,
     required this.sessionExpiredNotifier,
   });
 
   final SharedPreferences preferences;
   final SecurityService securityService;
   final MediaServiceManager mediaServiceManager;
-  final IMediaRepository mediaRepository;
+  final FileSourceStore fileSourceStore;
+  final List<MediaServerInfo> initialServers;
+  final String? initialSelectedServerId;
   final SessionExpiredNotifier sessionExpiredNotifier;
 
   @override
@@ -143,6 +144,14 @@ class _MeowHubAppState extends State<MeowHubApp> {
         },
       ),
       GoRoute(
+        path: MediaLibraryCollectionView.routePath,
+        builder: (context, state) {
+          final typeParam = state.pathParameters['type'];
+          final mediaType = MediaType.fromValue(typeParam);
+          return MediaLibraryCollectionView(mediaType: mediaType);
+        },
+      ),
+      GoRoute(
         path: PlayerView.routePath,
         builder: (context, state) {
           final mediaItem = state.extra;
@@ -166,17 +175,57 @@ class _MeowHubAppState extends State<MeowHubApp> {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(
-          create: (_) =>
-              AppProvider(mediaServiceManager: widget.mediaServiceManager),
+          create: (_) => AppProvider(
+            mediaServiceManager: widget.mediaServiceManager,
+            fileSourceStore: widget.fileSourceStore,
+            initialServers: widget.initialServers,
+            initialSelectedServerId: widget.initialSelectedServerId,
+          ),
         ),
-        ChangeNotifierProvider(
-          create: (_) =>
-              UserDataProvider(mediaServiceManager: widget.mediaServiceManager),
+        ChangeNotifierProvider<MediaServiceManager>.value(
+          value: widget.mediaServiceManager,
         ),
-        ChangeNotifierProvider(
-          create: (_) =>
-              MediaLibraryProvider(mediaRepository: widget.mediaRepository)
-                ..loadInitialMovies(),
+        ChangeNotifierProxyProvider<MediaServiceManager, UserDataProvider>(
+          create: (context) => UserDataProvider(
+            mediaServiceManager: context.read<MediaServiceManager>(),
+          ),
+          update: (context, manager, previous) {
+            final provider =
+                previous ?? UserDataProvider(mediaServiceManager: manager);
+            provider.updateMediaServiceManager(manager);
+            return provider;
+          },
+        ),
+        Provider<SecurityService>.value(value: widget.securityService),
+        ChangeNotifierProvider<SessionExpiredNotifier>.value(
+          value: widget.sessionExpiredNotifier,
+        ),
+        ProxyProvider3<
+          MediaServiceManager,
+          SecurityService,
+          SessionExpiredNotifier,
+          IMediaRepository
+        >(
+          update:
+              (context, manager, security, sessionExpiredNotifier, previous) {
+                return _buildMediaRepository(
+                  mediaServiceManager: manager,
+                  securityService: security,
+                  sessionExpiredNotifier: sessionExpiredNotifier,
+                );
+              },
+        ),
+        ChangeNotifierProxyProvider<IMediaRepository, MediaLibraryProvider>(
+          create: (context) => MediaLibraryProvider(
+            mediaRepository: context.read<IMediaRepository>(),
+          )..loadInitialMovies(),
+          update: (context, mediaRepository, previous) {
+            final provider =
+                previous ??
+                MediaLibraryProvider(mediaRepository: mediaRepository);
+            provider.updateRepository(mediaRepository);
+            return provider;
+          },
         ),
         ChangeNotifierProxyProvider2<
           MediaLibraryProvider,
@@ -193,12 +242,6 @@ class _MeowHubAppState extends State<MeowHubApp> {
                 mediaLibraryProvider: mediaLibrary,
                 userDataProvider: userData,
               ),
-        ),
-        Provider<MediaServiceManager>.value(value: widget.mediaServiceManager),
-        Provider<IMediaRepository>.value(value: widget.mediaRepository),
-        Provider<SecurityService>.value(value: widget.securityService),
-        ChangeNotifierProvider<SessionExpiredNotifier>.value(
-          value: widget.sessionExpiredNotifier,
         ),
       ],
       child: MaterialApp.router(
@@ -232,22 +275,89 @@ IMediaRepository _buildMediaRepository({
 
   final config = mediaServiceManager.getSavedConfig();
   if (config == null || config.type != MediaServiceType.emby) {
-    throw StateError('No Emby config available when building repository');
+    return const EmptyMediaRepositoryImpl();
   }
-
-  // 3. 实例化真正的 Emby 客户端
   final apiClient = EmbyApiClient(
     config: config,
     securityService: securityService,
     sessionExpiredNotifier: sessionExpiredNotifier,
   );
 
-  debugPrint('🚀 MeowHub: 已启用硬编码 Emby 配置');
-
   return EmbyMediaRepositoryImpl(
     apiClient: apiClient,
     securityService: securityService,
   );
+}
+
+Future<_FileSourceBootstrap> _loadFileSourceBootstrap({
+  required FileSourceStore fileSourceStore,
+  required MediaServiceManager mediaServiceManager,
+}) async {
+  var state = await fileSourceStore.load();
+  if (state.isEmpty) {
+    final savedConfig = mediaServiceManager.getSavedConfig();
+    if (savedConfig != null) {
+      final migratedServer = MediaServerInfo.fromConfig(
+        config: savedConfig,
+        name: _defaultSourceName(savedConfig),
+      );
+      state = PersistedFileSourceState(
+        sources: [
+          PersistedFileSource(
+            id: migratedServer.id,
+            name: migratedServer.name,
+            config: savedConfig,
+          ),
+        ],
+        selectedSourceId: migratedServer.id,
+      );
+      await fileSourceStore.save(state);
+    }
+  }
+
+  final servers = state.sources
+      .map(
+        (source) => MediaServerInfo(
+          id: source.id,
+          name: source.name,
+          baseUrl: source.config.normalizedServerUrl,
+          type: source.config.type,
+          region: source.config.type.displayName,
+          config: source.config,
+        ),
+      )
+      .toList(growable: false);
+
+  MediaServerInfo? selectedServer;
+  if (state.selectedSourceId != null) {
+    for (final server in servers) {
+      if (server.id == state.selectedSourceId) {
+        selectedServer = server;
+        break;
+      }
+    }
+  }
+  selectedServer ??= servers.isNotEmpty ? servers.first : null;
+
+  return _FileSourceBootstrap(servers: servers, selectedServer: selectedServer);
+}
+
+String _defaultSourceName(MediaServiceConfig config) {
+  final host = Uri.tryParse(config.normalizedServerUrl)?.host.trim() ?? '';
+  if (host.isNotEmpty) {
+    return host;
+  }
+  return '${config.type.displayName} 默认源';
+}
+
+class _FileSourceBootstrap {
+  const _FileSourceBootstrap({
+    required this.servers,
+    required this.selectedServer,
+  });
+
+  final List<MediaServerInfo> servers;
+  final MediaServerInfo? selectedServer;
 }
 
 bool _isDevicePreviewEnabled() {

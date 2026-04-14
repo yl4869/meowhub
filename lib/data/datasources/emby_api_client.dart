@@ -40,6 +40,7 @@ class EmbyApiClient {
       EmbyAuthInterceptor(
         securityService: securityService,
         sessionExpiredNotifier: sessionExpiredNotifier,
+        namespace: config.credentialNamespace,
         deviceId: _normalizeDeviceId(config.deviceId),
       ),
     );
@@ -50,16 +51,26 @@ class EmbyApiClient {
   final String _resolvedDeviceId;
   final Dio _dio;
   Future<void>? _ongoingAuthentication;
+  static final Map<String, Future<void>> _sharedAuthentications = {};
 
   String get serverUrl => _config.normalizedServerUrl;
+  String get securityNamespace => _config.credentialNamespace;
 
   Future<void> authenticate() async {
+    if (await _hasUsableSession()) {
+      return;
+    }
+
     final existingAuth = _ongoingAuthentication;
     if (existingAuth != null) {
       return existingAuth;
     }
 
-    final authFuture = _performAuthentication();
+    final sharedAuth =
+        _sharedAuthentications[_config.credentialNamespace] ??
+        _performAuthentication();
+    _sharedAuthentications[_config.credentialNamespace] = sharedAuth;
+    final authFuture = sharedAuth;
     _ongoingAuthentication = authFuture;
 
     try {
@@ -68,21 +79,29 @@ class EmbyApiClient {
       if (identical(_ongoingAuthentication, authFuture)) {
         _ongoingAuthentication = null;
       }
+      if (identical(
+        _sharedAuthentications[_config.credentialNamespace],
+        authFuture,
+      )) {
+        _sharedAuthentications.remove(_config.credentialNamespace);
+      }
     }
   }
 
   Future<void> _performAuthentication() async {
     final username = _config.username?.trim();
     final password =
-        (await _securityService.readPassword()) ?? _config.password?.trim();
-    debugPrint("进行登录测试");
+        (await _securityService.readPassword(
+          namespace: _config.credentialNamespace,
+        )) ??
+        _config.password?.trim();
     if (username == null ||
         username.isEmpty ||
         password == null ||
         password.isEmpty) {
       throw Exception('Emby 登录需要用户名和密码');
     }
-    debugPrint("登录的用户名$username, 登录的密码$password");
+    debugPrint('[EmbyAuth] 开始认证 namespace=${_config.credentialNamespace}');
 
     final response = await post<Map<String, dynamic>>(
       '/emby/Users/AuthenticateByName',
@@ -95,19 +114,26 @@ class EmbyApiClient {
     final accessToken = authResponse.accessToken;
     final userId = authResponse.user.id;
 
-    debugPrint("登录的useID为$userId");
-
-    debugPrint("获取的数据为$data");
-
     if (accessToken.isEmpty || userId.isEmpty) {
       throw Exception('Emby 登录成功但未返回有效的 AccessToken 或 UserId');
     }
 
     await Future.wait([
-      _securityService.writeAccessToken(accessToken),
-      _securityService.writeUserId(userId),
-      _securityService.writePassword(password),
+      _securityService.writeAccessToken(
+        accessToken,
+        namespace: _config.credentialNamespace,
+      ),
+      _securityService.writeUserId(
+        userId,
+        namespace: _config.credentialNamespace,
+      ),
+      _securityService.writePassword(
+        password,
+        namespace: _config.credentialNamespace,
+      ),
     ]);
+
+    debugPrint('[EmbyAuth] 认证成功 userId=$userId');
   }
 
   Future<Response<T>> get<T>(
@@ -318,7 +344,7 @@ class EmbyApiClient {
       queryParameters: const {
         'Limit': '5',
         'Fields':
-            'PrimaryImageAspectRatio,SeriesPrimaryImageTag,ImageTags,BackdropImageTags',
+            'Overview,RunTimeTicks,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ImageTags,BackdropImageTags',
       },
     );
     final data = response.data ?? <String, dynamic>{};
@@ -340,10 +366,7 @@ class EmbyApiClient {
   }
 
   Future<void> _ensureSession() async {
-    final accessToken = await _securityService.readAccessToken();
-    final userId = await _securityService.readUserId();
-
-    if (accessToken?.isNotEmpty == true && userId?.isNotEmpty == true) {
+    if (await _hasUsableSession()) {
       return;
     }
 
@@ -351,18 +374,28 @@ class EmbyApiClient {
   }
 
   Future<String> _requireUserId() async {
-    var userId = await _securityService.readUserId();
+    await _ensureSession();
+    var userId = await _securityService.readUserId(
+      namespace: _config.credentialNamespace,
+    );
     if (userId != null && userId.isNotEmpty) {
       return userId;
     }
-
-    await authenticate();
-    userId = await _securityService.readUserId();
     if (userId == null || userId.isEmpty) {
       throw Exception('Emby 登录后未能获取到用户 ID');
     }
 
     return userId;
+  }
+
+  Future<bool> _hasUsableSession() async {
+    final accessToken = await _securityService.readAccessToken(
+      namespace: _config.credentialNamespace,
+    );
+    final userId = await _securityService.readUserId(
+      namespace: _config.credentialNamespace,
+    );
+    return accessToken?.isNotEmpty == true && userId?.isNotEmpty == true;
   }
 
   void dispose() {

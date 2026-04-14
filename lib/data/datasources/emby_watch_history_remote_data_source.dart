@@ -29,7 +29,9 @@ class EmbyWatchHistoryRemoteDataSourceImpl
 
   @override
   Future<List<EmbyResumeItemDto>> getHistory() async {
-    final rawUserId = await _securityService.readUserId();
+    final rawUserId = await _securityService.readUserId(
+      namespace: _config.credentialNamespace,
+    );
     final userId = rawUserId?.trim() ?? '';
     if (userId.isEmpty) {
       debugPrint(
@@ -126,7 +128,11 @@ class EmbyWatchHistoryRemoteDataSourceImpl
   }
 
   Future<Map<String, String>> _buildDebugHeaders() async {
-    final token = (await _securityService.readAccessToken())?.trim() ?? '';
+    final token =
+        (await _securityService.readAccessToken(
+          namespace: _config.credentialNamespace,
+        ))?.trim() ??
+        '';
     final deviceId = _normalizedDeviceId;
     return <String, String>{
       'Content-Type': 'application/json',

@@ -23,6 +23,25 @@ class MockMediaRepositoryImpl implements IMediaRepository {
   }
 
   @override
+  Future<List<MediaItem>> getRecentWatching() async {
+    await Future.delayed(_networkDelay);
+    return [
+      _movieFixtures[1].copyWith(
+        playbackProgress: const MediaPlaybackProgress(
+          position: Duration(minutes: 42),
+          duration: Duration(minutes: 118),
+        ),
+      ),
+      _seriesFixtures[0].copyWith(
+        playbackProgress: const MediaPlaybackProgress(
+          position: Duration(minutes: 18),
+          duration: Duration(minutes: 46),
+        ),
+      ),
+    ];
+  }
+
+  @override
   Future<MediaItem> getMediaDetail(MediaItem item) async {
     await Future.delayed(_networkDelay);
 

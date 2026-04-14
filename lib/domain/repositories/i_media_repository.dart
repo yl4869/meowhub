@@ -5,6 +5,8 @@ abstract class IMediaRepository {
 
   Future<List<MediaItem>> getSeries();
 
+  Future<List<MediaItem>> getRecentWatching();
+
   Future<MediaItem> getMediaDetail(MediaItem item);
 
   Future<List<MediaItem>> getPlayableItems(MediaItem item);

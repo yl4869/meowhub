@@ -22,6 +22,10 @@ class MobilePlayerScreen extends StatefulWidget {
     this.playUrlOverride,
     this.onShowTrackSelector,
     this.selectionRequest,
+    this.subtitleUri,
+    this.subtitleTitle,
+    this.subtitleLanguage,
+    this.disableSubtitleTrack = false,
   });
 
   final MediaItem mediaItem;
@@ -31,7 +35,12 @@ class MobilePlayerScreen extends StatefulWidget {
   final MeowVideoPlaybackStatusChanged onPlaybackStatusChanged;
   final String? playUrlOverride;
   final VoidCallback? onShowTrackSelector;
-  final Object? selectionRequest; // removed feature; keep param slot stable
+  // 播放页移除音轨/字幕选择
+  final Object? selectionRequest;
+  final String? subtitleUri;
+  final String? subtitleTitle;
+  final String? subtitleLanguage;
+  final bool disableSubtitleTrack;
 
   @override
   State<MobilePlayerScreen> createState() => _MobilePlayerScreenState();
@@ -49,7 +58,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     _udp = context.read<UserDataProvider>();
   }
 
-  // Subtitle feature removed for stability
+  // 播放页移除本地字幕切换
 
   bool get _hasPlayableUrl {
     final playUrl = widget.mediaItem.playUrl;
@@ -121,8 +130,9 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, _) async {
+        final navigator = Navigator.of(context);
         final ok = await _stopAndSync();
-        if (!didPop && ok && mounted) Navigator.of(context).pop();
+        if (!didPop && ok && mounted) navigator.pop();
       },
       child: OrientationBuilder(
         builder: (context, orientation) {
@@ -147,7 +157,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
                 _buildPlayer(),
-                // Track selector under the player
+                                // Track selector under the player
                 if (widget.onShowTrackSelector != null) ...[
                   const SizedBox(height: 12),
                   Align(
@@ -185,16 +195,21 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     if (!_hasPlayableUrl) {
       return _UnavailablePlayerCard(title: widget.mediaItem.title);
     }
-
     return MeowVideoPlayer(
       key: ObjectKey(widget.mediaItem.dataSourceId),
       url: widget.playUrlOverride ?? widget.mediaItem.playUrl!,
       autoPlay: true,
       initialPosition: widget.initialPosition,
       onPlaybackStatusChanged: _handlePlaybackStatusChanged,
-      onPlayerCreated: (p) => _player = p,
+      onPlayerCreated: (p) async {
+        _player = p;
+      },
       overlayCcButton: widget.onShowTrackSelector != null,
       onTapCc: widget.onShowTrackSelector,
+      subtitleUri: widget.subtitleUri,
+      subtitleTitle: widget.subtitleTitle,
+      subtitleLanguage: widget.subtitleLanguage,
+      disableSubtitleTrack: widget.disableSubtitleTrack,
     );
   }
 

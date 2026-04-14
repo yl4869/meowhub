@@ -46,6 +46,55 @@ class _PlayerViewState extends State<PlayerView> {
   int? _selectedSubtitleIndex;
   bool _openSelectorPending = false;
 
+  PlaybackStream? get _selectedSubtitleStream {
+    final plan = _plan;
+    final subtitleIndex = _selectedSubtitleIndex;
+    if (plan == null || subtitleIndex == null || subtitleIndex < 0) {
+      return null;
+    }
+    for (final stream in plan.subtitleStreams) {
+      if (stream.index == subtitleIndex) {
+        return stream;
+      }
+    }
+    return null;
+  }
+
+  bool get _shouldDisablePlayerSubtitleTrack {
+    final subtitleIndex = _selectedSubtitleIndex;
+    if (subtitleIndex != null) {
+      if (subtitleIndex < 0) {
+        return true;
+      }
+      final stream = _selectedSubtitleStream;
+      if (stream != null && !_isTextSubtitle(stream)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String? get _selectedExternalSubtitleUri {
+    final stream = _selectedSubtitleStream;
+    if (stream == null || !_isTextSubtitle(stream)) {
+      return null;
+    }
+    final uri = stream.deliveryUrl?.trim();
+    if (uri == null || uri.isEmpty) {
+      return null;
+    }
+    return uri;
+  }
+
+  bool _isTextSubtitle(PlaybackStream stream) {
+    if (stream.isTextSubtitleStream) {
+      return true;
+    }
+    final codec = stream.codec?.toLowerCase();
+    return codec != null &&
+        const ['srt', 'subrip', 'ass', 'ssa', 'webvtt', 'vtt'].contains(codec);
+  }
+
   EmbyPlaybackRepositoryImpl _buildPlaybackRepository() {
     final manager = context.read<MediaServiceManager>();
     final config = manager.getSavedConfig();
@@ -128,59 +177,72 @@ class _PlayerViewState extends State<PlayerView> {
       context: context,
       showDragHandle: true,
       builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('选择音轨', style: Theme.of(ctx).textTheme.titleMedium),
-                ...plan.audioStreams.map(
-                  (s) => RadioListTile<int>(
-                    title: Text(s.title),
-                    subtitle: Text(
-                      (s.language ?? '') +
-                          (s.codec != null ? ' · ${s.codec}' : ''),
+        return StatefulBuilder(
+          builder: (context, modalSetState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('选择音轨', style: Theme.of(ctx).textTheme.titleMedium),
+                    ...plan.audioStreams.map(
+                      (s) => ListTile(
+                        leading: Icon(
+                          tempAudio == s.index
+                              ? Icons.radio_button_checked
+                              : Icons.radio_button_off,
+                        ),
+                        title: Text(s.title),
+                        subtitle: Text(
+                          (s.language ?? '') +
+                              (s.codec != null ? ' · ${s.codec}' : ''),
+                        ),
+                        onTap: () => modalSetState(() => tempAudio = s.index),
+                      ),
                     ),
-                    value: s.index,
-                    groupValue: tempAudio,
-                    onChanged: (v) => setState(() => tempAudio = v),
-                  ),
+                    const SizedBox(height: 8),
+                    Text('选择字幕', style: Theme.of(ctx).textTheme.titleMedium),
+                    ListTile(
+                      leading: Icon(
+                        (tempSub ?? -1) == -1
+                            ? Icons.radio_button_checked
+                            : Icons.radio_button_off,
+                      ),
+                      title: const Text('无字幕'),
+                      onTap: () => modalSetState(() => tempSub = -1),
+                    ),
+                    ...plan.subtitleStreams.map(
+                      (s) => ListTile(
+                        leading: Icon(
+                          (tempSub ?? -1) == s.index
+                              ? Icons.radio_button_checked
+                              : Icons.radio_button_off,
+                        ),
+                        title: Text(s.title),
+                        onTap: () => modalSetState(() => tempSub = s.index),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton(
+                        onPressed: () {
+                          Navigator.of(ctx).pop();
+                          _applyTrackSelection(
+                            audioIndex: tempAudio,
+                            subtitleIndex: tempSub,
+                          );
+                        },
+                        child: const Text('应用'),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                Text('选择字幕', style: Theme.of(ctx).textTheme.titleMedium),
-                RadioListTile<int>(
-                  title: const Text('无字幕'),
-                  value: -1,
-                  groupValue: tempSub ?? -1,
-                  onChanged: (v) => setState(() => tempSub = v),
-                ),
-                ...plan.subtitleStreams.map(
-                  (s) => RadioListTile<int>(
-                    title: Text(s.title),
-                    value: s.index,
-                    groupValue: tempSub ?? -1,
-                    onChanged: (v) => setState(() => tempSub = v),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: FilledButton(
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                      _applyTrackSelection(
-                        audioIndex: tempAudio,
-                        subtitleIndex: tempSub,
-                      );
-                    },
-                    child: const Text('应用'),
-                  ),
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -248,6 +310,10 @@ class _PlayerViewState extends State<PlayerView> {
           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
           playUrlOverride: _currentUrl ?? _plan?.url,
           onShowTrackSelector: null,
+          subtitleUri: _selectedExternalSubtitleUri,
+          subtitleTitle: _selectedSubtitleStream?.title,
+          subtitleLanguage: _selectedSubtitleStream?.language,
+          disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
         );
       },
       tabletBuilder: (context, maxWidth) {
@@ -260,6 +326,10 @@ class _PlayerViewState extends State<PlayerView> {
           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
           playUrlOverride: _currentUrl ?? _plan?.url,
           onShowTrackSelector: null,
+          subtitleUri: _selectedExternalSubtitleUri,
+          subtitleTitle: _selectedSubtitleStream?.title,
+          subtitleLanguage: _selectedSubtitleStream?.language,
+          disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
         );
       },
     );

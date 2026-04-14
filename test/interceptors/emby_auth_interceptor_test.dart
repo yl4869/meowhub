@@ -6,6 +6,11 @@ import 'package:dio/dio.dart';
 import 'package:meowhub/data/network/emby_auth_interceptor.dart';
 import '../mocks/mock_classes.dart';
 
+class _NoopErrorInterceptorHandler extends ErrorInterceptorHandler {
+  @override
+  void next(DioException error) {}
+}
+
 void main() {
   group('EmbyAuthInterceptor 测试', () {
     test('当响应 401 时触发会话过期通知', () async {
@@ -14,7 +19,7 @@ void main() {
       final mockRequestOptions = RequestOptions(path: '/test');
       final mockResponse = Response(
         requestOptions: mockRequestOptions,
-        statusCode: 401,  // 未授权
+        statusCode: 401, // 未授权
         data: {'error': 'Unauthorized'},
       );
 
@@ -22,6 +27,11 @@ void main() {
         securityService: mockSecurityService,
         sessionExpiredNotifier: mockNotifier,
       );
+      when(
+        () => mockSecurityService.clearAuthSession(
+          namespace: any(named: 'namespace'),
+        ),
+      ).thenAnswer((_) async {});
 
       // 模拟错误处理
       final error = DioException(
@@ -31,12 +41,14 @@ void main() {
       );
 
       // 验证通知被触发
-      interceptor.onError(error, ErrorInterceptorHandler());
-
-      // 等待异步处理完成
-      await Future.delayed(Duration.zero);
+      await interceptor.onError(error, _NoopErrorInterceptorHandler());
 
       // 验证会话过期通知被调用
+      verify(
+        () => mockSecurityService.clearAuthSession(
+          namespace: any(named: 'namespace'),
+        ),
+      ).called(1);
       verify(() => mockNotifier.notifySessionExpired()).called(1);
     });
   });

@@ -12,6 +12,13 @@ class SecurityService {
 
   final FlutterSecureStorage _secureStorage;
 
+  String _scopedKey(String key, String? namespace) {
+    if (namespace == null || namespace.trim().isEmpty) {
+      return key;
+    }
+    return '${namespace.trim()}::$key';
+  }
+
   Future<void> write({required String key, required String value}) {
     return _secureStorage.write(key: key, value: value);
   }
@@ -24,47 +31,54 @@ class SecurityService {
     return _secureStorage.delete(key: key);
   }
 
-  Future<void> writeAccessToken(String token) {
-    return write(key: _accessTokenKey, value: token);
+  Future<void> writeAccessToken(String token, {String? namespace}) {
+    return write(key: _scopedKey(_accessTokenKey, namespace), value: token);
   }
 
-  Future<String?> readAccessToken() {
-    return read(_accessTokenKey);
+  Future<String?> readAccessToken({String? namespace}) {
+    return read(_scopedKey(_accessTokenKey, namespace));
   }
 
-  Future<void> deleteAccessToken() {
-    return delete(_accessTokenKey);
+  Future<void> deleteAccessToken({String? namespace}) {
+    return delete(_scopedKey(_accessTokenKey, namespace));
   }
 
-  Future<void> writeUserId(String userId) {
-    return write(key: _userIdKey, value: userId);
+  Future<void> writeUserId(String userId, {String? namespace}) {
+    return write(key: _scopedKey(_userIdKey, namespace), value: userId);
   }
 
-  Future<String?> readUserId() {
-    return read(_userIdKey);
+  Future<String?> readUserId({String? namespace}) {
+    return read(_scopedKey(_userIdKey, namespace));
   }
 
-  Future<void> deleteUserId() {
-    return delete(_userIdKey);
+  Future<void> deleteUserId({String? namespace}) {
+    return delete(_scopedKey(_userIdKey, namespace));
   }
 
-  Future<void> writePassword(String password) {
-    return write(key: _passwordKey, value: password);
+  Future<void> writePassword(String password, {String? namespace}) {
+    return write(key: _scopedKey(_passwordKey, namespace), value: password);
   }
 
-  Future<String?> readPassword() {
-    return read(_passwordKey);
+  Future<String?> readPassword({String? namespace}) {
+    return read(_scopedKey(_passwordKey, namespace));
   }
 
-  Future<void> deletePassword() {
-    return delete(_passwordKey);
+  Future<void> deletePassword({String? namespace}) {
+    return delete(_scopedKey(_passwordKey, namespace));
   }
 
-  Future<void> clearAuthSession() async {
-    await Future.wait([deleteAccessToken(), deleteUserId()]);
+  Future<void> clearAuthSession({String? namespace}) async {
+    await Future.wait([
+      deleteAccessToken(namespace: namespace),
+      deleteUserId(namespace: namespace),
+    ]);
   }
 
-  Future<void> clearAllSensitiveData() async {
-    await Future.wait([deleteAccessToken(), deleteUserId(), deletePassword()]);
+  Future<void> clearAllSensitiveData({String? namespace}) async {
+    await Future.wait([
+      deleteAccessToken(namespace: namespace),
+      deleteUserId(namespace: namespace),
+      deletePassword(namespace: namespace),
+    ]);
   }
 }

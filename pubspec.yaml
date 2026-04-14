@@ -44,6 +44,7 @@ dependencies:
   dio: ^5.9.0
   flutter_secure_storage: ^9.2.4
   json_annotation: ^4.11.0
+  path_provider: ^2.1.5
   shared_preferences: ^2.2.2
   # media_kit 播放内核（替换 video_player + chewie）
   media_kit: any
@@ -75,9 +76,6 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
-
-  assets:
-    - assets/config/mock_emby_bootstrap.json
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

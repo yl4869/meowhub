@@ -28,8 +28,8 @@ class MobileHomeScreen extends StatelessWidget {
     required this.onRefresh,
     required this.onRetry,
     required this.onMovieTap,
+    required this.onOpenLibraryCollection,
     required this.onServerSelected,
-    required this.onOpenMobileSample,
   });
 
   final double maxWidth;
@@ -45,8 +45,8 @@ class MobileHomeScreen extends StatelessWidget {
   final Future<void> Function() onRefresh;
   final VoidCallback onRetry;
   final ValueChanged<MediaItem> onMovieTap;
+  final ValueChanged<MediaType> onOpenLibraryCollection;
   final ValueChanged<MediaServerInfo> onServerSelected;
-  final VoidCallback onOpenMobileSample;
 
   @override
   Widget build(BuildContext context) {
@@ -135,13 +135,19 @@ class MobileHomeScreen extends StatelessWidget {
                                   Builder(
                                     builder: (context) {
                                       final mediaItem = recentWatching[index];
-                                      final progress = context
+                                      final localProgress = context
                                           .select<UserDataProvider, double>(
                                             (provider) => provider
                                                 .progressFractionForItem(
                                                   mediaItem,
                                                 ),
                                           );
+                                      final progress = localProgress > 0
+                                          ? localProgress
+                                          : mediaItem
+                                                    .playbackProgress
+                                                    ?.fraction ??
+                                                0;
                                       return _RecentWatchCard(
                                         mediaItem: mediaItem,
                                         progress: progress,
@@ -162,9 +168,10 @@ class MobileHomeScreen extends StatelessWidget {
                 child: _ShelfSection(
                   title: '电视剧',
                   subtitle: '适合连刷的剧集推荐',
-                  action: TextButton(
-                    onPressed: onOpenMobileSample,
-                    child: const Text('设计样例'),
+                  action: TextButton.icon(
+                    onPressed: () => onOpenLibraryCollection(MediaType.series),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                    label: const Text('查看全部'),
                   ),
                   child: _PosterShelf(items: series, onMovieTap: onMovieTap),
                 ),
@@ -175,6 +182,11 @@ class MobileHomeScreen extends StatelessWidget {
                   child: _ShelfSection(
                     title: '电影',
                     subtitle: '适合今晚开的精选影片',
+                    action: TextButton.icon(
+                      onPressed: () => onOpenLibraryCollection(MediaType.movie),
+                      icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                      label: const Text('查看全部'),
+                    ),
                     child: _PosterShelf(items: movies, onMovieTap: onMovieTap),
                   ),
                 ),

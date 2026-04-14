@@ -48,7 +48,9 @@ class MediaWithUserDataProvider extends ChangeNotifier {
     return items
         .map((item) {
           final isFavorite = _userDataProvider.isFavorite(item.id);
-          final progress = _userDataProvider.playbackProgressForItem(item);
+          final progress =
+              _userDataProvider.playbackProgressForItem(item) ??
+              item.playbackProgress;
 
           return item.copyWith(
             isFavorite: isFavorite,

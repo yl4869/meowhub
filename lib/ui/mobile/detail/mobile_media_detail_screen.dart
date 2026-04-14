@@ -9,6 +9,7 @@ import '../../../domain/entities/media_service_config.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/cast_list_section.dart';
+import '../../atoms/expandable_overview_section.dart';
 import '../../atoms/info_chip.dart';
 import '../../atoms/info_row.dart';
 import '../../../domain/entities/playback_plan.dart';
@@ -50,8 +51,10 @@ class MobileMediaDetailScreen extends StatefulWidget {
 }
 
 class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
+  static const int _playbackPlanBitrate = 10 * 1000 * 1000;
+
   late int _selectedEpisode;
-  List<PlaybackStream> _subtitleOptions = const [];
+  final Map<String, List<PlaybackStream>> _subtitleOptionsByItem = {};
   bool _loadingSubtitles = false;
   int? _selectedSubtitleIndex;
 
@@ -59,7 +62,26 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   void initState() {
     super.initState();
     _selectedEpisode = widget.initialEpisodeIndex;
-    _refreshSubtitleOptions();
+    _syncSelectedSubtitleForCurrentItem(notify: false);
+  }
+
+  @override
+  void didUpdateWidget(covariant MobileMediaDetailScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final episodeChanged =
+        oldWidget.initialEpisodeIndex != widget.initialEpisodeIndex;
+
+    if (episodeChanged) {
+      _selectedEpisode = widget.initialEpisodeIndex;
+    }
+
+    if (oldWidget.playableItems != widget.playableItems) {
+      _subtitleOptionsByItem.clear();
+    }
+
+    if (oldWidget.playableItems != widget.playableItems || episodeChanged) {
+      _syncSelectedSubtitleForCurrentItem();
+    }
   }
 
   @override
@@ -100,22 +122,10 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                       mediaItem: widget.mediaItem,
                       trailing: SizedBox(
                         width: 104,
-                        child: _SubtitleDropdown(
+                        child: _SubtitlePickerButton(
                           loading: _loadingSubtitles,
-                          options: _subtitleOptions,
-                          value: _selectedSubtitleIndex ?? -1,
-                          onChanged: (v) {
-                            setState(() => _selectedSubtitleIndex = v);
-                            final udp = context.read<UserDataProvider>();
-                            final item = widget.playableItems[_selectedEpisode];
-                            udp.setTrackSelectionForItem(
-                              item,
-                              subtitleIndex: v,
-                              audioIndex: udp
-                                  .trackSelectionForItem(item)
-                                  ?.audioIndex,
-                            );
-                          },
+                          label: _subtitleButtonLabel,
+                          onTap: _openSubtitleSelector,
                         ),
                       ),
                     ),
@@ -185,8 +195,10 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                                   onTap: () {
                                     setState(() {
                                       _selectedEpisode = index;
+                                      _syncSelectedSubtitleForCurrentItem(
+                                        notify: false,
+                                      );
                                     });
-                                    _refreshSubtitleOptions();
                                   },
                                   borderRadius: BorderRadius.circular(14),
                                   child: AnimatedContainer(
@@ -218,21 +230,9 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                     ),
                     const SizedBox(height: 18),
                     AppSurfaceCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '剧情简介',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            widget.mediaItem.overview.isNotEmpty
-                                ? widget.mediaItem.overview
-                                : '暂时还没有这部作品的简介。',
-                            style: Theme.of(context).textTheme.bodyLarge,
-                          ),
-                        ],
+                      child: ExpandableOverviewSection(
+                        overview: widget.mediaItem.overview,
+                        collapsedMaxLines: 4,
                       ),
                     ),
                     const SizedBox(height: 18),
@@ -320,25 +320,69 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
     );
   }
 
-  Future<void> _refreshSubtitleOptions() async {
-    final item = widget.playableItems[_selectedEpisode];
-    final manager = context.read<MediaServiceManager>();
-    final udp = context.read<UserDataProvider>();
-    final config = manager.getSavedConfig();
-    if (config == null || config.type != MediaServiceType.emby) {
-      setState(() {
-        _subtitleOptions = const [];
-        _selectedSubtitleIndex =
-            context
-                .read<UserDataProvider>()
-                .trackSelectionForItem(item)
-                ?.subtitleIndex ??
-            -1;
-      });
+  MediaItem get _currentPlayableItem => widget.playableItems[_selectedEpisode];
+
+  String get _subtitleButtonLabel {
+    if (_loadingSubtitles) {
+      return '加载中';
+    }
+    final selectedIndex = _selectedSubtitleIndex ?? -1;
+    if (selectedIndex < 0) {
+      return '无字幕';
+    }
+    final options = _subtitleOptionsByItem[_currentPlayableItem.mediaKey];
+    final matched = options?.where((stream) => stream.index == selectedIndex);
+    final title = matched?.isNotEmpty == true ? matched!.first.title : null;
+    return title ?? '字幕';
+  }
+
+  void _syncSelectedSubtitleForCurrentItem({bool notify = true}) {
+    final saved = context.read<UserDataProvider>().trackSelectionForItem(
+      _currentPlayableItem,
+    );
+    final nextValue = saved?.subtitleIndex ?? -1;
+    if (!notify || !mounted) {
+      _selectedSubtitleIndex = nextValue;
       return;
     }
+    setState(() {
+      _selectedSubtitleIndex = nextValue;
+    });
+  }
+
+  Future<List<PlaybackStream>> _ensureSubtitleOptions() async {
+    final item = _currentPlayableItem;
+    final manager = context.read<MediaServiceManager>();
+    final udp = context.read<UserDataProvider>();
+    if (!_supportsPlaybackInfo(item)) {
+      if (mounted) {
+        setState(() {
+          _selectedSubtitleIndex =
+              udp.trackSelectionForItem(item)?.subtitleIndex ?? -1;
+        });
+      }
+      return const [];
+    }
+
+    final cached = _subtitleOptionsByItem[item.mediaKey];
+    if (cached != null) {
+      return cached;
+    }
+
+    final config = manager.getSavedConfig();
+    if (config == null || config.type != MediaServiceType.emby) {
+      if (mounted) {
+        setState(() {
+          _selectedSubtitleIndex =
+              udp.trackSelectionForItem(item)?.subtitleIndex ?? -1;
+        });
+      }
+      return const [];
+    }
+
     setState(() => _loadingSubtitles = true);
     try {
+      final saved = udp.trackSelectionForItem(item);
       final api = EmbyApiClient(
         config: config,
         securityService: manager.securityService,
@@ -348,86 +392,131 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
         apiClient: api,
         securityService: manager.securityService,
       );
-      final plan = await GetPlaybackPlanUseCase(repo).call(item);
+      final plan = await GetPlaybackPlanUseCase(repo).call(
+        item,
+        maxStreamingBitrate: _playbackPlanBitrate,
+        requireAvc: true,
+        audioStreamIndex: saved?.audioIndex,
+        subtitleStreamIndex: saved?.subtitleIndex,
+      );
       if (kDebugMode) {
         debugPrint(
           '[Detail] subs fetched=${plan.subtitleStreams.length} item=${item.dataSourceId}',
         );
       }
-      final saved = udp.trackSelectionForItem(item);
-      setState(() {
-        _subtitleOptions = plan.subtitleStreams;
-        _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
-      });
+      _subtitleOptionsByItem[item.mediaKey] = plan.subtitleStreams;
+      if (mounted) {
+        setState(() {
+          _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
+        });
+      }
+      return plan.subtitleStreams;
     } finally {
       if (mounted) setState(() => _loadingSubtitles = false);
     }
   }
+
+  Future<void> _openSubtitleSelector() async {
+    final item = _currentPlayableItem;
+    final options = await _ensureSubtitleOptions();
+    if (!mounted) {
+      return;
+    }
+    final initialValue = _selectedSubtitleIndex ?? -1;
+    final selected = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('选择字幕', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                ListTile(
+                  leading: Icon(
+                    initialValue == -1
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                  ),
+                  title: const Text('无字幕'),
+                  onTap: () => Navigator.of(context).pop(-1),
+                ),
+                ...options.map(
+                  (stream) => ListTile(
+                    leading: Icon(
+                      initialValue == stream.index
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
+                    ),
+                    title: Text(stream.title),
+                    subtitle: stream.language == null
+                        ? null
+                        : Text(stream.language!),
+                    onTap: () => Navigator.of(context).pop(stream.index),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (selected == null || !mounted) {
+      return;
+    }
+    final udp = context.read<UserDataProvider>();
+    udp.setTrackSelectionForItem(
+      item,
+      subtitleIndex: selected,
+      audioIndex: udp.trackSelectionForItem(item)?.audioIndex,
+    );
+    setState(() {
+      _selectedSubtitleIndex = selected;
+    });
+  }
+
+  bool _supportsPlaybackInfo(MediaItem item) {
+    if (item.type == MediaType.movie) {
+      return true;
+    }
+
+    return item.parentTitle != null || item.indexNumber != null;
+  }
 }
 
-class _SubtitleDropdown extends StatelessWidget {
-  const _SubtitleDropdown({
+class _SubtitlePickerButton extends StatelessWidget {
+  const _SubtitlePickerButton({
     required this.loading,
-    required this.options,
-    required this.value,
-    required this.onChanged,
+    required this.label,
+    required this.onTap,
   });
 
   final bool loading;
-  final List<PlaybackStream> options;
-  final int value;
-  final ValueChanged<int> onChanged;
+  final String label;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    if (loading) {
-      return Container(
-        height: 32,
+    return OutlinedButton(
+      onPressed: loading ? null : onTap,
+      style: OutlinedButton.styleFrom(
+        minimumSize: const Size.fromHeight(32),
         padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: AppTheme.cardColor,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white24),
-        ),
-        alignment: Alignment.center,
-        child: const SizedBox(
-          height: 16,
-          width: 16,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      );
-    }
-    final items = <DropdownMenuItem<int>>[
-      const DropdownMenuItem<int>(value: -1, child: Text('无字幕')),
-      ...options.map(
-        (s) => DropdownMenuItem<int>(value: s.index, child: Text(s.title)),
+        side: const BorderSide(color: Colors.white24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        foregroundColor: Colors.white,
       ),
-    ];
-    return Container(
-      height: 32,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(
-        color: AppTheme.cardColor,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white24),
-      ),
-      alignment: Alignment.center,
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<int>(
-          value: value,
-          isExpanded: true,
-          iconSize: 18,
-          style: Theme.of(
-            context,
-          ).textTheme.labelMedium?.copyWith(color: Colors.white),
-          items: items,
-          onChanged: (v) {
-            if (v != null) onChanged(v);
-          },
-          dropdownColor: AppTheme.cardColor,
-          borderRadius: BorderRadius.circular(12),
-        ),
-      ),
+      child: loading
+          ? const SizedBox(
+              height: 16,
+              width: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
     );
   }
 }

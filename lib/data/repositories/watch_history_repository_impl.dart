@@ -38,24 +38,24 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
     return unifiedHistory;
   }
 
-  @override
-  Future<List<WatchHistoryItem>> getHistoryBySource(
-    WatchSourceType sourceType,
-  ) async {
-    final history = switch (sourceType) {
-      WatchSourceType.emby =>
-        (await _embyRemoteDataSource.getHistory())
-            .map(_mapEmbyDtoToEntity)
-            .toList(growable: false),
-      WatchSourceType.local =>
-        (await _localDataSource.getHistory())
-            .map((record) => record.toWatchHistoryItem())
-            .toList(growable: false),
-    };
+    @override
+    Future<List<WatchHistoryItem>> getHistoryBySource(
+      WatchSourceType sourceType,
+    ) async {
+      final history = switch (sourceType) {
+        WatchSourceType.emby =>
+          (await _embyRemoteDataSource.getHistory())
+              .map(_mapEmbyDtoToEntity)
+              .toList(growable: false),
+        WatchSourceType.local =>
+          (await _localDataSource.getHistory())
+              .map((record) => record.toWatchHistoryItem())
+              .toList(growable: false),
+      };
 
-    history.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-    return history;
-  }
+      history.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+      return history;
+    }
 
   @override
   Future<void> updateProgress(WatchHistoryItem item) {

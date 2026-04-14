@@ -68,6 +68,10 @@ class MeowVideoPlayer extends StatefulWidget {
     this.onPlayerCreated,
     this.overlayCcButton = false,
     this.onTapCc,
+    this.subtitleUri,
+    this.subtitleTitle,
+    this.subtitleLanguage,
+    this.disableSubtitleTrack = false,
   });
 
   final String url;
@@ -84,6 +88,10 @@ class MeowVideoPlayer extends StatefulWidget {
   final ValueChanged<Player>? onPlayerCreated;
   final bool overlayCcButton;
   final VoidCallback? onTapCc;
+  final String? subtitleUri;
+  final String? subtitleTitle;
+  final String? subtitleLanguage;
+  final bool disableSubtitleTrack;
 
   @override
   State<MeowVideoPlayer> createState() => _MeowVideoPlayerState();
@@ -123,6 +131,13 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       // ignore: discarded_futures
       _reopenOnSamePlayer(url: widget.url);
       return;
+    }
+    if (oldWidget.subtitleUri != widget.subtitleUri ||
+        oldWidget.subtitleTitle != widget.subtitleTitle ||
+        oldWidget.subtitleLanguage != widget.subtitleLanguage ||
+        oldWidget.disableSubtitleTrack != widget.disableSubtitleTrack) {
+      // ignore: discarded_futures
+      _applySubtitleSelection();
     }
   }
 
@@ -192,6 +207,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         Media(widget.url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
       );
+      await _applySubtitleSelection(player: player);
 
       // 起始位置
       if (widget.initialPosition > Duration.zero) {
@@ -244,6 +260,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         Media(url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
       );
+      await _applySubtitleSelection(player: player);
       final pos =
           seekTo ??
           (widget.initialPosition > Duration.zero
@@ -267,6 +284,44 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   }
 
   final List<StreamSubscription> _subscriptions = [];
+
+  Future<void> _applySubtitleSelection({Player? player}) async {
+    final target = player ?? _player;
+    if (target == null || !_usesFlutterRenderer) {
+      return;
+    }
+    try {
+      final subtitleUri = widget.subtitleUri?.trim();
+      if (subtitleUri != null && subtitleUri.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint('[MeowHub][Subtitle][uri] $subtitleUri');
+        }
+        await target.setSubtitleTrack(
+          SubtitleTrack.uri(
+            subtitleUri,
+            title: widget.subtitleTitle,
+            language: widget.subtitleLanguage,
+          ),
+        );
+        return;
+      }
+      if (widget.disableSubtitleTrack) {
+        if (kDebugMode) {
+          debugPrint('[MeowHub][Subtitle][off]');
+        }
+        await target.setSubtitleTrack(SubtitleTrack.no());
+        return;
+      }
+      if (kDebugMode) {
+        debugPrint('[MeowHub][Subtitle][auto]');
+      }
+      await target.setSubtitleTrack(SubtitleTrack.auto());
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('[MeowHub][Subtitle][error] $e');
+      }
+    }
+  }
 
   void _bindStreams(Player player) {
     void emit() {

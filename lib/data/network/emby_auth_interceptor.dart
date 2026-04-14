@@ -8,12 +8,14 @@ class EmbyAuthInterceptor extends QueuedInterceptor {
   EmbyAuthInterceptor({
     required SecurityService securityService,
     required SessionExpiredNotifier sessionExpiredNotifier,
+    this.namespace = '',
     this.deviceId = 'meowhub-device',
   }) : _securityService = securityService,
        _sessionExpiredNotifier = sessionExpiredNotifier;
 
   final SecurityService _securityService;
   final SessionExpiredNotifier _sessionExpiredNotifier;
+  final String namespace;
   final String deviceId;
 
   @override
@@ -36,7 +38,9 @@ class EmbyAuthInterceptor extends QueuedInterceptor {
 
       // 3. 只有当明确需要 Token 时，才去读取并注入
       if (requiresToken) {
-        final accessToken = await _securityService.readAccessToken();
+        final accessToken = await _securityService.readAccessToken(
+          namespace: namespace,
+        );
         if (accessToken != null && accessToken.isNotEmpty) {
           options.headers['X-Emby-Token'] = accessToken;
           debugPrint('🛡️ [Interceptor] 已注入 Token');
@@ -62,7 +66,7 @@ class EmbyAuthInterceptor extends QueuedInterceptor {
     ErrorInterceptorHandler handler,
   ) async {
     if (err.response?.statusCode == 401) {
-      await _securityService.clearAuthSession();
+      await _securityService.clearAuthSession(namespace: namespace);
       _sessionExpiredNotifier.notifySessionExpired();
     }
     handler.next(err);
