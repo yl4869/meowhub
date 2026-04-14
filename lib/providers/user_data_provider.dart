@@ -1,13 +1,15 @@
 import 'package:flutter/foundation.dart';
 
 import '../data/datasources/emby_watch_history_remote_data_source.dart';
+import '../data/models/emby/emby_resume_item_dto.dart';
 import '../data/datasources/local_watch_history_data_source.dart';
 import '../data/repositories/watch_history_repository_impl.dart';
 import '../domain/entities/watch_history_item.dart';
+import '../domain/entities/media_service_config.dart';
 import '../domain/repositories/watch_history_repository.dart';
 import '../domain/repositories/media_service_manager.dart';
 import '../domain/usecases/update_watch_progress.dart';
-import '../models/media_item.dart';
+import '../domain/entities/media_item.dart';
 
 /// 用户个人数据 Provider
 /// 管理用户的收藏、观看历史、播放进度等个人数据
@@ -29,6 +31,9 @@ class UserDataProvider extends ChangeNotifier {
   final Map<int, MediaItem> _favoriteItems = {};
   final Map<String, int> _recentEpisodeIndices = {'1002': 2, '1007': 0};
   List<WatchHistoryItem> _watchHistory = const [];
+  bool _isLoading = false; // 防并发加载锁
+  // 每个作品的音轨/字幕选择（仅内存保存，退出播放器后继续生效）
+  final Map<String, TrackSelection> _trackSelections = {};
 
   // Getters
   List<MediaItem> get favoriteItems => _favoriteItems.values.toList();
@@ -114,6 +119,22 @@ class UserDataProvider extends ChangeNotifier {
     return playbackProgressForItem(mediaItem)?.fraction ?? 0;
   }
 
+  // Track selection APIs
+  TrackSelection? trackSelectionForItem(MediaItem mediaItem) {
+    return _trackSelections[mediaItem.mediaKey];
+  }
+
+  void setTrackSelectionForItem(
+    MediaItem mediaItem, {
+    int? audioIndex,
+    int? subtitleIndex,
+  }) {
+    _trackSelections[mediaItem.mediaKey] = TrackSelection(
+      audioIndex: audioIndex,
+      subtitleIndex: subtitleIndex,
+    );
+  }
+
   // Actions
   bool toggleFavorite(MediaItem mediaItem) {
     if (isFavorite(mediaItem.id)) {
@@ -139,6 +160,7 @@ class UserDataProvider extends ChangeNotifier {
     WatchHistoryItem item, {
     int? episodeIndex,
   }) async {
+    // 保持原有的“完整更新”路径：本地写入 + 服务器持久化 + 列表刷新
     _upsertWatchHistory(item, episodeIndex: episodeIndex);
     await _updateWatchProgress(item);
     await _loadWatchHistory();
@@ -174,7 +196,8 @@ class UserDataProvider extends ChangeNotifier {
       sourceType: sourceType,
     );
 
-    await updateProgress(historyItem, episodeIndex: episodeIndex);
+    // 内存更新：禁止 notifyListeners，禁止任何 IO
+    _upsertWatchHistory(historyItem, episodeIndex: episodeIndex, notify: false);
   }
 
   Future<void> markRecentlyWatched(
@@ -222,6 +245,58 @@ class UserDataProvider extends ChangeNotifier {
     );
 
     await updateProgress(historyItem, episodeIndex: episodeIndex);
+  }
+
+  // ---------------- 新增：仅内存更新，不触发 IO ----------------
+  /// 仅在内存中更新观看进度，不做任何网络/数据库 IO，也不触发重绘风暴。
+  void updateProgressMemoryOnly(WatchHistoryItem item, {int? episodeIndex}) {
+    _upsertWatchHistory(item, episodeIndex: episodeIndex, notify: false);
+  }
+
+  /// 仅在内存中更新指定 MediaItem 的播放进度。
+  void updatePlaybackProgressMemoryOnlyForItem(
+    MediaItem mediaItem, {
+    required Duration position,
+    Duration duration = Duration.zero,
+    int? episodeIndex,
+  }) {
+    final previous = _watchHistoryItemFor(
+      mediaItem.dataSourceId,
+      sourceType: mediaItem.sourceType,
+    );
+    final normalizedPosition = position < Duration.zero
+        ? Duration.zero
+        : position;
+    final normalizedDuration = duration > Duration.zero
+        ? duration
+        : previous?.duration ?? Duration.zero;
+
+    final historyItem = WatchHistoryItem(
+      id: mediaItem.dataSourceId,
+      title: mediaItem.title.isNotEmpty
+          ? mediaItem.title
+          : previous?.title ?? '未知视频',
+      poster: mediaItem.posterUrl ?? previous?.poster ?? '',
+      position: normalizedPosition,
+      duration: normalizedDuration,
+      updatedAt: DateTime.now(),
+      sourceType: mediaItem.sourceType,
+    );
+
+    updateProgressMemoryOnly(historyItem, episodeIndex: episodeIndex);
+  }
+
+  /// 在退出播放时，将内存中的最终进度一次性写入服务器。
+  Future<void> syncProgressToServerForItem(MediaItem mediaItem) async {
+    final latest = _watchHistoryItemFor(
+      mediaItem.dataSourceId,
+      sourceType: mediaItem.sourceType,
+    );
+    if (latest == null) return;
+
+    await _updateWatchProgress(latest);
+    // 单次刷新以同步最新状态到 UI（非高频）。
+    await _loadWatchHistory();
   }
 
   void clearPlaybackProgress(int mediaId) {
@@ -282,11 +357,14 @@ class UserDataProvider extends ChangeNotifier {
       sourceType: mediaItem.sourceType,
     );
 
-    await updateProgress(historyItem, episodeIndex: episodeIndex);
+    // 内存更新：禁止 notifyListeners，禁止任何 IO
+    _upsertWatchHistory(historyItem, episodeIndex: episodeIndex, notify: false);
   }
 
   // Private methods
   Future<void> _loadWatchHistory() async {
+    if (_isLoading) return;
+    _isLoading = true;
     try {
       debugPrint('MeowHub-Log: 开始获取观看历史...');
       _watchHistory = await _watchHistoryRepository.getHistoryBySource(
@@ -301,15 +379,19 @@ class UserDataProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('MeowHub-Log: 获取历史失败，错误详情: $e');
+    } finally {
+      _isLoading = false;
     }
   }
 
   WatchHistoryRepository _buildWatchHistoryRepository() {
-    final mediaService = _mediaServiceManager.currentService;
-    if (mediaService != null) {
+    final savedConfig = _mediaServiceManager.getSavedConfig();
+    if (savedConfig != null && savedConfig.type == MediaServiceType.emby) {
       return WatchHistoryRepositoryImpl(
-        embyRemoteDataSource: RemoteWatchHistoryDataSourceAdapter(
-          mediaService: mediaService,
+        embyRemoteDataSource: EmbyWatchHistoryRemoteDataSourceImpl(
+          config: savedConfig,
+          securityService: _mediaServiceManager.securityService,
+          sessionExpiredNotifier: _mediaServiceManager.sessionExpiredNotifier,
         ),
         localDataSource: InMemoryLocalWatchHistoryDataSource(),
       );
@@ -318,23 +400,35 @@ class UserDataProvider extends ChangeNotifier {
     return WatchHistoryRepositoryImpl(
       embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(
         initialHistory: [
-          WatchHistoryItem(
+          EmbyResumeItemDto(
             id: '1002',
-            title: 'Moonlit Harbor',
-            poster: '',
-            position: Duration(minutes: 34, seconds: 12),
-            duration: Duration(hours: 1, minutes: 52, seconds: 18),
-            updatedAt: DateTime(2026, 4, 12, 20, 30),
-            sourceType: WatchSourceType.emby,
+            name: 'Moonlit Harbor',
+            primaryImageUrl: '',
+            playbackPositionTicks:
+                const Duration(minutes: 34, seconds: 12).inMilliseconds * 10000,
+            runTimeTicks:
+                const Duration(
+                  hours: 1,
+                  minutes: 52,
+                  seconds: 18,
+                ).inMilliseconds *
+                10000,
+            lastPlayedDate: DateTime(2026, 4, 12, 20, 30).toIso8601String(),
           ),
-          WatchHistoryItem(
+          EmbyResumeItemDto(
             id: '1007',
-            title: 'Glass Kingdom',
-            poster: '',
-            position: Duration(minutes: 12, seconds: 5),
-            duration: Duration(hours: 2, minutes: 6, seconds: 40),
-            updatedAt: DateTime(2026, 4, 11, 21, 10),
-            sourceType: WatchSourceType.emby,
+            name: 'Glass Kingdom',
+            primaryImageUrl: '',
+            playbackPositionTicks:
+                const Duration(minutes: 12, seconds: 5).inMilliseconds * 10000,
+            runTimeTicks:
+                const Duration(
+                  hours: 2,
+                  minutes: 6,
+                  seconds: 40,
+                ).inMilliseconds *
+                10000,
+            lastPlayedDate: DateTime(2026, 4, 11, 21, 10).toIso8601String(),
           ),
         ],
       ),
@@ -355,7 +449,11 @@ class UserDataProvider extends ChangeNotifier {
     return null;
   }
 
-  void _upsertWatchHistory(WatchHistoryItem item, {int? episodeIndex}) {
+  void _upsertWatchHistory(
+    WatchHistoryItem item, {
+    int? episodeIndex,
+    bool notify = true,
+  }) {
     _watchHistory = <WatchHistoryItem>[
       item,
       ..._watchHistory.where(
@@ -367,29 +465,16 @@ class UserDataProvider extends ChangeNotifier {
       _recentEpisodeIndices[item.id] = episodeIndex;
     }
 
-    notifyListeners();
+    if (notify) {
+      notifyListeners();
+    }
   }
 }
 
-class MediaPlaybackProgress {
-  const MediaPlaybackProgress({required this.position, required this.duration});
+/// 用户在 UI 中选择的音轨/字幕索引（可空表示跟随服务器默认）。
+class TrackSelection {
+  const TrackSelection({this.audioIndex, this.subtitleIndex});
 
-  final Duration position;
-  final Duration duration;
-
-  double get fraction {
-    if (duration <= Duration.zero) {
-      return 0;
-    }
-
-    final rawFraction = position.inMilliseconds / duration.inMilliseconds;
-    return rawFraction.clamp(0.0, 1.0).toDouble();
-  }
-
-  MediaPlaybackProgress copyWith({Duration? position, Duration? duration}) {
-    return MediaPlaybackProgress(
-      position: position ?? this.position,
-      duration: duration ?? this.duration,
-    );
-  }
+  final int? audioIndex; // null 表示未指定，沿用默认
+  final int? subtitleIndex; // null 表示未指定，沿用默认 / -1 表示明确关闭字幕
 }

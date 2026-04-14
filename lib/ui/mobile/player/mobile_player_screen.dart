@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+// import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
-import '../../../models/media_item.dart';
+import '../../../domain/entities/media_item.dart';
+import 'package:media_kit/media_kit.dart' show Player;
 import '../../../providers/app_provider.dart';
 import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
@@ -8,7 +11,7 @@ import '../../atoms/app_surface_card.dart';
 import '../../atoms/duration_formatter.dart';
 import '../../atoms/meow_video_player.dart';
 
-class MobilePlayerScreen extends StatelessWidget {
+class MobilePlayerScreen extends StatefulWidget {
   const MobilePlayerScreen({
     super.key,
     required this.mediaItem,
@@ -16,6 +19,9 @@ class MobilePlayerScreen extends StatelessWidget {
     required this.savedProgress,
     required this.initialPosition,
     required this.onPlaybackStatusChanged,
+    this.playUrlOverride,
+    this.onShowTrackSelector,
+    this.selectionRequest,
   });
 
   final MediaItem mediaItem;
@@ -23,54 +29,196 @@ class MobilePlayerScreen extends StatelessWidget {
   final MediaPlaybackProgress? savedProgress;
   final Duration initialPosition;
   final MeowVideoPlaybackStatusChanged onPlaybackStatusChanged;
+  final String? playUrlOverride;
+  final VoidCallback? onShowTrackSelector;
+  final Object? selectionRequest; // removed feature; keep param slot stable
+
+  @override
+  State<MobilePlayerScreen> createState() => _MobilePlayerScreenState();
+}
+
+class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
+  MeowVideoPlaybackStatus? _latestStatus;
+  Player? _player;
+  late final UserDataProvider _udp;
+
+  @override
+  void initState() {
+    super.initState();
+    // 预先抓取 Provider 引用，避免在 dispose/异步回调里向上查找祖先导致断言
+    _udp = context.read<UserDataProvider>();
+  }
+
+  // Subtitle feature removed for stability
 
   bool get _hasPlayableUrl {
-    final playUrl = mediaItem.playUrl;
+    final playUrl = widget.mediaItem.playUrl;
     return playUrl != null && playUrl.isNotEmpty;
+  }
+
+  void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
+    _latestStatus = status;
+    // 仅内存更新，切断重绘循环
+    if (status.isInitialized) {
+      _udp.updatePlaybackProgressMemoryOnlyForItem(
+        widget.mediaItem,
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    widget.onPlaybackStatusChanged(status);
+  }
+
+  Future<bool> _stopAndSync() async {
+    final capturedItem = widget.mediaItem;
+    final status = _latestStatus;
+    if (status != null && status.isInitialized) {
+      _udp.updatePlaybackProgressMemoryOnlyForItem(
+        capturedItem,
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    final p = _player;
+    if (p != null) {
+      try {
+        await p.stop();
+      } catch (_) {}
+    }
+    await _udp.syncProgressToServerForItem(capturedItem);
+    return true;
+  }
+
+  @override
+  void dispose() {
+    // 退出时：先尝试同步最后位置
+    final status = _latestStatus;
+    if (status != null && status.isInitialized) {
+      _udp.updatePlaybackProgressMemoryOnlyForItem(
+        widget.mediaItem,
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    // 尽量先停止音频流并释放 VideoController，避免退出后残留音轨
+    final p = _player;
+    if (p != null) {
+      try {
+        // ignore: discarded_futures
+        p.stop();
+      } catch (_) {}
+      try {
+        p.dispose();
+      } catch (_) {}
+    }
+    _udp.syncProgressToServerForItem(widget.mediaItem);
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    // 支持预测性返回：先停音频/同步，再退出
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, _) async {
+        final ok = await _stopAndSync();
+        if (!didPop && ok && mounted) Navigator.of(context).pop();
+      },
+      child: OrientationBuilder(
+        builder: (context, orientation) {
+          final isLandscape = orientation == Orientation.landscape;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('播放中')),
-      body: ListView(
-        physics: const BouncingScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-        children: [
-          if (_hasPlayableUrl)
-            MeowVideoPlayer(
-              url: mediaItem.playUrl!,
-              autoPlay: true,
-              initialPosition: initialPosition,
-              onPlaybackStatusChanged: onPlaybackStatusChanged,
-            )
-          else
-            _UnavailablePlayerCard(title: mediaItem.title),
-          const SizedBox(height: 20),
-          Text(mediaItem.title, style: theme.textTheme.headlineMedium),
-          if (mediaItem.originalTitle.isNotEmpty &&
-              mediaItem.originalTitle != mediaItem.title) ...[
-            const SizedBox(height: 8),
-            Text(mediaItem.originalTitle, style: theme.textTheme.bodyMedium),
-          ],
-          const SizedBox(height: 18),
-          _PlaybackInfoCard(
-            selectedServer: selectedServer,
-            playbackProgress: savedProgress,
-            initialPosition: initialPosition,
-          ),
-          const SizedBox(height: 18),
-          _PlaybackHintCard(
-            hasSavedProgress: savedProgress != null,
-            overview: mediaItem.overview,
-          ),
-        ],
+          if (isLandscape) {
+            return Scaffold(
+              backgroundColor: Colors.black,
+              body: Center(child: _buildPlayer()),
+            );
+          }
+
+          return Scaffold(
+            appBar: AppBar(
+              title: Text(widget.mediaItem.title),
+              centerTitle: true,
+              backgroundColor: AppTheme.backgroundColor,
+              surfaceTintColor: Colors.transparent,
+            ),
+            body: ListView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+              children: [
+                _buildPlayer(),
+                // Track selector under the player
+                if (widget.onShowTrackSelector != null) ...[
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: OutlinedButton.icon(
+                      onPressed: widget.onShowTrackSelector,
+                      icon: const Icon(Icons.library_music_outlined),
+                      label: const Text('音轨/字幕'),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                _buildTitleSection(context),
+                const SizedBox(height: 18),
+                _PlaybackInfoCard(
+                  selectedServer: widget.selectedServer,
+                  playbackProgress: widget.savedProgress,
+                  initialPosition: widget.initialPosition,
+                ),
+                const SizedBox(height: 18),
+                _PlaybackHintCard(
+                  hasSavedProgress: widget.savedProgress != null,
+                  overview: widget.mediaItem.overview,
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
+
+  // 抽离播放器构建逻辑
+  Widget _buildPlayer() {
+    if (!_hasPlayableUrl) {
+      return _UnavailablePlayerCard(title: widget.mediaItem.title);
+    }
+
+    return MeowVideoPlayer(
+      key: ObjectKey(widget.mediaItem.dataSourceId),
+      url: widget.playUrlOverride ?? widget.mediaItem.playUrl!,
+      autoPlay: true,
+      initialPosition: widget.initialPosition,
+      onPlaybackStatusChanged: _handlePlaybackStatusChanged,
+      onPlayerCreated: (p) => _player = p,
+      overlayCcButton: widget.onShowTrackSelector != null,
+      onTapCc: widget.onShowTrackSelector,
+    );
+  }
+
+  // 抽离标题区域逻辑
+  Widget _buildTitleSection(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(widget.mediaItem.title, style: theme.textTheme.headlineMedium),
+        if (widget.mediaItem.originalTitle.isNotEmpty &&
+            widget.mediaItem.originalTitle != widget.mediaItem.title) ...[
+          const SizedBox(height: 8),
+          Text(
+            widget.mediaItem.originalTitle,
+            style: theme.textTheme.bodyMedium,
+          ),
+        ],
+      ],
+    );
+  }
 }
+
+// --- 以下辅助组件保持不变 ---
 
 class _PlaybackInfoCard extends StatelessWidget {
   const _PlaybackInfoCard({

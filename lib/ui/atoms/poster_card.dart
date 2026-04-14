@@ -2,7 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 
-import '../../models/media_item.dart';
+import '../../domain/entities/media_item.dart';
 import '../../theme/app_theme.dart';
 
 class PosterCard extends StatelessWidget {
@@ -46,11 +46,7 @@ class PosterCard extends StatelessWidget {
                 if (isRecent)
                   const Positioned(top: 10, left: 10, child: _RecentBadge()),
                 if (isFavorite)
-                  Positioned(
-                    top: 42,
-                    left: 10,
-                    child: const _FavoriteBadge(),
-                  ),
+                  Positioned(top: 42, left: 10, child: const _FavoriteBadge()),
                 Positioned(
                   left: 0,
                   right: 0,

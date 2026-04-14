@@ -6,11 +6,15 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:meowhub/domain/entities/media_service_config.dart';
 import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
+import 'data/datasources/emby_api_client.dart';
+import 'data/repositories/emby_media_repository_impl.dart';
+import 'data/repositories/mock_media_repository_impl.dart';
+import 'domain/entities/media_item.dart';
+import 'domain/entities/media_service_config.dart';
+import 'domain/repositories/i_media_repository.dart';
 import 'domain/repositories/media_service_manager.dart';
-import 'models/media_item.dart';
 import 'providers/app_provider.dart';
 import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
@@ -22,12 +26,23 @@ import 'ui/responsive/media_detail_view.dart';
 import 'ui/responsive/player_view.dart';
 import 'ui/screens/media_service_config_screen.dart';
 
+// 在 main.dart 的顶部或 build 逻辑之前定义
+const _hardcodedEmbyConfig = MediaServiceConfig(
+  type: MediaServiceType.emby,
+  serverUrl: 'http://172.22.73.65:8096', // 你的服务器地址
+  username: 'yunlang', // 你的用户名
+  password: 'Asadashino', // 填入你的真实密码
+  // 使用 GUID 格式的 DeviceId 避免服务器解析 500
+  deviceId: '7fb3a52c-d922-4a0d-852a-9e69397621f3',
+);
+
 const List<Locale> _supportedLocales = [Locale('zh', 'CN'), Locale('en', 'US')];
 
 const String _devicePreviewMode = String.fromEnvironment(
   'DEVICE_PREVIEW',
   defaultValue: 'auto',
 );
+const bool _useMockRepository = bool.fromEnvironment('USE_MOCK_REPOSITORY');
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,18 +56,14 @@ void main() async {
     sessionExpiredNotifier: sessionExpiredNotifier,
   );
   await mediaServiceManager.initialize();
-
-  // --- 硬编码注入开始 ---
-  final debugConfig = MediaServiceConfig(
-    type: MediaServiceType.emby,
-    serverUrl: 'http://172.22.73.65:8096', // 你的服务器地址
-    username: 'yunlang', // 你的用户名
-    password: 'Asadashino', // 你的真实密码
-    deviceId: 'debug-mac-device',
+  // Ensure MediaServiceManager has a valid config so PlayerView can build PlaybackPlan.
+  // In dev, we use the hardcoded Emby config; in production this is set via the login screen.
+  await mediaServiceManager.setConfig(_hardcodedEmbyConfig);
+  final mediaRepository = _buildMediaRepository(
+    mediaServiceManager: mediaServiceManager,
+    securityService: securityService,
+    sessionExpiredNotifier: sessionExpiredNotifier,
   );
-  // 强行把这个配置存进去并初始化服务
-  await mediaServiceManager.setConfig(debugConfig);
-  // --- 硬编码注入结束 ---
 
   runApp(
     DevicePreview(
@@ -63,6 +74,7 @@ void main() async {
         preferences: preferences,
         securityService: securityService,
         mediaServiceManager: mediaServiceManager,
+        mediaRepository: mediaRepository,
         sessionExpiredNotifier: sessionExpiredNotifier,
       ),
     ),
@@ -75,12 +87,14 @@ class MeowHubApp extends StatefulWidget {
     required this.preferences,
     required this.securityService,
     required this.mediaServiceManager,
+    required this.mediaRepository,
     required this.sessionExpiredNotifier,
   });
 
   final SharedPreferences preferences;
   final SecurityService securityService;
   final MediaServiceManager mediaServiceManager;
+  final IMediaRepository mediaRepository;
   final SessionExpiredNotifier sessionExpiredNotifier;
 
   @override
@@ -152,9 +166,9 @@ class _MeowHubAppState extends State<MeowHubApp> {
               UserDataProvider(mediaServiceManager: widget.mediaServiceManager),
         ),
         ChangeNotifierProvider(
-          create: (_) => MediaLibraryProvider(
-            mediaServiceManager: widget.mediaServiceManager,
-          )..loadInitialMovies(),
+          create: (_) =>
+              MediaLibraryProvider(mediaRepository: widget.mediaRepository)
+                ..loadInitialMovies(),
         ),
         ChangeNotifierProxyProvider2<
           MediaLibraryProvider,
@@ -173,6 +187,7 @@ class _MeowHubAppState extends State<MeowHubApp> {
               ),
         ),
         Provider<MediaServiceManager>.value(value: widget.mediaServiceManager),
+        Provider<IMediaRepository>.value(value: widget.mediaRepository),
         Provider<SecurityService>.value(value: widget.securityService),
         ChangeNotifierProvider<SessionExpiredNotifier>.value(
           value: widget.sessionExpiredNotifier,
@@ -193,6 +208,35 @@ class _MeowHubAppState extends State<MeowHubApp> {
       ),
     );
   }
+}
+
+/// Refactor reason:
+/// Dependency injection is centralized in the composition root, so providers
+/// consume abstractions and never decide mock/remote behavior themselves.
+IMediaRepository _buildMediaRepository({
+  required MediaServiceManager mediaServiceManager,
+  required SecurityService securityService,
+  required SessionExpiredNotifier sessionExpiredNotifier,
+}) {
+  if (_useMockRepository) {
+    return const MockMediaRepositoryImpl();
+  }
+
+  const config = _hardcodedEmbyConfig;
+
+  // 3. 实例化真正的 Emby 客户端
+  final apiClient = EmbyApiClient(
+    config: config,
+    securityService: securityService,
+    sessionExpiredNotifier: sessionExpiredNotifier,
+  );
+
+  debugPrint('🚀 MeowHub: 已启用硬编码 Emby 配置');
+
+  return EmbyMediaRepositoryImpl(
+    apiClient: apiClient,
+    securityService: securityService,
+  );
 }
 
 bool _isDevicePreviewEnabled() {

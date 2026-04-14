@@ -2,6 +2,7 @@ import '../../domain/entities/watch_history_item.dart';
 import '../../domain/repositories/watch_history_repository.dart';
 import '../datasources/emby_watch_history_remote_data_source.dart';
 import '../datasources/local_watch_history_data_source.dart';
+import '../models/emby/emby_resume_item_dto.dart';
 import '../models/playback_record.dart';
 
 class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
@@ -16,7 +17,8 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
 
   @override
   Future<List<WatchHistoryItem>> getUnifiedHistory() async {
-    final embyHistory = await _embyRemoteDataSource.getHistory();
+    final embyDtos = await _embyRemoteDataSource.getHistory();
+    final embyHistory = embyDtos.map(_mapEmbyDtoToEntity).toList();
     final localHistory = await _localDataSource.getHistory();
 
     final merged = <String, WatchHistoryItem>{};
@@ -37,12 +39,18 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   }
 
   @override
-  Future<List<WatchHistoryItem>> getHistoryBySource(WatchSourceType sourceType) async {
+  Future<List<WatchHistoryItem>> getHistoryBySource(
+    WatchSourceType sourceType,
+  ) async {
     final history = switch (sourceType) {
-      WatchSourceType.emby => await _embyRemoteDataSource.getHistory(),
-      WatchSourceType.local => (await _localDataSource.getHistory())
-          .map((record) => record.toWatchHistoryItem())
-          .toList(growable: false),
+      WatchSourceType.emby =>
+        (await _embyRemoteDataSource.getHistory())
+            .map(_mapEmbyDtoToEntity)
+            .toList(growable: false),
+      WatchSourceType.local =>
+        (await _localDataSource.getHistory())
+            .map((record) => record.toWatchHistoryItem())
+            .toList(growable: false),
     };
 
     history.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
@@ -52,10 +60,28 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   @override
   Future<void> updateProgress(WatchHistoryItem item) {
     return switch (item.sourceType) {
-      WatchSourceType.emby => _embyRemoteDataSource.updateProgress(item),
+      WatchSourceType.emby => _embyRemoteDataSource.updateProgress(
+        itemId: item.id,
+        position: item.position,
+      ),
       WatchSourceType.local => _localDataSource.updateProgress(
         PlaybackRecord.fromWatchHistoryItem(item),
       ),
     };
+  }
+
+  WatchHistoryItem _mapEmbyDtoToEntity(EmbyResumeItemDto dto) {
+    final updatedAt = dto.lastPlayedDate != null
+        ? DateTime.tryParse(dto.lastPlayedDate!) ?? DateTime.now()
+        : DateTime.now();
+    return WatchHistoryItem(
+      id: dto.id,
+      title: dto.name,
+      poster: dto.primaryImageUrl ?? '',
+      position: Duration(milliseconds: dto.playbackPositionTicks ~/ 10000),
+      duration: Duration(milliseconds: dto.runTimeTicks ~/ 10000),
+      updatedAt: updatedAt,
+      sourceType: WatchSourceType.emby,
+    );
   }
 }

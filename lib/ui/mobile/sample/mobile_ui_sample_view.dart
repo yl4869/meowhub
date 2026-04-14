@@ -2,7 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../../models/media_item.dart';
+import '../../../domain/entities/media_item.dart';
 import '../../../providers/media_library_provider.dart';
 import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
@@ -19,18 +19,22 @@ class MobileUiSampleView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final mediaLibraryState = context.select<MediaLibraryProvider, MediaLibraryState>(
-      (provider) => provider.state,
-    );
+    final mediaLibraryState = context
+        .select<MediaLibraryProvider, MediaLibraryState>(
+          (provider) => provider.state,
+        );
     final mediaLibraryProvider = context.read<MediaLibraryProvider>();
     final featured = mediaLibraryState.movies.length > 1
         ? mediaLibraryState.movies[1]
-        : (mediaLibraryState.movies.isNotEmpty ? mediaLibraryState.movies.first : null);
+        : (mediaLibraryState.movies.isNotEmpty
+              ? mediaLibraryState.movies.first
+              : null);
     final continueWatching = mediaLibraryState.movies.take(3).toList();
     final recommendations = mediaLibraryState.movies.length > 3
         ? mediaLibraryState.movies.skip(3).take(6).toList()
         : mediaLibraryState.movies;
-    final isInitialLoading = mediaLibraryState.isLoading && mediaLibraryState.movies.isEmpty;
+    final isInitialLoading =
+        mediaLibraryState.isLoading && mediaLibraryState.movies.isEmpty;
 
     return Scaffold(
       body: DecoratedBox(

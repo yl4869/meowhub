@@ -36,10 +36,10 @@ class MediaServiceConfig {
     return switch (type) {
       MediaServiceType.emby =>
         serverUrl.isNotEmpty &&
-        (username?.trim().isNotEmpty ?? false) &&
-        (password?.trim().isNotEmpty ?? false),
-      MediaServiceType.plex || MediaServiceType.jellyfin =>
-        serverUrl.isNotEmpty,
+            (username?.trim().isNotEmpty ?? false) &&
+            (password?.trim().isNotEmpty ?? false),
+      MediaServiceType.plex ||
+      MediaServiceType.jellyfin => serverUrl.isNotEmpty,
     };
   }
 

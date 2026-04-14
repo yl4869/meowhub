@@ -2,11 +2,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/services/security_service.dart';
 import '../../core/session/session_expired_notifier.dart';
+import '../../data/datasources/emby_api_client.dart';
 import '../entities/media_service_config.dart';
-import '../repositories/media_service.dart';
 
 /// 媒体服务管理器
-/// 负责管理当前活跃的媒体服务和配置持久化。
+/// 负责媒体配置持久化和连接验证，不再持有运行时 service 实例。
 class MediaServiceManager {
   MediaServiceManager({
     required SharedPreferences preferences,
@@ -25,10 +25,8 @@ class MediaServiceManager {
   final SecurityService _securityService;
   final SessionExpiredNotifier _sessionExpiredNotifier;
 
-  MediaService? _currentService;
   MediaServiceConfig? _savedConfig;
 
-  MediaService? get currentService => _currentService;
   bool get hasConfiguredService => _savedConfig != null;
 
   MediaServiceConfig? getSavedConfig() => _savedConfig;
@@ -77,16 +75,11 @@ class MediaServiceManager {
         _securityService.deletePassword(),
       _securityService.clearAuthSession(),
     ]);
-
     _savedConfig = config;
-    _currentService = _createService(config);
   }
 
   Future<void> initialize() async {
     _savedConfig = await _loadSavedConfig();
-    if (_savedConfig != null) {
-      _currentService = _createService(_savedConfig!);
-    }
   }
 
   Future<void> clearConfig() async {
@@ -99,23 +92,24 @@ class MediaServiceManager {
     ]);
 
     _savedConfig = null;
-    _currentService = null;
   }
 
   Future<bool> verifyConfig(MediaServiceConfig config) async {
     try {
-      final service = _createService(config);
-      return await service.verifyConnection();
+      final apiClient = EmbyApiClient(
+        config: config,
+        securityService: _securityService,
+        sessionExpiredNotifier: _sessionExpiredNotifier,
+      );
+      await apiClient.authenticate();
+      await apiClient.getSystemInfo();
+      return true;
     } catch (_) {
       return false;
     }
   }
 
-  MediaService _createService(MediaServiceConfig config) {
-    return MediaServiceFactory.create(
-      config,
-      securityService: _securityService,
-      sessionExpiredNotifier: _sessionExpiredNotifier,
-    );
-  }
+  SecurityService get securityService => _securityService;
+
+  SessionExpiredNotifier get sessionExpiredNotifier => _sessionExpiredNotifier;
 }

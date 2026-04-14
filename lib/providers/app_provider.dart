@@ -21,11 +21,9 @@ class MediaServerInfo {
 /// 全局应用状态 Provider
 /// 管理应用级别的配置：服务器选择、观看源选择等
 class AppProvider extends ChangeNotifier {
-  AppProvider({
-    required MediaServiceManager mediaServiceManager,
-  }) : _mediaServiceManager = mediaServiceManager,
-       _selectedServer = _defaultServers.first,
-       _selectedWatchSource = WatchSourceType.emby;
+  AppProvider({required MediaServiceManager mediaServiceManager})
+    : _mediaServiceManager = mediaServiceManager,
+      _selectedServer = _defaultServers.first;
 
   static const List<MediaServerInfo> _defaultServers = [
     MediaServerInfo(
@@ -50,7 +48,6 @@ class AppProvider extends ChangeNotifier {
 
   final MediaServiceManager _mediaServiceManager;
   MediaServerInfo _selectedServer;
-  WatchSourceType _selectedWatchSource;
 
   // Getters
   UnmodifiableListView<MediaServerInfo> get availableServers {
@@ -58,7 +55,6 @@ class AppProvider extends ChangeNotifier {
   }
 
   MediaServerInfo get selectedServer => _selectedServer;
-  WatchSourceType get selectedWatchSource => _selectedWatchSource;
   MediaServiceManager get mediaServiceManager => _mediaServiceManager;
 
   // Actions
@@ -69,29 +65,5 @@ class AppProvider extends ChangeNotifier {
 
     _selectedServer = server;
     notifyListeners();
-  }
-
-  void selectWatchSource(WatchSourceType sourceType) {
-    if (_selectedWatchSource == sourceType) {
-      return;
-    }
-
-    _selectedWatchSource = sourceType;
-    notifyListeners();
-  }
-}
-
-enum WatchSourceType {
-  emby,
-  plex,
-  jellyfin;
-
-  String toJson() => name;
-
-  static WatchSourceType fromJson(String json) {
-    return values.firstWhere(
-      (e) => e.name == json,
-      orElse: () => WatchSourceType.emby,
-    );
   }
 }

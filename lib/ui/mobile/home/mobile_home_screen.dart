@@ -2,7 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../../models/media_item.dart';
+import '../../../domain/entities/media_item.dart';
 import '../../../providers/app_provider.dart';
 import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
@@ -113,7 +113,9 @@ class MobileHomeScreen extends StatelessWidget {
                   title: '最近观看',
                   subtitle: recentWatching.isEmpty ? '还没有续播记录' : '从上次的位置继续',
                   child: SizedBox(
-                    height: 184,
+                    // Bump height to avoid rare bottom overflow when text scales
+                    // push the progress bar and label beyond 184px.
+                    height: 200,
                     child: recentWatching.isEmpty
                         ? const _EmptyShelfState(
                             icon: Icons.history_rounded,
@@ -521,7 +523,8 @@ class _HomeLoadingShelves extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _LoadingShelf(title: '最近观看', height: 184, itemWidth: 304, count: 2),
+        // Match the real shelf height to keep skeleton sizes consistent.
+        _LoadingShelf(title: '最近观看', height: 200, itemWidth: 304, count: 2),
         _LoadingShelf(title: '电视剧', height: 234, itemWidth: 136, count: 5),
         _LoadingShelf(title: '电影', height: 234, itemWidth: 136, count: 5),
       ],

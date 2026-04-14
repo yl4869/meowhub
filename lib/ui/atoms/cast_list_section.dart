@@ -1,7 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
-import '../../models/cast.dart';
+import '../../domain/entities/media_item.dart';
 import '../../theme/app_theme.dart';
 
 class CastListSection extends StatelessWidget {
@@ -24,10 +24,7 @@ class CastListSection extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: Text(
-                '演职员',
-                style: Theme.of(context).textTheme.titleLarge,
-              ),
+              child: Text('演职员', style: Theme.of(context).textTheme.titleLarge),
             ),
             TextButton.icon(
               onPressed: onViewAll,
@@ -120,9 +117,9 @@ class _CastCard extends StatelessWidget {
                 castMember.name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  fontSize: 13,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontSize: 13),
               ),
               const SizedBox(height: 2),
               Text(
@@ -145,10 +142,7 @@ class _CastEmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Text(
-        '暂无演职员信息',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
+      child: Text('暂无演职员信息', style: Theme.of(context).textTheme.bodySmall),
     );
   }
 }

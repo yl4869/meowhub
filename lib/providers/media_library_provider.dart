@@ -1,8 +1,7 @@
 import 'package:flutter/foundation.dart';
 
-import '../domain/repositories/media_service_manager.dart';
-import '../models/media_item.dart';
-import '../services/mock_media_service.dart';
+import '../domain/entities/media_item.dart';
+import '../domain/repositories/i_media_repository.dart';
 
 class MediaLibraryState {
   const MediaLibraryState({
@@ -35,23 +34,13 @@ class MediaLibraryState {
 }
 
 class MediaLibraryProvider extends ChangeNotifier {
-  MediaLibraryProvider({
-    MediaServiceManager? mediaServiceManager,
-    Future<List<MediaItem>> Function()? fetchMovies,
-    Future<List<MediaItem>> Function()? fetchSeries,
-  }) : _fetchMovies =
-           fetchMovies ??
-           (() async {
-             final service = mediaServiceManager?.currentService;
-             if (service != null) {
-               return service.getMovies();
-             }
-             return MockService.getMockMovies();
-           }),
-       _fetchSeries = fetchSeries ?? MockService.getMockSeries;
+  /// Refactor reason:
+  /// Provider now depends only on the repository abstraction and exposes
+  /// entity-only state, keeping state management free from transport details.
+  MediaLibraryProvider({required IMediaRepository mediaRepository})
+    : _mediaRepository = mediaRepository;
 
-  final Future<List<MediaItem>> Function() _fetchMovies;
-  final Future<List<MediaItem>> Function() _fetchSeries;
+  final IMediaRepository _mediaRepository;
 
   MediaLibraryState _state = const MediaLibraryState();
 
@@ -73,7 +62,10 @@ class MediaLibraryProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final results = await Future.wait([_fetchMovies(), _fetchSeries()]);
+      final results = await Future.wait([
+        _mediaRepository.getMovies(),
+        _mediaRepository.getSeries(),
+      ]);
       final movies = results[0];
       final series = results[1];
       _state = _state.copyWith(

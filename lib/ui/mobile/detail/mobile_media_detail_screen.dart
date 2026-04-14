@@ -1,15 +1,22 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:provider/provider.dart';
 
-import '../../../models/cast.dart';
-import '../../../models/media_item.dart';
+import '../../../domain/entities/media_item.dart';
 import '../../../providers/app_provider.dart';
-import '../../../providers/user_data_provider.dart';
+import '../../../domain/entities/media_service_config.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/cast_list_section.dart';
 import '../../atoms/info_chip.dart';
 import '../../atoms/info_row.dart';
+import '../../../domain/entities/playback_plan.dart';
+import '../../../domain/repositories/media_service_manager.dart';
+import '../../../data/datasources/emby_api_client.dart';
+import '../../../data/repositories/emby_playback_repository_impl.dart';
+import '../../../domain/usecases/get_playback_plan.dart';
+import '../../../providers/user_data_provider.dart';
 
 class MobileMediaDetailScreen extends StatefulWidget {
   const MobileMediaDetailScreen({
@@ -19,8 +26,10 @@ class MobileMediaDetailScreen extends StatefulWidget {
     required this.isFavorite,
     required this.hasRecentWatchRecord,
     required this.initialEpisodeIndex,
+    required this.playableItems,
     required this.playbackProgress,
     required this.onPlayPressed,
+    required this.onOpenTrackSelector,
     required this.onToggleFavorite,
   });
 
@@ -29,8 +38,10 @@ class MobileMediaDetailScreen extends StatefulWidget {
   final bool isFavorite;
   final bool hasRecentWatchRecord;
   final int initialEpisodeIndex;
+  final List<MediaItem> playableItems;
   final MediaPlaybackProgress? playbackProgress;
   final ValueChanged<int>? onPlayPressed;
+  final ValueChanged<int> onOpenTrackSelector;
   final VoidCallback onToggleFavorite;
 
   @override
@@ -40,16 +51,20 @@ class MobileMediaDetailScreen extends StatefulWidget {
 
 class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   late int _selectedEpisode;
+  List<PlaybackStream> _subtitleOptions = const [];
+  bool _loadingSubtitles = false;
+  int? _selectedSubtitleIndex;
 
   @override
   void initState() {
     super.initState();
     _selectedEpisode = widget.initialEpisodeIndex;
+    _refreshSubtitleOptions();
   }
 
   @override
   Widget build(BuildContext context) {
-    final episodes = _buildEpisodes(widget.mediaItem);
+    final episodes = widget.playableItems;
     final cast = widget.mediaItem.cast;
     final clampedEpisode = _selectedEpisode.clamp(0, episodes.length - 1);
     if (clampedEpisode != _selectedEpisode) {
@@ -100,6 +115,12 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                         ),
                         const SizedBox(width: 12),
                         _ActionIconButton(
+                          icon: Icons.subtitles_outlined,
+                          onTap: () =>
+                              widget.onOpenTrackSelector(_selectedEpisode),
+                        ),
+                        const SizedBox(width: 10),
+                        _ActionIconButton(
                           icon: widget.isFavorite
                               ? Icons.favorite_rounded
                               : Icons.favorite_border_rounded,
@@ -149,6 +170,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                                     setState(() {
                                       _selectedEpisode = index;
                                     });
+                                    _refreshSubtitleOptions();
                                   },
                                   borderRadius: BorderRadius.circular(14),
                                   child: AnimatedContainer(
@@ -164,7 +186,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                                       borderRadius: BorderRadius.circular(14),
                                     ),
                                     child: Text(
-                                      episodes[index],
+                                      episodes[index].playbackLabel,
                                       style: Theme.of(context)
                                           .textTheme
                                           .labelLarge
@@ -204,6 +226,43 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                         onViewAll: () => _showAllCast(context, cast),
                       ),
                     ),
+                    const SizedBox(height: 12),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.closed_caption_outlined,
+                            color: Colors.white70,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '字幕',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const Spacer(),
+                          _SubtitleDropdown(
+                            loading: _loadingSubtitles,
+                            options: _subtitleOptions,
+                            value: _selectedSubtitleIndex ?? -1,
+                            onChanged: (v) {
+                              setState(() => _selectedSubtitleIndex = v);
+                              final udp = context.read<UserDataProvider>();
+                              final item =
+                                  widget.playableItems[_selectedEpisode];
+                              udp.setTrackSelectionForItem(
+                                item,
+                                subtitleIndex: v,
+                                audioIndex: udp
+                                    .trackSelectionForItem(item)
+                                    ?.audioIndex,
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                     const SizedBox(height: 18),
                     _InfoSection(
                       mediaItem: widget.mediaItem,
@@ -218,13 +277,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
         ],
       ),
     );
-  }
-
-  List<String> _buildEpisodes(MediaItem mediaItem) {
-    if (mediaItem.type == MediaType.movie) {
-      return List.generate(4, (index) => '片段 ${index + 1}');
-    }
-    return List.generate(12, (index) => '第 ${index + 1} 集');
   }
 
   void _showAllCast(BuildContext context, List<Cast> cast) {
@@ -286,6 +338,92 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
           ),
         );
       },
+    );
+  }
+
+  Future<void> _refreshSubtitleOptions() async {
+    final item = widget.playableItems[_selectedEpisode];
+    final manager = context.read<MediaServiceManager>();
+    final config = manager.getSavedConfig();
+    if (config == null || config.type != MediaServiceType.emby) {
+      setState(() {
+        _subtitleOptions = const [];
+        _selectedSubtitleIndex =
+            context
+                .read<UserDataProvider>()
+                .trackSelectionForItem(item)
+                ?.subtitleIndex ??
+            -1;
+      });
+      return;
+    }
+    setState(() => _loadingSubtitles = true);
+    try {
+      final api = EmbyApiClient(
+        config: config,
+        securityService: manager.securityService,
+        sessionExpiredNotifier: manager.sessionExpiredNotifier,
+      );
+      final repo = EmbyPlaybackRepositoryImpl(
+        apiClient: api,
+        securityService: manager.securityService,
+      );
+      final plan = await GetPlaybackPlanUseCase(repo).call(item);
+      if (kDebugMode) {
+        debugPrint(
+          '[Detail] subs fetched=${plan.subtitleStreams.length} item=${item.dataSourceId}',
+        );
+      }
+      final saved = context.read<UserDataProvider>().trackSelectionForItem(
+        item,
+      );
+      setState(() {
+        _subtitleOptions = plan.subtitleStreams;
+        _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
+      });
+    } finally {
+      if (mounted) setState(() => _loadingSubtitles = false);
+    }
+  }
+}
+
+class _SubtitleDropdown extends StatelessWidget {
+  const _SubtitleDropdown({
+    required this.loading,
+    required this.options,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final bool loading;
+  final List<PlaybackStream> options;
+  final int value;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const SizedBox(
+        height: 28,
+        width: 28,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    final items = <DropdownMenuItem<int>>[
+      const DropdownMenuItem<int>(value: -1, child: Text('无字幕')),
+      ...options.map(
+        (s) => DropdownMenuItem<int>(value: s.index, child: Text(s.title)),
+      ),
+    ];
+    return DropdownButton<int>(
+      value: value,
+      items: items,
+      onChanged: (v) {
+        if (v != null) onChanged(v);
+      },
+      dropdownColor: AppTheme.cardColor,
+      borderRadius: BorderRadius.circular(12),
+      underline: const SizedBox.shrink(),
     );
   }
 }

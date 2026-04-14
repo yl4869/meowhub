@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../models/media_item.dart';
+import '../domain/entities/media_item.dart';
 import 'media_library_provider.dart';
 import 'user_data_provider.dart';
 

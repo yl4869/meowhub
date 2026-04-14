@@ -1,10 +1,11 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:video_player/video_player.dart';
 
-import '../../theme/app_theme.dart';
+// --- 保留你原有且优秀的架构定义 ---
 
 enum MeowVideoRenderMode { flutter, androidNative, harmonyNative }
 
@@ -48,6 +49,8 @@ class MeowVideoPlaybackStatus {
 typedef MeowVideoPlaybackStatusChanged =
     void Function(MeowVideoPlaybackStatus status);
 
+// --- 核心组件重构 ---
+
 class MeowVideoPlayer extends StatefulWidget {
   const MeowVideoPlayer({
     super.key,
@@ -56,13 +59,15 @@ class MeowVideoPlayer extends StatefulWidget {
     this.autoPlay = false,
     this.looping = false,
     this.renderMode = MeowVideoRenderMode.flutter,
-    this.flutterViewType = VideoViewType.textureView,
     this.borderRadius = const BorderRadius.all(Radius.circular(24)),
     this.httpHeaders = const {},
     this.androidNativeBuilder,
     this.harmonyNativeBuilder,
     this.initialPosition = Duration.zero,
     this.onPlaybackStatusChanged,
+    this.onPlayerCreated,
+    this.overlayCcButton = false,
+    this.onTapCc,
   });
 
   final String url;
@@ -70,31 +75,34 @@ class MeowVideoPlayer extends StatefulWidget {
   final bool autoPlay;
   final bool looping;
   final MeowVideoRenderMode renderMode;
-  final VideoViewType flutterViewType;
   final BorderRadius borderRadius;
   final Map<String, String> httpHeaders;
   final MeowVideoNativeRendererBuilder? androidNativeBuilder;
   final MeowVideoNativeRendererBuilder? harmonyNativeBuilder;
   final Duration initialPosition;
   final MeowVideoPlaybackStatusChanged? onPlaybackStatusChanged;
+  final ValueChanged<Player>? onPlayerCreated;
+  final bool overlayCcButton;
+  final VoidCallback? onTapCc;
 
   @override
   State<MeowVideoPlayer> createState() => _MeowVideoPlayerState();
 }
 
 class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
-  VideoPlayerController? _controller;
+  Player? _player;
+  VideoController? _videoController;
   Future<void>? _initializeVideoFuture;
-  Timer? _hideControlsTimer;
-  bool _showControls = true;
-  bool _isScrubbing = false;
-  double? _scrubValueMs;
-  bool _wasPlaying = false;
+  bool _switchingSource = false; // 串行化切源，避免双音轨窗口
 
-  bool get _usesFlutterRenderer {
-    return widget.renderMode == MeowVideoRenderMode.flutter;
-  }
+  // Cached state for callback synthesis
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool _isPlaying = false;
+  bool _isBuffering = false;
 
+  bool get _usesFlutterRenderer =>
+      widget.renderMode == MeowVideoRenderMode.flutter;
   double get _fallbackAspectRatio => widget.aspectRatio ?? 16 / 9;
 
   @override
@@ -106,227 +114,207 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   @override
   void didUpdateWidget(covariant MeowVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final shouldReconfigure =
-        oldWidget.url != widget.url ||
-        oldWidget.renderMode != widget.renderMode ||
-        oldWidget.autoPlay != widget.autoPlay ||
-        oldWidget.looping != widget.looping ||
-        oldWidget.flutterViewType != widget.flutterViewType ||
-        oldWidget.initialPosition != widget.initialPosition;
-
-    if (shouldReconfigure) {
+    // 渲染模式变化需要重配；仅 URL 变化时在同一 Player 上 reopen，避免重建导致双音轨
+    if (oldWidget.renderMode != widget.renderMode) {
       _configureRenderer();
+      return;
+    }
+    if (oldWidget.url != widget.url) {
+      // ignore: discarded_futures
+      _reopenOnSamePlayer(url: widget.url);
+      return;
     }
   }
 
   @override
   void dispose() {
-    _hideControlsTimer?.cancel();
-    _disposeController();
+    _disposeControllers();
     super.dispose();
   }
 
+  void _disposeControllers() {
+    for (final s in _subscriptions) {
+      s.cancel();
+    }
+    _subscriptions.clear();
+    _videoController = null;
+    final p = _player;
+    _player = null;
+    if (p != null) {
+      // 先尝试停止，确保音频流关闭，再释放底层资源
+      try {
+        // stop() 是异步；此处在 dispose 中无法 await，但调用可提示底层尽快切断流
+        // 若你希望严格 await，可将播放器抽到可控生命周期（如上层 State）并在其 dispose 中 await。
+        // ignore: discarded_futures
+        p.stop();
+      } catch (_) {}
+      try {
+        p.dispose();
+      } catch (_) {}
+    }
+  }
+
   void _configureRenderer() {
-    _hideControlsTimer?.cancel();
-    _showControls = true;
-    _isScrubbing = false;
-    _scrubValueMs = null;
-    _wasPlaying = false;
-
     if (_usesFlutterRenderer) {
-      _initializeFlutterController();
+      _initializeFlutterPlayer();
     } else {
-      _disposeController();
-      if (mounted) {
-        setState(() {
-          _initializeVideoFuture = null;
-        });
-      }
-    }
-  }
-
-  void _initializeFlutterController() {
-    _disposeController();
-
-    final controller = VideoPlayerController.networkUrl(
-      Uri.parse(widget.url),
-      httpHeaders: widget.httpHeaders,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      viewType: widget.flutterViewType,
-    );
-
-    controller.addListener(_handlePlaybackStateChange);
-
-    final initializeFuture = controller.initialize().then((_) async {
-      await controller.setLooping(widget.looping);
-      final initialPosition = _clampedInitialPosition(
-        controller.value.duration,
-      );
-      if (initialPosition > Duration.zero) {
-        await controller.seekTo(initialPosition);
-      }
-      if (widget.autoPlay) {
-        await controller.play();
-        _scheduleControlsAutoHide();
-      }
-      _emitPlaybackStatus(controller.value);
-    });
-
-    setState(() {
-      _controller = controller;
-      _initializeVideoFuture = initializeFuture;
-    });
-  }
-
-  void _disposeController() {
-    _controller?.removeListener(_handlePlaybackStateChange);
-    _controller?.dispose();
-    _controller = null;
-  }
-
-  void _handlePlaybackStateChange() {
-    final controller = _controller;
-    if (controller == null || !mounted) {
-      return;
-    }
-
-    final value = controller.value;
-    final isPlaying = value.isPlaying;
-
-    if (isPlaying && !_wasPlaying) {
-      _scheduleControlsAutoHide();
-    }
-
-    if (!isPlaying && _wasPlaying) {
-      _hideControlsTimer?.cancel();
-      if (!_showControls) {
-        setState(() {
-          _showControls = true;
-        });
-      }
-    }
-
-    final isFinished =
-        value.isInitialized &&
-        value.duration > Duration.zero &&
-        value.position >= value.duration &&
-        !value.isPlaying;
-
-    if (isFinished) {
-      _hideControlsTimer?.cancel();
-      if (!_showControls) {
-        setState(() {
-          _showControls = true;
-        });
-      }
-    }
-
-    _wasPlaying = isPlaying;
-    _emitPlaybackStatus(value);
-  }
-
-  Duration _clampedInitialPosition(Duration totalDuration) {
-    final requestedPosition = widget.initialPosition;
-    if (requestedPosition <= Duration.zero || totalDuration <= Duration.zero) {
-      return Duration.zero;
-    }
-
-    final maxResumePosition = totalDuration > const Duration(seconds: 2)
-        ? totalDuration - const Duration(seconds: 2)
-        : Duration.zero;
-
-    if (requestedPosition > maxResumePosition) {
-      return maxResumePosition;
-    }
-
-    return requestedPosition;
-  }
-
-  void _emitPlaybackStatus(VideoPlayerValue value) {
-    final callback = widget.onPlaybackStatusChanged;
-    if (callback == null) {
-      return;
-    }
-
-    final completionThreshold =
-        value.duration > const Duration(milliseconds: 600)
-        ? value.duration - const Duration(milliseconds: 600)
-        : value.duration;
-    final isCompleted =
-        value.isInitialized &&
-        value.duration > Duration.zero &&
-        value.position >= completionThreshold &&
-        !value.isPlaying;
-
-    callback(
-      MeowVideoPlaybackStatus(
-        position: value.position,
-        duration: value.duration,
-        isInitialized: value.isInitialized,
-        isPlaying: value.isPlaying,
-        isBuffering: value.isBuffering,
-        isCompleted: isCompleted,
-      ),
-    );
-  }
-
-  void _scheduleControlsAutoHide() {
-    _hideControlsTimer?.cancel();
-    _hideControlsTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted || _isScrubbing) {
-        return;
-      }
+      _disposeControllers();
       setState(() {
-        _showControls = false;
+        _initializeVideoFuture = null;
       });
-    });
+    }
   }
 
-  void _togglePlayback() {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) {
+  Future<void> _initializeFlutterPlayer() async {
+    _disposeControllers();
+
+    // 确保底层已初始化（多平台安全）
+    MediaKit.ensureInitialized();
+
+    final player = Player(configuration: const PlayerConfiguration());
+    final videoController = VideoController(player);
+
+    _player = player;
+    _videoController = videoController;
+    // 暴露底层 Player，便于上层在退出前 await stop()
+    widget.onPlayerCreated?.call(player);
+
+    // 监听核心状态流并合成统一回调
+    _bindStreams(player);
+
+    _initializeVideoFuture = () async {
+      // 打开媒体
+      if (kDebugMode) {
+        // 注意：包含 api_key，仅用于本地调试。请勿在发布版本收集日志。
+        debugPrint('[MeowHub][FinalURL][open] ${widget.url}');
+      }
+      await player.open(
+        Media(widget.url, httpHeaders: widget.httpHeaders),
+        play: widget.autoPlay,
+      );
+
+      // 起始位置
+      if (widget.initialPosition > Duration.zero) {
+        await player.seek(widget.initialPosition);
+      }
+
+      // 循环逻辑：单源循环
+      if (widget.looping) {
+        try {
+          player.setPlaylistMode(PlaylistMode.loop);
+        } catch (_) {
+          // 某些版本不支持，忽略
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {});
+    }();
+  }
+
+  Future<void> _reopenOnSamePlayer({
+    required String url,
+    Duration? seekTo,
+  }) async {
+    // 仅 Flutter 渲染下在同一实例上切源；其他渲染模式仍交给外层重配
+    if (!_usesFlutterRenderer) {
+      _configureRenderer();
       return;
     }
-
-    if (controller.value.isPlaying) {
-      controller.pause();
-    } else {
-      controller.play();
-      _scheduleControlsAutoHide();
-    }
-  }
-
-  void _toggleControlsVisibility() {
-    final controller = _controller;
-    final canAutoHide = controller?.value.isPlaying ?? false;
-
-    setState(() {
-      _showControls = !_showControls;
-    });
-
-    if (_showControls && canAutoHide) {
-      _scheduleControlsAutoHide();
-    } else {
-      _hideControlsTimer?.cancel();
-    }
-  }
-
-  void _seekBy(Duration delta) {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) {
+    final player = _player;
+    if (player == null) {
+      // 若尚未完成初始化，退回到常规初始化流程
+      await _initializeFlutterPlayer();
       return;
     }
+    if (_switchingSource) return;
+    _switchingSource = true;
+    try {
+      try {
+        await player.pause();
+      } catch (_) {}
+      try {
+        await player.stop();
+      } catch (_) {}
+      if (kDebugMode) {
+        // 注意：包含 api_key，仅用于本地调试。请勿在发布版本收集日志。
+        debugPrint('[MeowHub][FinalURL][reopen] $url');
+      }
+      await player.open(
+        Media(url, httpHeaders: widget.httpHeaders),
+        play: widget.autoPlay,
+      );
+      final pos =
+          seekTo ??
+          (widget.initialPosition > Duration.zero
+              ? widget.initialPosition
+              : Duration.zero);
+      if (pos > Duration.zero) {
+        try {
+          await player.seek(pos);
+        } catch (_) {}
+      }
+      if (widget.looping) {
+        try {
+          player.setPlaylistMode(PlaylistMode.loop);
+        } catch (_) {}
+      }
+    } finally {
+      _switchingSource = false;
+    }
+    if (!mounted) return;
+    setState(() {});
+  }
 
-    final duration = controller.value.duration;
-    final target = controller.value.position + delta;
-    final clamped = target < Duration.zero
-        ? Duration.zero
-        : (target > duration ? duration : target);
-    controller.seekTo(clamped);
+  final List<StreamSubscription> _subscriptions = [];
+
+  void _bindStreams(Player player) {
+    void emit() {
+      final duration = _duration;
+      final position = _position;
+      final completionThreshold = duration > const Duration(milliseconds: 600)
+          ? duration - const Duration(milliseconds: 600)
+          : duration;
+      final isCompleted =
+          duration > Duration.zero &&
+          position >= completionThreshold &&
+          !_isPlaying;
+
+      widget.onPlaybackStatusChanged?.call(
+        MeowVideoPlaybackStatus(
+          position: position,
+          duration: duration,
+          isInitialized: duration > Duration.zero,
+          isPlaying: _isPlaying,
+          isBuffering: _isBuffering,
+          isCompleted: isCompleted,
+        ),
+      );
+    }
+
+    _subscriptions.addAll([
+      player.stream.position.listen((p) {
+        _position = p;
+        emit();
+      }),
+      player.stream.duration.listen((d) {
+        _duration = d;
+        emit();
+      }),
+      player.stream.playing.listen((playing) {
+        _isPlaying = playing;
+        emit();
+      }),
+      player.stream.buffering.listen((b) {
+        _isBuffering = b;
+        emit();
+      }),
+    ]);
   }
 
   @override
   Widget build(BuildContext context) {
+    // 原生渲染模式分支保持不变
     if (!_usesFlutterRenderer) {
       return _NativeRendererShell(
         widget: widget,
@@ -334,81 +322,85 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       );
     }
 
-    return FutureBuilder<void>(
+    final video = FutureBuilder<void>(
       future: _initializeVideoFuture,
       builder: (context, snapshot) {
-        final controller = _controller;
-        final initialized = controller?.value.isInitialized ?? false;
-        final aspectRatio = initialized
-            ? controller!.value.aspectRatio
-            : _fallbackAspectRatio;
-
+        final aspectRatio = widget.aspectRatio ?? _fallbackAspectRatio;
         return ClipRRect(
           borderRadius: widget.borderRadius,
           child: AspectRatio(
-            aspectRatio: aspectRatio > 0 ? aspectRatio : _fallbackAspectRatio,
-            child: Material(
+            aspectRatio: aspectRatio,
+            child: Container(
               color: Colors.black,
-              child: InkWell(
-                onTap: _toggleControlsVisibility,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (snapshot.connectionState == ConnectionState.waiting ||
-                        !initialized)
-                      const _VideoLoadingState()
-                    else
-                      VideoPlayer(controller!),
-                    if (snapshot.hasError)
-                      const _VideoErrorState()
-                    else if (initialized)
-                      _PlaybackOverlay(
-                        controller: controller!,
-                        showControls: _showControls,
-                        isScrubbing: _isScrubbing,
-                        scrubValueMs: _scrubValueMs,
-                        onPlayPausePressed: _togglePlayback,
-                        onReplayPressed: () =>
-                            _seekBy(const Duration(seconds: -10)),
-                        onForwardPressed: () =>
-                            _seekBy(const Duration(seconds: 10)),
-                        onScrubbingStart: (value) {
-                          _hideControlsTimer?.cancel();
-                          _isScrubbing = true;
-                          _scrubValueMs = value;
-                        },
-                        onScrubbingUpdate: (value) {
-                          setState(() {
-                            _scrubValueMs = value;
-                          });
-                        },
-                        onScrubbingEnd: (value) {
-                          final target = Duration(milliseconds: value.round());
-                          controller.seekTo(target);
-                          _isScrubbing = false;
-                          _scrubValueMs = null;
-                          if (controller.value.isPlaying) {
-                            _scheduleControlsAutoHide();
-                          }
-                        },
-                      ),
-                  ],
-                ),
-              ),
+              child: _videoController != null
+                  ? Video(
+                      controller: _videoController!,
+                      // 交给 media_kit 内部根据帧率/时钟同步渲染，通常能改善音画同步
+                      fit: BoxFit.contain,
+                    )
+                  : const _VideoLoadingState(),
             ),
           ),
         );
       },
     );
+    if (!widget.overlayCcButton) return video;
+    return Stack(
+      children: [
+        Positioned.fill(child: video),
+        Positioned(
+          right: 12,
+          bottom: 12,
+          child: Material(
+            color: Colors.black54,
+            borderRadius: BorderRadius.circular(20),
+            child: InkWell(
+              onTap: widget.onTapCc,
+              borderRadius: BorderRadius.circular(20),
+              child: const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Icon(Icons.closed_caption_outlined, color: Colors.white),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
+// --- 辅助组件：保留你之前精美的加载和错误态 ---
+
+class _VideoLoadingState extends StatelessWidget {
+  const _VideoLoadingState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Shimmer.fromColors(
+      baseColor: const Color(0xFF101010),
+      highlightColor: const Color(0xFF1C1C1C),
+      child: Container(
+        color: Colors.black,
+        child: const Center(
+          child: Icon(
+            Icons.play_circle_outline_rounded,
+            size: 48,
+            color: Colors.white24,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// 移除专用错误组件（media_kit 内部会抛出异常，可在上层捕获并渲染）
+
+// 保留原有的 NativeShell 逻辑
 class _NativeRendererShell extends StatelessWidget {
   const _NativeRendererShell({
     required this.widget,
     required this.fallbackAspectRatio,
   });
-
   final MeowVideoPlayer widget;
   final double fallbackAspectRatio;
 
@@ -421,290 +413,18 @@ class _NativeRendererShell extends StatelessWidget {
       aspectRatio: fallbackAspectRatio,
       borderRadius: widget.borderRadius,
     );
-
-    final builder = switch (widget.renderMode) {
-      MeowVideoRenderMode.androidNative => widget.androidNativeBuilder,
-      MeowVideoRenderMode.harmonyNative => widget.harmonyNativeBuilder,
-      MeowVideoRenderMode.flutter => null,
-    };
-
-    final content = builder != null
-        ? builder(context, config)
-        : const _UnsupportedNativeRendererState();
+    final builder = widget.renderMode == MeowVideoRenderMode.androidNative
+        ? widget.androidNativeBuilder
+        : widget.harmonyNativeBuilder;
 
     return ClipRRect(
       borderRadius: widget.borderRadius,
-      child: AspectRatio(aspectRatio: fallbackAspectRatio, child: content),
-    );
-  }
-}
-
-class _PlaybackOverlay extends StatelessWidget {
-  const _PlaybackOverlay({
-    required this.controller,
-    required this.showControls,
-    required this.isScrubbing,
-    required this.scrubValueMs,
-    required this.onPlayPausePressed,
-    required this.onReplayPressed,
-    required this.onForwardPressed,
-    required this.onScrubbingStart,
-    required this.onScrubbingUpdate,
-    required this.onScrubbingEnd,
-  });
-
-  final VideoPlayerController controller;
-  final bool showControls;
-  final bool isScrubbing;
-  final double? scrubValueMs;
-  final VoidCallback onPlayPausePressed;
-  final VoidCallback onReplayPressed;
-  final VoidCallback onForwardPressed;
-  final ValueChanged<double> onScrubbingStart;
-  final ValueChanged<double> onScrubbingUpdate;
-  final ValueChanged<double> onScrubbingEnd;
-
-  @override
-  Widget build(BuildContext context) {
-    final value = controller.value;
-    final totalMs = value.duration.inMilliseconds.toDouble();
-    final currentMs = isScrubbing
-        ? (scrubValueMs ?? 0)
-        : value.position.inMilliseconds.toDouble();
-
-    return AnimatedOpacity(
-      opacity: showControls ? 1 : 0,
-      duration: const Duration(milliseconds: 180),
-      child: IgnorePointer(
-        ignoring: !showControls,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.black.withValues(alpha: 0.38),
-                Colors.transparent,
-                Colors.black.withValues(alpha: 0.6),
-              ],
-              stops: const [0, 0.45, 1],
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-            child: Column(
-              children: [
-                Align(
-                  alignment: Alignment.topRight,
-                  child: value.isBuffering
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.white70,
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-                const Spacer(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _OverlayButton(
-                      icon: Icons.replay_10_rounded,
-                      onPressed: onReplayPressed,
-                    ),
-                    const SizedBox(width: 14),
-                    _OverlayButton(
-                      icon: value.isPlaying
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
-                      size: 68,
-                      fill: true,
-                      onPressed: onPlayPausePressed,
-                    ),
-                    const SizedBox(width: 14),
-                    _OverlayButton(
-                      icon: Icons.forward_10_rounded,
-                      onPressed: onForwardPressed,
-                    ),
-                  ],
-                ),
-                const Spacer(),
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 6,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 14,
-                    ),
-                    activeTrackColor: AppTheme.accentColor,
-                    inactiveTrackColor: Colors.white24,
-                    thumbColor: AppTheme.accentColor,
-                    overlayColor: AppTheme.accentColor.withValues(alpha: 0.18),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: totalMs > 0 ? totalMs : 1,
-                    value: currentMs.clamp(0, totalMs > 0 ? totalMs : 1),
-                    onChanged: onScrubbingUpdate,
-                    onChangeStart: onScrubbingStart,
-                    onChangeEnd: onScrubbingEnd,
-                  ),
-                ),
-                Row(
-                  children: [
-                    Text(
-                      _formatDuration(
-                        Duration(milliseconds: currentMs.round()),
-                      ),
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: Colors.white70),
-                    ),
-                    const Spacer(),
-                    Text(
-                      _formatDuration(value.duration),
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: Colors.white70),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
+      child: AspectRatio(
+        aspectRatio: fallbackAspectRatio,
+        child:
+            builder?.call(context, config) ??
+            const Center(child: Text('不支持的原生渲染')),
       ),
     );
   }
-}
-
-class _OverlayButton extends StatelessWidget {
-  const _OverlayButton({
-    required this.icon,
-    required this.onPressed,
-    this.fill = false,
-    this.size = 50,
-  });
-
-  final IconData icon;
-  final VoidCallback onPressed;
-  final bool fill;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: fill
-          ? AppTheme.accentColor.withValues(alpha: 0.92)
-          : Colors.black.withValues(alpha: 0.42),
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onPressed,
-        child: SizedBox(
-          width: size,
-          height: size,
-          child: Icon(
-            icon,
-            color: fill ? AppTheme.onAccentColor : Colors.white,
-            size: fill ? 34 : 28,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _VideoLoadingState extends StatelessWidget {
-  const _VideoLoadingState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Shimmer.fromColors(
-      baseColor: const Color(0xFF101010),
-      highlightColor: const Color(0xFF1C1C1C),
-      child: DecoratedBox(
-        decoration: const BoxDecoration(color: Colors.black),
-        child: Center(
-          child: Icon(
-            Icons.play_circle_outline_rounded,
-            size: 48,
-            color: Colors.white.withValues(alpha: 0.28),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _VideoErrorState extends StatelessWidget {
-  const _VideoErrorState();
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Colors.black.withValues(alpha: 0.86),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline_rounded, color: Colors.white70),
-              const SizedBox(height: 10),
-              Text(
-                '视频加载失败，请稍后重试。',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _UnsupportedNativeRendererState extends StatelessWidget {
-  const _UnsupportedNativeRendererState();
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: AppTheme.cardColor,
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Text(
-            '当前渲染模式还没有接入原生播放器实现。',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-String _formatDuration(Duration duration) {
-  final totalSeconds = duration.inSeconds;
-  final hours = totalSeconds ~/ 3600;
-  final minutes = (totalSeconds % 3600) ~/ 60;
-  final seconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return '${hours.toString().padLeft(2, '0')}:'
-        '${minutes.toString().padLeft(2, '0')}:'
-        '${seconds.toString().padLeft(2, '0')}';
-  }
-
-  return '${minutes.toString().padLeft(2, '0')}:'
-      '${seconds.toString().padLeft(2, '0')}';
 }

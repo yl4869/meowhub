@@ -356,11 +356,7 @@ class EmbyUserPolicy {
 
 @JsonSerializable()
 class EmbyAccessSchedule {
-  const EmbyAccessSchedule({
-    this.dayOfWeek,
-    this.startHour,
-    this.endHour,
-  });
+  const EmbyAccessSchedule({this.dayOfWeek, this.startHour, this.endHour});
 
   @JsonKey(name: 'DayOfWeek')
   final String? dayOfWeek;
@@ -509,10 +505,7 @@ class EmbyPlayState {
 
 @JsonSerializable()
 class EmbySessionUser {
-  const EmbySessionUser({
-    this.userId,
-    this.userName,
-  });
+  const EmbySessionUser({this.userId, this.userName});
 
   @JsonKey(name: 'UserId')
   final String? userId;

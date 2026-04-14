@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-import '../../models/media_item.dart';
+import '../../domain/entities/media_item.dart';
 import '../../providers/app_provider.dart';
 import '../../providers/media_library_provider.dart';
 import '../../providers/media_with_user_data_provider.dart';
@@ -35,12 +35,18 @@ class _HomeViewState extends State<HomeView> {
     final selectedServer = context.select<AppProvider, MediaServerInfo>(
       (provider) => provider.selectedServer,
     );
-    final availableServers = appProvider.availableServers.toList(growable: false);
+    final availableServers = appProvider.availableServers.toList(
+      growable: false,
+    );
     final favoriteCount = mediaWithUserData.allItems
         .where((item) => item.isFavorite)
         .length;
     final inProgressCount = mediaWithUserData.allItems
-        .where((item) => item.playbackProgress != null && item.playbackProgress!.position > Duration.zero)
+        .where(
+          (item) =>
+              item.playbackProgress != null &&
+              item.playbackProgress!.position > Duration.zero,
+        )
         .length;
 
     final tabs = <Widget>[
@@ -284,9 +290,7 @@ class _MyTab extends StatelessWidget {
           Text('我的收藏', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
           if (favoriteItems.isEmpty)
-            const AppSurfaceCard(
-              child: Text('还没有收藏内容，去媒体库挑几部喜欢的作品吧。'),
-            )
+            const AppSurfaceCard(child: Text('还没有收藏内容，去媒体库挑几部喜欢的作品吧。'))
           else
             for (final mediaItem in favoriteItems) ...[
               _FavoriteListTile(
@@ -331,7 +335,10 @@ class _ServerSourceTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(server.name, style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      server.name,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 4),
                     Text(
                       '${server.region} · ${server.baseUrl}',
@@ -389,7 +396,10 @@ class _FavoriteListTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(mediaItem.title, style: Theme.of(context).textTheme.titleMedium),
+                    Text(
+                      mediaItem.title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 6),
                     Text(
                       mediaItem.overview.isEmpty ? '还没有简介' : mediaItem.overview,

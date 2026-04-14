@@ -24,7 +24,8 @@ abstract class LocalWatchHistoryDataSource {
   Future<List<PlaybackRecord>> getHistory();
 }
 
-class InMemoryLocalWatchHistoryDataSource implements LocalWatchHistoryDataSource {
+class InMemoryLocalWatchHistoryDataSource
+    implements LocalWatchHistoryDataSource {
   InMemoryLocalWatchHistoryDataSource({
     Map<String, PlaybackRecord>? initialRecords,
     PlaybackRecordStore? persistenceStore,

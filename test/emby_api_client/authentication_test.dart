@@ -1,7 +1,6 @@
 // test/emby_api_client/authentication_test.dart
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
-import 'package:dio/dio.dart';
 
 import 'package:meowhub/data/datasources/emby_api_client.dart';
 import 'package:meowhub/domain/entities/media_service_config.dart';
@@ -31,8 +30,9 @@ void main() {
       );
 
       // 模拟读取密码
-      when(() => mockSecurityService.readPassword())
-          .thenAnswer((_) async => 'testpass');
+      when(
+        () => mockSecurityService.readPassword(),
+      ).thenAnswer((_) async => 'testpass');
 
       // 模拟认证成功响应
       final authResponse = {
@@ -45,20 +45,25 @@ void main() {
         headers: {'content-type': 'application/json'},
       );
 
-      when(() => mockDio.post<Map<String, dynamic>>(
-        any(),
-        data: any(named: 'data'),
-        queryParameters: any(named: 'queryParameters'),
-        options: any(named: 'options'),
-      )).thenAnswer((_) async => mockResponse);
+      when(
+        () => mockDio.post<Map<String, dynamic>>(
+          any(),
+          data: any(named: 'data'),
+          queryParameters: any(named: 'queryParameters'),
+          options: any(named: 'options'),
+        ),
+      ).thenAnswer((_) async => mockResponse);
 
       // 模拟写入
-      when(() => mockSecurityService.writeAccessToken(any()))
-          .thenAnswer((_) async {});
-      when(() => mockSecurityService.writeUserId(any()))
-          .thenAnswer((_) async {});
-      when(() => mockSecurityService.writePassword(any()))
-          .thenAnswer((_) async {});
+      when(
+        () => mockSecurityService.writeAccessToken(any()),
+      ).thenAnswer((_) async {});
+      when(
+        () => mockSecurityService.writeUserId(any()),
+      ).thenAnswer((_) async {});
+      when(
+        () => mockSecurityService.writePassword(any()),
+      ).thenAnswer((_) async {});
 
       // 创建客户端
       client = EmbyApiClient(
@@ -72,8 +77,9 @@ void main() {
       await expectLater(client.authenticate(), completes);
 
       // 验证写入调用
-      verify(() => mockSecurityService.writeAccessToken('mock-token-123'))
-          .called(1);
+      verify(
+        () => mockSecurityService.writeAccessToken('mock-token-123'),
+      ).called(1);
       verify(() => mockSecurityService.writeUserId('user-456')).called(1);
     });
 
@@ -81,7 +87,7 @@ void main() {
       final config = MediaServiceConfig(
         type: MediaServiceType.emby,
         serverUrl: 'http://test.com',
-        username: null,  // 缺少用户名
+        username: null, // 缺少用户名
         deviceId: 'test-device',
       );
 
@@ -93,10 +99,7 @@ void main() {
       );
 
       // 验证抛出异常
-      await expectLater(
-        client.authenticate(),
-        throwsA(isA<Exception>()),
-      );
+      await expectLater(client.authenticate(), throwsA(isA<Exception>()));
     });
 
     test('认证失败 - 服务器返回无效响应', () async {
@@ -108,12 +111,13 @@ void main() {
         deviceId: 'test-device',
       );
 
-      when(() => mockSecurityService.readPassword())
-          .thenAnswer((_) async => 'testpass');
+      when(
+        () => mockSecurityService.readPassword(),
+      ).thenAnswer((_) async => 'testpass');
 
       // 模拟返回空 token
       final authResponse = {
-        'AccessToken': '',  // 空 token
+        'AccessToken': '', // 空 token
         'User': {'Id': 'user-456'},
       };
 
@@ -122,12 +126,14 @@ void main() {
         headers: {'content-type': 'application/json'},
       );
 
-      when(() => mockDio.post<Map<String, dynamic>>(
-        any(),
-        data: any(named: 'data'),
-        queryParameters: any(named: 'queryParameters'),
-        options: any(named: 'options'),
-      )).thenAnswer((_) async => mockResponse);
+      when(
+        () => mockDio.post<Map<String, dynamic>>(
+          any(),
+          data: any(named: 'data'),
+          queryParameters: any(named: 'queryParameters'),
+          options: any(named: 'options'),
+        ),
+      ).thenAnswer((_) async => mockResponse);
 
       client = EmbyApiClient(
         config: config,
@@ -137,10 +143,7 @@ void main() {
       );
 
       // 验证抛出异常
-      await expectLater(
-        client.authenticate(),
-        throwsA(isA<Exception>()),
-      );
+      await expectLater(client.authenticate(), throwsA(isA<Exception>()));
     });
   });
 }
