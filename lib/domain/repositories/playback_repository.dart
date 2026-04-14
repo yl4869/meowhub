@@ -6,5 +6,7 @@ abstract class PlaybackRepository {
     MediaItem item, {
     int? maxStreamingBitrate,
     bool? requireAvc,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   });
 }

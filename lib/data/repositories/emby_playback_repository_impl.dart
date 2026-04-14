@@ -21,21 +21,35 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     MediaItem item, {
     int? maxStreamingBitrate,
     bool? requireAvc,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   }) async {
+    final normalizedAudioIndex = _normalizeSelectedIndex(audioStreamIndex);
+    final normalizedSubtitleIndex = _normalizeSelectedIndex(
+      subtitleStreamIndex,
+    );
     final info = await _apiClient.getPlaybackInfo(
       itemId: item.dataSourceId,
       maxStreamingBitrate: maxStreamingBitrate,
       requireAvc: requireAvc,
+      audioStreamIndex: normalizedAudioIndex,
+      subtitleStreamIndex: normalizedSubtitleIndex,
     );
 
     final source = _pickBestSource(info);
-    final url = await _buildFinalUrl(item, info, source);
+    final url = await _buildFinalUrl(
+      item,
+      info,
+      source,
+      audioStreamIndex: normalizedAudioIndex,
+      subtitleStreamIndex: normalizedSubtitleIndex,
+    );
 
     // 预读 token 以拼接外部字幕的绝对地址
     final token = await _securityService.readAccessToken() ?? '';
 
     // 优先用所选 Source 的流；若为空，回退到汇总所有 Source 的流（部分服务器会把外挂字幕挂到不同 Source）。
-    List<PlaybackStream> _mapAudioStreams(List<EmbyMediaStreamDto> streams) {
+    List<PlaybackStream> mapAudioStreams(List<EmbyMediaStreamDto> streams) {
       return streams
           .where((s) => s.type.toLowerCase() == 'audio')
           .map(
@@ -51,7 +65,7 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
           .toList(growable: false);
     }
 
-    List<PlaybackStream> _mapSubtitleStreams(List<EmbyMediaStreamDto> streams) {
+    List<PlaybackStream> mapSubtitleStreams(List<EmbyMediaStreamDto> streams) {
       return streams
           .where((s) => s.type.toLowerCase() == 'subtitle')
           .map((s) {
@@ -62,7 +76,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
             String? resolvedDeliveryUrl;
             final raw = s.deliveryUrl;
             if (raw != null && raw.isNotEmpty) {
-              final isAbs = raw.startsWith('http://') || raw.startsWith('https://');
+              final isAbs =
+                  raw.startsWith('http://') || raw.startsWith('https://');
               final base = isAbs ? raw : '${_apiClient.serverUrl}$raw';
               final u = Uri.parse(base);
               final qp = Map<String, String>.from(u.queryParameters);
@@ -85,12 +100,12 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
           .toList(growable: false);
     }
 
-    var audio = _mapAudioStreams(source.mediaStreams);
-    var subs = _mapSubtitleStreams(source.mediaStreams);
+    var audio = mapAudioStreams(source.mediaStreams);
+    var subs = mapSubtitleStreams(source.mediaStreams);
     if (audio.isEmpty || subs.isEmpty) {
       final allStreams = info.mediaSources.expand((s) => s.mediaStreams);
-      if (audio.isEmpty) audio = _mapAudioStreams(allStreams.toList());
-      if (subs.isEmpty) subs = _mapSubtitleStreams(allStreams.toList());
+      if (audio.isEmpty) audio = mapAudioStreams(allStreams.toList());
+      if (subs.isEmpty) subs = mapSubtitleStreams(allStreams.toList());
     }
 
     // Debug: mapped stream counts & selected source
@@ -113,7 +128,14 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     if (info.mediaSources.isEmpty) {
       throw StateError('No media sources available for playback');
     }
-    // 简单策略：优先直链，其次转码
+    final transcodingSource = info.mediaSources.firstWhere(
+      (s) => (s.transcodingUrl ?? '').isNotEmpty,
+      orElse: () => const EmbyMediaSourceDto(id: ''),
+    );
+    if (transcodingSource.id.isNotEmpty) {
+      return transcodingSource;
+    }
+    // 简单策略：优先直链，其次首个源
     return info.mediaSources.firstWhere(
       (s) => s.supportsDirectPlay,
       orElse: () => info.mediaSources.first,
@@ -123,21 +145,63 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
   Future<String> _buildFinalUrl(
     MediaItem item,
     EmbyPlaybackInfoDto info,
-    EmbyMediaSourceDto source,
-  ) async {
-    // 若服务端提供转码地址，通常是相对路径，拼成绝对 URL
-    if ((source.transcodingUrl ?? '').isNotEmpty) {
-      final rel = source.transcodingUrl!;
-      final token = await _securityService.readAccessToken() ?? '';
-      // TranscodingUrl 可能没有附带 api_key，这里统一追加
-      final u = Uri.parse('${_apiClient.serverUrl}$rel');
-      final qp = Map<String, String>.from(u.queryParameters);
-      qp.putIfAbsent('api_key', () => token);
-      return u.replace(queryParameters: qp).toString();
+    EmbyMediaSourceDto source, {
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    final token = await _securityService.readAccessToken() ?? '';
+    final transcodingUrl = _pickTranscodingUrl(info, source);
+    if (transcodingUrl != null) {
+      return _resolveAuthorizedUrl(transcodingUrl, token);
     }
-    // 否则走直链：/Videos/{itemId}/stream?Static=true&api_key=...&MediaSourceId=...
-    final token = await _securityService.readAccessToken();
-    final apiKey = token ?? '';
-    return '${_apiClient.serverUrl}/emby/Videos/${item.dataSourceId}/stream?Static=true&MediaSourceId=${source.id}&api_key=$apiKey';
+
+    final directUrl = Uri.parse(
+      '${_apiClient.serverUrl}/emby/Videos/${item.dataSourceId}/stream',
+    );
+    final queryParameters = <String, String>{
+      'Static': 'true',
+      if (source.id.isNotEmpty) 'MediaSourceId': source.id,
+      if (audioStreamIndex != null) 'AudioStreamIndex': '$audioStreamIndex',
+      if (subtitleStreamIndex != null)
+        'SubtitleStreamIndex': '$subtitleStreamIndex',
+      if (token.isNotEmpty) 'api_key': token,
+    };
+    return directUrl.replace(queryParameters: queryParameters).toString();
+  }
+
+  int? _normalizeSelectedIndex(int? index) {
+    if (index == null || index < 0) {
+      return null;
+    }
+    return index;
+  }
+
+  String? _pickTranscodingUrl(
+    EmbyPlaybackInfoDto info,
+    EmbyMediaSourceDto source,
+  ) {
+    final candidates = <String?>[
+      info.transcodingUrl,
+      source.transcodingUrl,
+      ...info.mediaSources.map((s) => s.transcodingUrl),
+    ];
+    for (final candidate in candidates) {
+      if (candidate != null && candidate.isNotEmpty) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  String _resolveAuthorizedUrl(String rawUrl, String token) {
+    final isAbsolute =
+        rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
+    final base = isAbsolute ? rawUrl : '${_apiClient.serverUrl}$rawUrl';
+    final uri = Uri.parse(base);
+    final queryParameters = Map<String, String>.from(uri.queryParameters);
+    if (token.isNotEmpty) {
+      queryParameters['api_key'] = token;
+    }
+    return uri.replace(queryParameters: queryParameters).toString();
   }
 }

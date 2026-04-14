@@ -20,6 +20,7 @@ class EmbyApiClient {
     Dio? dio,
   }) : _config = config,
        _securityService = securityService,
+       _resolvedDeviceId = _normalizeDeviceId(config.deviceId),
        _dio =
            dio ??
            Dio(
@@ -30,7 +31,8 @@ class EmbyApiClient {
                headers: {
                  'Content-Type': 'application/json',
                  'X-Emby-Authorization':
-                     'MediaBrowser Client="MeowHub", Device="MeowHub", DeviceId="${config.deviceId?.trim().isNotEmpty == true ? config.deviceId!.trim() : 'meowhub-device'}", Version="1.0.0"',
+                     'MediaBrowser Client="MeowHub", Device="MeowHub", DeviceId="${_normalizeDeviceId(config.deviceId)}", Version="1.0.0"',
+                 'X-Emby-Device-Id': _normalizeDeviceId(config.deviceId),
                },
              ),
            ) {
@@ -38,12 +40,14 @@ class EmbyApiClient {
       EmbyAuthInterceptor(
         securityService: securityService,
         sessionExpiredNotifier: sessionExpiredNotifier,
+        deviceId: _normalizeDeviceId(config.deviceId),
       ),
     );
   }
 
   final MediaServiceConfig _config;
   final SecurityService _securityService;
+  final String _resolvedDeviceId;
   final Dio _dio;
   Future<void>? _ongoingAuthentication;
 
@@ -123,6 +127,7 @@ class EmbyApiClient {
     Object? data,
     Map<String, dynamic>? queryParameters,
     bool withToken = true,
+    Map<String, dynamic>? headers,
   }) async {
     if (withToken) {
       await _ensureSession();
@@ -132,7 +137,7 @@ class EmbyApiClient {
       path,
       data: data,
       queryParameters: queryParameters,
-      options: Options(extra: {'withToken': withToken}),
+      options: Options(headers: headers, extra: {'withToken': withToken}),
     );
   }
 
@@ -224,20 +229,41 @@ class EmbyApiClient {
     String? mediaSourceId,
   }) async {
     final userId = await _requireUserId();
+    final effectiveMaxStreamingBitrate =
+        maxStreamingBitrate ?? 200 * 1000 * 1000;
+    final optionalBody = <String, dynamic>{};
+    void putIfPresent(String key, Object? value) {
+      if (value != null) {
+        optionalBody[key] = value;
+      }
+    }
+
+    putIfPresent('MaxStreamingBitrate', maxStreamingBitrate);
+    putIfPresent('RequireAvc', requireAvc);
+    putIfPresent('AudioStreamIndex', audioStreamIndex);
+    putIfPresent('SubtitleStreamIndex', subtitleStreamIndex);
+    putIfPresent('MediaSourceId', mediaSourceId);
     final body = <String, dynamic>{
       'UserId': userId,
-      if (maxStreamingBitrate != null)
-        'MaxStreamingBitrate': maxStreamingBitrate,
-      if (requireAvc != null) 'RequireAvc': requireAvc,
-      if (audioStreamIndex != null) 'AudioStreamIndex': audioStreamIndex,
-      if (subtitleStreamIndex != null)
-        'SubtitleStreamIndex': subtitleStreamIndex,
-      if (mediaSourceId != null) 'MediaSourceId': mediaSourceId,
+      'DeviceId': _resolvedDeviceId,
+      'EnableDirectPlay': true,
+      'EnableDirectStream': true,
+      'EnableTranscoding': true,
+      'AllowInterlacedVideoStreamCopy': true,
+      'AllowVideoStreamCopy': true,
+      'AllowAudioStreamCopy': true,
+      'IsPlayback': true,
+      ...optionalBody,
+      'DeviceProfile': _buildMediaKitDeviceProfile(
+        deviceId: _resolvedDeviceId,
+        maxStreamingBitrate: effectiveMaxStreamingBitrate,
+      ),
     };
     debugPrint("getPlaybackInfo: the post is /emby/Items/$itemId/PlaybackInfo");
     final resp = await post<Map<String, dynamic>>(
       '/emby/Items/$itemId/PlaybackInfo',
       data: body,
+      headers: {'X-Emby-Device-Id': _resolvedDeviceId},
     );
     debugPrint("getPlaybackInfo: the get data is $resp.data");
     final data = resp.data ?? <String, dynamic>{};
@@ -245,9 +271,7 @@ class EmbyApiClient {
     if (kDebugMode) {
       try {
         final sources = (data['MediaSources'] as List?) ?? const [];
-        debugPrint(
-          '[PlaybackInfo] sources=${sources.length} for item=$itemId',
-        );
+        debugPrint('[PlaybackInfo] sources=${sources.length} for item=$itemId');
         for (final s in sources.whereType<Map<String, dynamic>>()) {
           final streams = (s['MediaStreams'] as List?) ?? const [];
           final subsCount = streams
@@ -259,12 +283,8 @@ class EmbyApiClient {
               .length;
           final sid = s['Id'];
           debugPrint(
-            '[PlaybackInfo]  - sourceId=' +
-                (sid?.toString() ?? '') +
-                ' streams=' +
-                streams.length.toString() +
-                ' subs=' +
-                subsCount.toString(),
+            '[PlaybackInfo]  - sourceId=${sid?.toString() ?? ''} '
+            'streams=${streams.length} subs=$subsCount',
           );
         }
       } catch (e) {
@@ -348,4 +368,108 @@ class EmbyApiClient {
   void dispose() {
     _dio.close();
   }
+}
+
+String _normalizeDeviceId(String? deviceId) {
+  final normalized = deviceId?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return 'meowhub-device';
+  }
+  return normalized;
+}
+
+Map<String, dynamic> _buildMediaKitDeviceProfile({
+  required String deviceId,
+  required int maxStreamingBitrate,
+}) {
+  const videoContainers =
+      'mp4,m4v,mov,mkv,webm,ts,m2ts,mpegts,mpeg,mpg,avi,asf,wmv,flv,ogv,3gp';
+  const videoCodecs =
+      'h264,hevc,av1,vp8,vp9,mpeg1video,mpeg2video,mpeg4,msmpeg4v3,vc1,wmv3,mjpeg,prores,theora';
+  const audioCodecs =
+      'aac,alac,ac3,eac3,dts,flac,mp2,mp3,opus,pcm_alaw,pcm_mulaw,pcm_s16le,pcm_s24le,truehd,vorbis,wavpack,wmav2';
+  const audioContainers = 'aac,m4a,mp3,flac,ogg,oga,opus,wav,webma,wma';
+
+  return <String, dynamic>{
+    'Name': 'MeowHub media_kit',
+    'Id': deviceId,
+    'SupportedMediaTypes': 'Video,Audio',
+    'MaxStreamingBitrate': maxStreamingBitrate,
+    'MaxStaticBitrate': maxStreamingBitrate,
+    'MusicStreamingTranscodingBitrate': 384000,
+    'MaxStaticMusicBitrate': maxStreamingBitrate,
+    'DirectPlayProfiles': [
+      {
+        'Type': 'Video',
+        'Container': videoContainers,
+        'VideoCodec': videoCodecs,
+        'AudioCodec': audioCodecs,
+      },
+      {
+        'Type': 'Audio',
+        'Container': audioContainers,
+        'AudioCodec': audioCodecs,
+      },
+    ],
+    'TranscodingProfiles': [
+      {
+        'Type': 'Video',
+        'Container': 'ts',
+        'Protocol': 'hls',
+        'Context': 'Streaming',
+        'VideoCodec': 'h264,hevc,av1,vp9',
+        'AudioCodec': 'aac,ac3,eac3,mp3,opus,flac',
+        'TranscodeSeekInfo': 'Auto',
+        'ManifestSubtitles': 'vtt',
+        'CopyTimestamps': true,
+      },
+      {
+        'Type': 'Video',
+        'Container': 'ts',
+        'Protocol': 'http',
+        'Context': 'Streaming',
+        'VideoCodec': 'h264,hevc,av1,vp9',
+        'AudioCodec': 'aac,ac3,eac3,mp3,opus,flac',
+        'TranscodeSeekInfo': 'Auto',
+        'CopyTimestamps': true,
+      },
+      {
+        'Type': 'Video',
+        'Container': 'mp4',
+        'Protocol': 'http',
+        'Context': 'Static',
+        'VideoCodec': 'h264,hevc,av1',
+        'AudioCodec': 'aac,ac3,eac3,mp3,opus',
+        'TranscodeSeekInfo': 'Auto',
+        'CopyTimestamps': true,
+      },
+      {
+        'Type': 'Audio',
+        'Container': 'aac',
+        'Protocol': 'http',
+        'Context': 'Streaming',
+        'AudioCodec': 'aac,mp3,opus,flac',
+      },
+    ],
+    'SubtitleProfiles': [
+      {'Format': 'subrip', 'Method': 'External'},
+      {'Format': 'subrip', 'Method': 'Embed'},
+      {'Format': 'srt', 'Method': 'External'},
+      {'Format': 'srt', 'Method': 'Embed'},
+      {'Format': 'ass', 'Method': 'External'},
+      {'Format': 'ass', 'Method': 'Embed'},
+      {'Format': 'ssa', 'Method': 'External'},
+      {'Format': 'ssa', 'Method': 'Embed'},
+      {'Format': 'vtt', 'Method': 'External'},
+      {'Format': 'vtt', 'Method': 'Hls'},
+      {'Format': 'webvtt', 'Method': 'External'},
+      {'Format': 'webvtt', 'Method': 'Hls'},
+      {'Format': 'pgs', 'Method': 'Embed'},
+      {'Format': 'pgssub', 'Method': 'Embed'},
+      {'Format': 'sup', 'Method': 'Embed'},
+      {'Format': 'dvdsub', 'Method': 'Embed'},
+      {'Format': 'sub', 'Method': 'Embed'},
+      {'Format': 'idx', 'Method': 'Embed'},
+    ],
+  };
 }

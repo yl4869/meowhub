@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
+// debugPrint is available via material.dart import
 import 'package:provider/provider.dart';
 
 import '../../domain/entities/media_item.dart';
@@ -12,6 +12,7 @@ import '../../data/repositories/emby_playback_repository_impl.dart';
 import '../../domain/repositories/media_service_manager.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../atoms/meow_video_player.dart';
+// subtitles selection removed on player page
 import '../mobile/player/mobile_player_screen.dart';
 import '../tablet/player/tablet_player_screen.dart';
 import 'responsive_layout_builder.dart';
@@ -45,6 +46,23 @@ class _PlayerViewState extends State<PlayerView> {
   int? _selectedSubtitleIndex;
   bool _openSelectorPending = false;
 
+  EmbyPlaybackRepositoryImpl _buildPlaybackRepository() {
+    final manager = context.read<MediaServiceManager>();
+    final config = manager.getSavedConfig();
+    if (config == null || config.type != MediaServiceType.emby) {
+      throw StateError('Emby playback config is unavailable');
+    }
+    final api = EmbyApiClient(
+      config: config,
+      securityService: manager.securityService,
+      sessionExpiredNotifier: manager.sessionExpiredNotifier,
+    );
+    return EmbyPlaybackRepositoryImpl(
+      apiClient: api,
+      securityService: manager.securityService,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -57,44 +75,27 @@ class _PlayerViewState extends State<PlayerView> {
   }
 
   Future<void> _preparePlaybackPlan() async {
-    // 轻量注入：直接从 MediaServiceManager 构建 apiClient
     final manager = context.read<MediaServiceManager>();
     final config = manager.getSavedConfig();
     if (config == null || config.type != MediaServiceType.emby) {
       setState(() => _plan = null);
       return;
     }
-    final api = EmbyApiClient(
-      config: config,
-      securityService: manager.securityService,
-      sessionExpiredNotifier: manager.sessionExpiredNotifier,
-    );
-    final repo = EmbyPlaybackRepositoryImpl(
-      apiClient: api,
-      securityService: manager.securityService,
-    );
-    final usecase = GetPlaybackPlanUseCase(repo);
-    final plan = await usecase(
+    final saved = context.read<UserDataProvider>().trackSelectionForItem(
       widget.mediaItem,
-      maxStreamingBitrate: 10 * 1000 * 1000,
-      requireAvc: true,
+    );
+    final plan = await _fetchPlaybackPlan(
+      audioIndex: saved?.audioIndex,
+      subtitleIndex: saved?.subtitleIndex,
     );
     if (!mounted) return;
     setState(() {
       _plan = plan;
-      // 先读取用户上次的选择；没有的话不主动指定（跟随服务器默认）。
-      final saved = context.read<UserDataProvider>().trackSelectionForItem(
-        widget.mediaItem,
-      );
       _selectedAudioIndex = saved?.audioIndex;
       _selectedSubtitleIndex = saved?.subtitleIndex;
-      _currentUrl = _buildUrlWithIndices(
-        plan.url,
-        _selectedAudioIndex,
-        _selectedSubtitleIndex,
-      );
+      _currentUrl = plan.url;
 
-      // 初始化本地字幕选择描述（用于混合模式下指示是否本地渲染）
+      // 播放页不再处理字幕/音轨选择
     });
 
     if (_openSelectorPending && mounted) {
@@ -103,27 +104,19 @@ class _PlayerViewState extends State<PlayerView> {
     }
   }
 
-  String _buildUrlWithIndices(String base, int? audio, int? subtitle) {
-    final uri = Uri.parse(base);
-    final qp = Map<String, String>.from(uri.queryParameters);
-
-    // 音轨始终可直连附带
-    if (audio != null && audio >= 0) {
-      qp['AudioStreamIndex'] = audio.toString();
-    } else {
-      qp.remove('AudioStreamIndex');
-    }
-    // 移除所有字幕相关参数，保持直连
-    qp['Static'] = 'true';
-    qp.remove('SubtitleStreamIndex');
-    qp.remove('MediaSourceId');
-
-    final url = uri.replace(queryParameters: qp).toString();
-    assert(() {
-      debugPrint('[MeowHub][URL][PlayerView] $url');
-      return true;
-    }());
-    return url;
+  Future<PlaybackPlan> _fetchPlaybackPlan({
+    int? audioIndex,
+    int? subtitleIndex,
+  }) async {
+    final repo = _buildPlaybackRepository();
+    final usecase = GetPlaybackPlanUseCase(repo);
+    return usecase(
+      widget.mediaItem,
+      maxStreamingBitrate: 10 * 1000 * 1000,
+      requireAvc: true,
+      audioStreamIndex: audioIndex,
+      subtitleStreamIndex: subtitleIndex,
+    );
   }
 
   Future<void> _openTrackSelector() async {
@@ -177,24 +170,10 @@ class _PlayerViewState extends State<PlayerView> {
                   child: FilledButton(
                     onPressed: () {
                       Navigator.of(ctx).pop();
-                      setState(() {
-                        _selectedAudioIndex = tempAudio;
-                        _selectedSubtitleIndex = tempSub;
-                        // 保存用户选择，供后续进入同一媒体时复用
-                        context
-                            .read<UserDataProvider>()
-                            .setTrackSelectionForItem(
-                              widget.mediaItem,
-                              audioIndex: _selectedAudioIndex,
-                              subtitleIndex: _selectedSubtitleIndex,
-                            );
-                        final base = plan.url;
-                        _currentUrl = _buildUrlWithIndices(
-                          base,
-                          _selectedAudioIndex,
-                          _selectedSubtitleIndex,
-                        );
-                      });
+                      _applyTrackSelection(
+                        audioIndex: tempAudio,
+                        subtitleIndex: tempSub,
+                      );
                     },
                     child: const Text('应用'),
                   ),
@@ -214,6 +193,30 @@ class _PlayerViewState extends State<PlayerView> {
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
     _latestStatus = status;
+  }
+
+  Future<void> _applyTrackSelection({
+    int? audioIndex,
+    int? subtitleIndex,
+  }) async {
+    final nextPlan = await _fetchPlaybackPlan(
+      audioIndex: audioIndex,
+      subtitleIndex: subtitleIndex,
+    );
+    if (!mounted) {
+      return;
+    }
+    context.read<UserDataProvider>().setTrackSelectionForItem(
+      widget.mediaItem,
+      audioIndex: audioIndex,
+      subtitleIndex: subtitleIndex,
+    );
+    setState(() {
+      _plan = nextPlan;
+      _selectedAudioIndex = audioIndex;
+      _selectedSubtitleIndex = subtitleIndex;
+      _currentUrl = nextPlan.url;
+    });
   }
 
   @override
@@ -245,7 +248,7 @@ class _PlayerViewState extends State<PlayerView> {
           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
           playUrlOverride: _currentUrl ?? _plan?.url,
           onShowTrackSelector: null,
-          );
+        );
       },
       tabletBuilder: (context, maxWidth) {
         return TabletPlayerScreen(

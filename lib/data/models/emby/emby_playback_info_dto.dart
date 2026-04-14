@@ -1,8 +1,13 @@
 class EmbyPlaybackInfoDto {
-  const EmbyPlaybackInfoDto({this.mediaSources = const [], this.playSessionId});
+  const EmbyPlaybackInfoDto({
+    this.mediaSources = const [],
+    this.playSessionId,
+    this.transcodingUrl,
+  });
 
   final List<EmbyMediaSourceDto> mediaSources;
   final String? playSessionId;
+  final String? transcodingUrl;
 
   factory EmbyPlaybackInfoDto.fromJson(Map<String, dynamic> json) {
     final sources = (json['MediaSources'] as List<dynamic>? ?? const [])
@@ -12,6 +17,7 @@ class EmbyPlaybackInfoDto {
     return EmbyPlaybackInfoDto(
       mediaSources: sources,
       playSessionId: json['PlaySessionId'] as String?,
+      transcodingUrl: json['TranscodingUrl'] as String?,
     );
   }
 }

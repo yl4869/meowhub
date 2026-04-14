@@ -8,7 +8,7 @@ class EmbyAuthInterceptor extends QueuedInterceptor {
   EmbyAuthInterceptor({
     required SecurityService securityService,
     required SessionExpiredNotifier sessionExpiredNotifier,
-    this.deviceId = 'debug-mac-device', // 传入设备ID
+    this.deviceId = 'meowhub-device',
   }) : _securityService = securityService,
        _sessionExpiredNotifier = sessionExpiredNotifier;
 
@@ -32,6 +32,7 @@ class EmbyAuthInterceptor extends QueuedInterceptor {
       // 2. 无论是否需要 Token，设备信息通常是需要的
       options.headers['X-Emby-Authorization'] =
           'MediaBrowser Client="MeowHub", Device="MeowHub", DeviceId="$deviceId", Version="1.0.0"';
+      options.headers['X-Emby-Device-Id'] = deviceId;
 
       // 3. 只有当明确需要 Token 时，才去读取并注入
       if (requiresToken) {
@@ -48,7 +49,7 @@ class EmbyAuthInterceptor extends QueuedInterceptor {
 
       // 4. 必须调用，否则请求永远停在这里
       handler.next(options);
-    } catch (e, stack) {
+    } catch (e) {
       debugPrint('🚨 [Interceptor] 内部逻辑崩溃: $e');
       // 即使拦截器崩了，也建议让请求继续或报错，而不是卡死
       handler.reject(DioException(requestOptions: options, error: e));

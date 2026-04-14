@@ -10,9 +10,13 @@ class GetPlaybackPlanUseCase {
     MediaItem item, {
     int? maxStreamingBitrate,
     bool? requireAvc,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   }) => _repo.getPlaybackPlan(
     item,
     maxStreamingBitrate: maxStreamingBitrate,
     requireAvc: requireAvc,
+    audioStreamIndex: audioStreamIndex,
+    subtitleStreamIndex: subtitleStreamIndex,
   );
 }
