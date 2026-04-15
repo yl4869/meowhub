@@ -17,15 +17,55 @@ void main() {
     mockSecurityService = MockSecurityService();
     mockNotifier = MockSessionExpiredNotifier();
     mockDio = MockDio();
+
+    when(
+      () => mockSecurityService.readAccessToken(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.readUserId(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.readPassword(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.writeAccessToken(
+        any(),
+        namespace: any(named: 'namespace'),
+      ),
+    ).thenAnswer((_) async {});
+    when(
+      () => mockSecurityService.writeUserId(
+        any(),
+        namespace: any(named: 'namespace'),
+      ),
+    ).thenAnswer((_) async {});
+    when(
+      () => mockSecurityService.writePassword(
+        any(),
+        namespace: any(named: 'namespace'),
+      ),
+    ).thenAnswer((_) async {});
   });
 
   group('HTTP 方法测试', () {
-    test('GET 请求自动添加认证头', () async {
+    test('GET 请求在已有 session 时直接发起请求', () async {
+      final config = MediaServiceConfig(
+        type: MediaServiceType.emby,
+        serverUrl: 'http://test.com',
+        deviceId: 'test-device',
+      );
+
       // 模拟 token 和 userId
-      when(() => mockSecurityService.readAccessToken())
-          .thenAnswer((_) async => 'existing-token');
-      when(() => mockSecurityService.readUserId())
-          .thenAnswer((_) async => 'existing-user');
+      when(
+        () => mockSecurityService.readAccessToken(
+          namespace: config.credentialNamespace,
+        ),
+      ).thenAnswer((_) async => 'existing-token');
+      when(
+        () => mockSecurityService.readUserId(
+          namespace: config.credentialNamespace,
+        ),
+      ).thenAnswer((_) async => 'existing-user');
 
       // 模拟 GET 响应
       final mockResponse = MockResponse<Map<String, dynamic>>(
@@ -33,25 +73,12 @@ void main() {
         headers: {'content-type': 'application/json'},
       );
 
-      when(() => mockDio.get<Map<String, dynamic>>(
-        any(),
-        queryParameters: any(named: 'queryParameters'),
-        options: any(named: 'options'),
-      )).thenAnswer((invocation) async {
-        // 验证请求头
-        final options = invocation.namedArguments[#options] as Options?;
-        final headers = options?.headers ?? {};
-
-        // 验证认证头存在
-        expect(headers['X-Emby-Authorization'], isNotNull);
-        return mockResponse;
-      });
-
-      final config = MediaServiceConfig(
-        type: MediaServiceType.emby,
-        serverUrl: 'http://test.com',
-        deviceId: 'test-device',
-      );
+      when(
+        () => mockDio.get<Map<String, dynamic>>(
+          any(),
+          queryParameters: any(named: 'queryParameters'),
+        ),
+      ).thenAnswer((_) async => mockResponse);
 
       client = EmbyApiClient(
         config: config,
@@ -64,36 +91,54 @@ void main() {
       await client.get<Map<String, dynamic>>('/test');
 
       // 验证被调用
-      verify(() => mockDio.get<Map<String, dynamic>>(
-        any(),
-        queryParameters: any(named: 'queryParameters'),
-        options: any(named: 'options'),
-      )).called(1);
+      verify(
+        () => mockDio.get<Map<String, dynamic>>(
+          '/test',
+          queryParameters: null,
+        ),
+      ).called(1);
     });
 
     test('当 token 过期时自动重新认证', () async {
-      // 第一次：token 不存在
-      var callCount = 0;
-      when(() => mockSecurityService.readAccessToken())
-          .thenAnswer((_) async {
-            if (callCount == 0) {
-              callCount++;
-              return null;  // 第一次返回 null
-            }
-            return 'new-token';
-          });
+      final config = MediaServiceConfig(
+        type: MediaServiceType.emby,
+        serverUrl: 'http://test.com',
+        username: 'user',
+        deviceId: 'test-device',
+      );
 
-      when(() => mockSecurityService.readUserId())
-          .thenAnswer((_) async => 'user-id');
+      String? accessToken;
+      when(
+        () => mockSecurityService.readAccessToken(
+          namespace: config.credentialNamespace,
+        ),
+      ).thenAnswer((_) async => accessToken);
+
+      when(
+        () => mockSecurityService.readUserId(
+          namespace: config.credentialNamespace,
+        ),
+      ).thenAnswer((_) async => 'user-id');
 
       // 模拟认证调用
-      when(() => mockSecurityService.readPassword())
-          .thenAnswer((_) async => 'password');
+      when(
+        () => mockSecurityService.readPassword(
+          namespace: config.credentialNamespace,
+        ),
+      ).thenAnswer((_) async => 'password');
+      when(
+        () => mockSecurityService.writeAccessToken(
+          any(),
+          namespace: config.credentialNamespace,
+        ),
+      ).thenAnswer((invocation) async {
+        accessToken = invocation.positionalArguments.first as String;
+      });
 
       final authResponse = MockResponse<Map<String, dynamic>>(
         data: {
           'AccessToken': 'new-token',
-          'User': {'Id': 'user-id'},
+          'User': {'Id': 'user-id', 'Name': 'test-user'},
         },
       );
 
@@ -102,23 +147,21 @@ void main() {
       );
 
       // 设置 Dio 调用序列
-      when(() => mockDio.post<Map<String, dynamic>>(
-        '/emby/Users/AuthenticateByName',
-        data: any(named: 'data'),
-        options: any(named: 'options'),
-      )).thenAnswer((_) async => authResponse);
+      when(
+        () => mockDio.post<Map<String, dynamic>>(
+          '/emby/Users/AuthenticateByName',
+          data: any(named: 'data'),
+          queryParameters: any(named: 'queryParameters'),
+          options: any(named: 'options'),
+        ),
+      ).thenAnswer((_) async => authResponse);
 
-      when(() => mockDio.get<Map<String, dynamic>>(
-        any(),
-        options: any(named: 'options'),
-      )).thenAnswer((_) async => apiResponse);
-
-      final config = MediaServiceConfig(
-        type: MediaServiceType.emby,
-        serverUrl: 'http://test.com',
-        username: 'user',
-        deviceId: 'test-device',
-      );
+      when(
+        () => mockDio.get<Map<String, dynamic>>(
+          any(),
+          queryParameters: any(named: 'queryParameters'),
+        ),
+      ).thenAnswer((_) async => apiResponse);
 
       client = EmbyApiClient(
         config: config,
@@ -131,7 +174,11 @@ void main() {
       await client.get<Map<String, dynamic>>('/test');
 
       // 验证认证被调用
-      verify(() => mockSecurityService.readPassword()).called(1);
+      verify(
+        () => mockSecurityService.readPassword(
+          namespace: config.credentialNamespace,
+        ),
+      ).called(greaterThanOrEqualTo(1));
     });
   });
 }

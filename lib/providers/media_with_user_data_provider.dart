@@ -34,10 +34,24 @@ class MediaWithUserDataProvider extends ChangeNotifier {
 
   List<MediaItem> get recentWatching {
     final itemByKey = {for (final item in allItems) item.mediaKey: item};
-    return _userDataProvider.recentPlaybackMediaKeys
-        .map((key) => itemByKey[key])
-        .whereType<MediaItem>()
-        .toList(growable: false);
+    final resolvedItems = <MediaItem>[];
+    final seenKeys = <String>{};
+
+    for (final historyItem in _userDataProvider.watchHistory) {
+      final exactKey = '${historyItem.sourceType.name}:${historyItem.id}';
+      final seriesKey = historyItem.seriesId == null
+          ? null
+          : '${historyItem.sourceType.name}:${historyItem.seriesId}';
+      final matched =
+          itemByKey[exactKey] ??
+          (seriesKey == null ? null : itemByKey[seriesKey]);
+      if (matched == null || !seenKeys.add(matched.mediaKey)) {
+        continue;
+      }
+      resolvedItems.add(matched);
+    }
+
+    return resolvedItems;
   }
 
   bool get isLoading => _mediaLibraryProvider.state.isLoading;

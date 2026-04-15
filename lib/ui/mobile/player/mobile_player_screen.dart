@@ -50,6 +50,8 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   MeowVideoPlaybackStatus? _latestStatus;
   Player? _player;
   late final UserDataProvider _udp;
+  Future<void>? _syncOnExitFuture;
+  bool _allowImmediatePop = false;
 
   @override
   void initState() {
@@ -78,49 +80,70 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     widget.onPlaybackStatusChanged(status);
   }
 
-  Future<bool> _stopAndSync() async {
-    final capturedItem = widget.mediaItem;
-    final status = _latestStatus;
-    if (status != null && status.isInitialized) {
-      _udp.updatePlaybackProgressMemoryOnlyForItem(
-        capturedItem,
-        position: status.position,
-        duration: status.duration,
-      );
+  Future<void> _syncOnExit() {
+    final existing = _syncOnExitFuture;
+    if (existing != null) {
+      return existing;
     }
+
+    final future = _performSyncOnExit();
+    _syncOnExitFuture = future;
+    return future;
+  }
+
+  void _applyLocalProgressOnExit() {
+    final status = _latestStatus;
+    if (status == null || !status.isInitialized) {
+      debugPrint(
+        '[Resume][Mobile][Exit][Local] item=${widget.mediaItem.dataSourceId} '
+        'status=<none>',
+      );
+      return;
+    }
+    debugPrint(
+      '[Resume][Mobile][Exit][Local] item=${widget.mediaItem.dataSourceId} '
+      'position=${status.position.inMilliseconds}ms '
+      'duration=${status.duration.inMilliseconds}ms',
+    );
+    _udp.updatePlaybackProgressMemoryOnlyForItem(
+      widget.mediaItem,
+      position: status.position,
+      duration: status.duration,
+      notify: true,
+    );
+  }
+
+  Future<void> _performSyncOnExit() async {
+    final capturedItem = widget.mediaItem;
+    _applyLocalProgressOnExit();
     final p = _player;
     if (p != null) {
       try {
         await p.stop();
       } catch (_) {}
     }
+    debugPrint(
+      '[Resume][Mobile][Exit][Remote] item=${capturedItem.dataSourceId} '
+      'begin sync',
+    );
     await _udp.syncProgressToServerForItem(capturedItem);
-    return true;
+    debugPrint(
+      '[Resume][Mobile][Exit][Remote] item=${capturedItem.dataSourceId} '
+      'sync done',
+    );
   }
 
   @override
   void dispose() {
-    // 退出时：先尝试同步最后位置
-    final status = _latestStatus;
-    if (status != null && status.isInitialized) {
-      _udp.updatePlaybackProgressMemoryOnlyForItem(
-        widget.mediaItem,
-        position: status.position,
-        duration: status.duration,
-      );
-    }
+    // ignore: discarded_futures
+    _syncOnExit();
     // 尽量先停止音频流并释放 VideoController，避免退出后残留音轨
     final p = _player;
     if (p != null) {
       try {
-        // ignore: discarded_futures
-        p.stop();
-      } catch (_) {}
-      try {
         p.dispose();
       } catch (_) {}
     }
-    _udp.syncProgressToServerForItem(widget.mediaItem);
     super.dispose();
   }
 
@@ -128,11 +151,21 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   Widget build(BuildContext context) {
     // 支持预测性返回：先停音频/同步，再退出
     return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, _) async {
-        final navigator = Navigator.of(context);
-        final ok = await _stopAndSync();
-        if (!didPop && ok && mounted) navigator.pop();
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (_allowImmediatePop) {
+          _allowImmediatePop = false;
+          return;
+        }
+        debugPrint(
+          '[Resume][Mobile][Pop] item=${widget.mediaItem.dataSourceId} '
+          'triggered didPop=$didPop',
+        );
+        _applyLocalProgressOnExit();
+        _allowImmediatePop = true;
+        Navigator.of(context).pop();
+        // ignore: discarded_futures
+        _syncOnExit();
       },
       child: OrientationBuilder(
         builder: (context, orientation) {

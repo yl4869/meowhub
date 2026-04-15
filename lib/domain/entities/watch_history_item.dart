@@ -27,6 +27,9 @@ class WatchHistoryItem {
     required this.duration,
     required this.updatedAt,
     required this.sourceType,
+    this.seriesId,
+    this.parentIndexNumber,
+    this.indexNumber,
   });
 
   final String id;
@@ -36,6 +39,9 @@ class WatchHistoryItem {
   final Duration duration;
   final DateTime updatedAt;
   final WatchSourceType sourceType;
+  final String? seriesId;
+  final int? parentIndexNumber;
+  final int? indexNumber;
 
   String get uniqueKey => '${sourceType.name}:$id';
 
@@ -56,6 +62,9 @@ class WatchHistoryItem {
     Duration? duration,
     DateTime? updatedAt,
     WatchSourceType? sourceType,
+    Object? seriesId = _sentinel,
+    Object? parentIndexNumber = _sentinel,
+    Object? indexNumber = _sentinel,
   }) {
     return WatchHistoryItem(
       id: id ?? this.id,
@@ -65,6 +74,17 @@ class WatchHistoryItem {
       duration: duration ?? this.duration,
       updatedAt: updatedAt ?? this.updatedAt,
       sourceType: sourceType ?? this.sourceType,
+      seriesId: identical(seriesId, _sentinel)
+          ? this.seriesId
+          : seriesId as String?,
+      parentIndexNumber: identical(parentIndexNumber, _sentinel)
+          ? this.parentIndexNumber
+          : parentIndexNumber as int?,
+      indexNumber: identical(indexNumber, _sentinel)
+          ? this.indexNumber
+          : indexNumber as int?,
     );
   }
 }
+
+const Object _sentinel = Object();

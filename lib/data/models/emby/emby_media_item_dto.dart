@@ -17,6 +17,8 @@ class EmbyMediaItemDto {
     this.parentIndexNumber,
     this.indexNumber,
     this.seriesName,
+    this.seriesId,
+    this.userData,
   });
 
   final String id;
@@ -34,6 +36,8 @@ class EmbyMediaItemDto {
   final int? parentIndexNumber;
   final int? indexNumber;
   final String? seriesName;
+  final String? seriesId;
+  final EmbyUserDataDto? userData;
 
   factory EmbyMediaItemDto.fromJson(Map<String, dynamic> json) {
     final rawBackdropTags =
@@ -54,8 +58,12 @@ class EmbyMediaItemDto {
       parentIndexNumber: (json['ParentIndexNumber'] as num?)?.toInt(),
       indexNumber: (json['IndexNumber'] as num?)?.toInt(),
       seriesName: json['SeriesName'] as String?,
+      seriesId: json['SeriesId'] as String?,
       imageTags: json['ImageTags'] is Map<String, dynamic>
           ? EmbyImageTagsDto.fromJson(json['ImageTags'] as Map<String, dynamic>)
+          : null,
+      userData: json['UserData'] is Map<String, dynamic>
+          ? EmbyUserDataDto.fromJson(json['UserData'] as Map<String, dynamic>)
           : null,
       backdropImageTags: rawBackdropTags
           .map((tag) => tag.toString())
@@ -65,6 +73,29 @@ class EmbyMediaItemDto {
           .whereType<Map<String, dynamic>>()
           .map(EmbyPersonDto.fromJson)
           .toList(growable: false),
+    );
+  }
+}
+
+class EmbyUserDataDto {
+  const EmbyUserDataDto({
+    this.playbackPositionTicks = 0,
+    this.lastPlayedDate,
+    this.played = false,
+  });
+
+  final int playbackPositionTicks;
+  final DateTime? lastPlayedDate;
+  final bool played;
+
+  factory EmbyUserDataDto.fromJson(Map<String, dynamic> json) {
+    return EmbyUserDataDto(
+      playbackPositionTicks:
+          (json['PlaybackPositionTicks'] as num?)?.toInt() ?? 0,
+      lastPlayedDate: json['LastPlayedDate'] == null
+          ? null
+          : DateTime.tryParse(json['LastPlayedDate'].toString()),
+      played: json['Played'] as bool? ?? false,
     );
   }
 }

@@ -6,6 +6,9 @@ class EmbyResumeItemDto {
     this.playbackPositionTicks = 0,
     this.runTimeTicks = 0,
     this.lastPlayedDate,
+    this.seriesId,
+    this.parentIndexNumber,
+    this.indexNumber,
   });
 
   final String id;
@@ -14,4 +17,7 @@ class EmbyResumeItemDto {
   final int playbackPositionTicks;
   final int runTimeTicks;
   final String? lastPlayedDate; // ISO 8601 string from server
+  final String? seriesId;
+  final int? parentIndexNumber;
+  final int? indexNumber;
 }

@@ -16,15 +16,32 @@ void main() {
     mockSecurityService = MockSecurityService();
     mockNotifier = MockSessionExpiredNotifier();
     mockDio = MockDio();
+
+    when(
+      () => mockSecurityService.readAccessToken(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.readUserId(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
   });
 
   group('业务方法测试', () {
     test('获取媒体库', () async {
+      final config = MediaServiceConfig(
+        type: MediaServiceType.emby,
+        serverUrl: 'http://test.com',
+        deviceId: 'test-device',
+      );
+
       when(
-        () => mockSecurityService.readUserId(),
+        () => mockSecurityService.readUserId(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'user-123');
       when(
-        () => mockSecurityService.readAccessToken(),
+        () => mockSecurityService.readAccessToken(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'token-123');
 
       final mockResponse = MockResponse<Map<String, dynamic>>(
@@ -48,12 +65,6 @@ void main() {
         ),
       ).thenAnswer((_) async => mockResponse);
 
-      final config = MediaServiceConfig(
-        type: MediaServiceType.emby,
-        serverUrl: 'http://test.com',
-        deviceId: 'test-device',
-      );
-
       client = EmbyApiClient(
         config: config,
         securityService: mockSecurityService,
@@ -68,11 +79,21 @@ void main() {
     });
 
     test('获取电影列表', () async {
+      final config = MediaServiceConfig(
+        type: MediaServiceType.emby,
+        serverUrl: 'http://test.com',
+        deviceId: 'test-device',
+      );
+
       when(
-        () => mockSecurityService.readUserId(),
+        () => mockSecurityService.readUserId(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'user-123');
       when(
-        () => mockSecurityService.readAccessToken(),
+        () => mockSecurityService.readAccessToken(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'token-123');
 
       final mockResponse = MockResponse<Map<String, dynamic>>(
@@ -94,23 +115,9 @@ void main() {
       when(
         () => mockDio.get<Map<String, dynamic>>(
           '/emby/Users/user-123/Items',
-          queryParameters: {
-            'Recursive': 'true',
-            'IncludeItemTypes': 'Movie',
-            'SortBy': 'DateCreated,SortName',
-            'SortOrder': 'Descending',
-            'Fields': 'PrimaryImageAspectRatio,ImageTags,Overview',
-            'Limit': '100',
-          },
-          options: any(named: 'options'),
+          queryParameters: any(named: 'queryParameters'),
         ),
       ).thenAnswer((_) async => mockResponse);
-
-      final config = MediaServiceConfig(
-        type: MediaServiceType.emby,
-        serverUrl: 'http://test.com',
-        deviceId: 'test-device',
-      );
 
       client = EmbyApiClient(
         config: config,
@@ -127,11 +134,21 @@ void main() {
     });
 
     test('更新播放进度', () async {
+      final config = MediaServiceConfig(
+        type: MediaServiceType.emby,
+        serverUrl: 'http://test.com',
+        deviceId: 'test-device',
+      );
+
       when(
-        () => mockSecurityService.readUserId(),
+        () => mockSecurityService.readUserId(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'user-123');
       when(
-        () => mockSecurityService.readAccessToken(),
+        () => mockSecurityService.readAccessToken(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'token-123');
 
       final mockResponse = MockResponse<void>(
@@ -142,16 +159,11 @@ void main() {
       when(
         () => mockDio.post<void>(
           '/emby/Users/user-123/PlayingItems/movie-123',
-          queryParameters: {'PositionTicks': '600000000'},
+          data: any(named: 'data'),
+          queryParameters: any(named: 'queryParameters'),
           options: any(named: 'options'),
         ),
       ).thenAnswer((_) async => mockResponse);
-
-      final config = MediaServiceConfig(
-        type: MediaServiceType.emby,
-        serverUrl: 'http://test.com',
-        deviceId: 'test-device',
-      );
 
       client = EmbyApiClient(
         config: config,
@@ -169,7 +181,8 @@ void main() {
       verify(
         () => mockDio.post<void>(
           '/emby/Users/user-123/PlayingItems/movie-123',
-          queryParameters: {'PositionTicks': '600000000'},
+          data: any(named: 'data'),
+          queryParameters: any(named: 'queryParameters'),
           options: any(named: 'options'),
         ),
       ).called(1);

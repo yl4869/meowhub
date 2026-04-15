@@ -70,8 +70,10 @@ class MediaItem {
     this.playbackProgress,
     this.playableItems = const [],
     this.parentTitle,
+    this.seriesId,
     this.indexNumber,
     this.parentIndexNumber,
+    this.lastPlayedAt,
     this.subtitles = const [],
   });
 
@@ -92,8 +94,10 @@ class MediaItem {
   final MediaPlaybackProgress? playbackProgress;
   final List<MediaItem> playableItems;
   final String? parentTitle;
+  final String? seriesId;
   final int? indexNumber;
   final int? parentIndexNumber;
+  final DateTime? lastPlayedAt;
   final List<SubtitleInfo> subtitles;
 
   String get dataSourceId => sourceId ?? id.toString();
@@ -134,8 +138,10 @@ class MediaItem {
     Object? playbackProgress = _sentinel,
     List<MediaItem>? playableItems,
     Object? parentTitle = _sentinel,
+    Object? seriesId = _sentinel,
     Object? indexNumber = _sentinel,
     Object? parentIndexNumber = _sentinel,
+    Object? lastPlayedAt = _sentinel,
     List<SubtitleInfo>? subtitles,
   }) {
     return MediaItem(
@@ -168,12 +174,18 @@ class MediaItem {
       parentTitle: identical(parentTitle, _sentinel)
           ? this.parentTitle
           : parentTitle as String?,
+      seriesId: identical(seriesId, _sentinel)
+          ? this.seriesId
+          : seriesId as String?,
       indexNumber: identical(indexNumber, _sentinel)
           ? this.indexNumber
           : indexNumber as int?,
       parentIndexNumber: identical(parentIndexNumber, _sentinel)
           ? this.parentIndexNumber
           : parentIndexNumber as int?,
+      lastPlayedAt: identical(lastPlayedAt, _sentinel)
+          ? this.lastPlayedAt
+          : lastPlayedAt as DateTime?,
       subtitles: subtitles ?? this.subtitles,
     );
   }

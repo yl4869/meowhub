@@ -51,6 +51,8 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
   MeowVideoPlaybackStatus? _latestStatus;
   Player? _player;
   late final UserDataProvider _udp;
+  Future<void>? _syncOnExitFuture;
+  bool _allowImmediatePop = false;
 
   bool get _hasPlayableUrl {
     final playUrl = widget.mediaItem.playUrl;
@@ -77,24 +79,57 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     widget.onPlaybackStatusChanged(status);
   }
 
-  Future<bool> _stopAndSync() async {
-    final item = widget.mediaItem;
-    final status = _latestStatus;
-    if (status != null && status.isInitialized) {
-      _udp.updatePlaybackProgressMemoryOnlyForItem(
-        item,
-        position: status.position,
-        duration: status.duration,
-      );
+  Future<void> _syncOnExit() {
+    final existing = _syncOnExitFuture;
+    if (existing != null) {
+      return existing;
     }
+
+    final future = _performSyncOnExit();
+    _syncOnExitFuture = future;
+    return future;
+  }
+
+  void _applyLocalProgressOnExit() {
+    final status = _latestStatus;
+    if (status == null || !status.isInitialized) {
+      debugPrint(
+        '[Resume][Tablet][Exit][Local] item=${widget.mediaItem.dataSourceId} '
+        'status=<none>',
+      );
+      return;
+    }
+    debugPrint(
+      '[Resume][Tablet][Exit][Local] item=${widget.mediaItem.dataSourceId} '
+      'position=${status.position.inMilliseconds}ms '
+      'duration=${status.duration.inMilliseconds}ms',
+    );
+    _udp.updatePlaybackProgressMemoryOnlyForItem(
+      widget.mediaItem,
+      position: status.position,
+      duration: status.duration,
+      notify: true,
+    );
+  }
+
+  Future<void> _performSyncOnExit() async {
+    final item = widget.mediaItem;
+    _applyLocalProgressOnExit();
     final p = _player;
     if (p != null) {
       try {
         await p.stop();
       } catch (_) {}
     }
+    debugPrint(
+      '[Resume][Tablet][Exit][Remote] item=${item.dataSourceId} '
+      'begin sync',
+    );
     await _udp.syncProgressToServerForItem(item);
-    return true;
+    debugPrint(
+      '[Resume][Tablet][Exit][Remote] item=${item.dataSourceId} '
+      'sync done',
+    );
   }
 
   @override
@@ -102,11 +137,21 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     final sideWidth = widget.maxWidth >= 1100 ? 340.0 : 300.0;
 
     return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, _) async {
-        final navigator = Navigator.of(context);
-        final ok = await _stopAndSync();
-        if (!didPop && ok) navigator.pop();
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (_allowImmediatePop) {
+          _allowImmediatePop = false;
+          return;
+        }
+        debugPrint(
+          '[Resume][Tablet][Pop] item=${widget.mediaItem.dataSourceId} '
+          'triggered didPop=$didPop',
+        );
+        _applyLocalProgressOnExit();
+        _allowImmediatePop = true;
+        Navigator.of(context).pop();
+        // ignore: discarded_futures
+        _syncOnExit();
       },
       child: Scaffold(
         appBar: AppBar(title: const Text('播放中')),
@@ -207,13 +252,11 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
 
   @override
   void dispose() {
+    // ignore: discarded_futures
+    _syncOnExit();
     // 仅负责尽力停止与释放底层资源；状态同步在 PopScope 中完成
     final p = _player;
     if (p != null) {
-      try {
-        // ignore: discarded_futures
-        p.stop();
-      } catch (_) {}
       try {
         p.dispose();
       } catch (_) {}

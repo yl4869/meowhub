@@ -16,6 +16,34 @@ void main() {
     mockSecurityService = MockSecurityService();
     mockNotifier = MockSessionExpiredNotifier();
     mockDio = MockDio();
+
+    when(
+      () => mockSecurityService.readAccessToken(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.readUserId(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.readPassword(namespace: any(named: 'namespace')),
+    ).thenAnswer((_) async => null);
+    when(
+      () => mockSecurityService.writeAccessToken(
+        any(),
+        namespace: any(named: 'namespace'),
+      ),
+    ).thenAnswer((_) async {});
+    when(
+      () => mockSecurityService.writeUserId(
+        any(),
+        namespace: any(named: 'namespace'),
+      ),
+    ).thenAnswer((_) async {});
+    when(
+      () => mockSecurityService.writePassword(
+        any(),
+        namespace: any(named: 'namespace'),
+      ),
+    ).thenAnswer((_) async {});
   });
 
   group('认证测试', () {
@@ -31,13 +59,15 @@ void main() {
 
       // 模拟读取密码
       when(
-        () => mockSecurityService.readPassword(),
+        () => mockSecurityService.readPassword(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'testpass');
 
       // 模拟认证成功响应
       final authResponse = {
         'AccessToken': 'mock-token-123',
-        'User': {'Id': 'user-456'},
+        'User': {'Id': 'user-456', 'Name': 'test-user'},
       };
 
       final mockResponse = MockResponse<Map<String, dynamic>>(
@@ -54,17 +84,6 @@ void main() {
         ),
       ).thenAnswer((_) async => mockResponse);
 
-      // 模拟写入
-      when(
-        () => mockSecurityService.writeAccessToken(any()),
-      ).thenAnswer((_) async {});
-      when(
-        () => mockSecurityService.writeUserId(any()),
-      ).thenAnswer((_) async {});
-      when(
-        () => mockSecurityService.writePassword(any()),
-      ).thenAnswer((_) async {});
-
       // 创建客户端
       client = EmbyApiClient(
         config: config,
@@ -78,9 +97,17 @@ void main() {
 
       // 验证写入调用
       verify(
-        () => mockSecurityService.writeAccessToken('mock-token-123'),
+        () => mockSecurityService.writeAccessToken(
+          'mock-token-123',
+          namespace: config.credentialNamespace,
+        ),
       ).called(1);
-      verify(() => mockSecurityService.writeUserId('user-456')).called(1);
+      verify(
+        () => mockSecurityService.writeUserId(
+          'user-456',
+          namespace: config.credentialNamespace,
+        ),
+      ).called(1);
     });
 
     test('认证失败 - 缺少用户名密码', () async {
@@ -112,13 +139,15 @@ void main() {
       );
 
       when(
-        () => mockSecurityService.readPassword(),
+        () => mockSecurityService.readPassword(
+          namespace: config.credentialNamespace,
+        ),
       ).thenAnswer((_) async => 'testpass');
 
       // 模拟返回空 token
       final authResponse = {
         'AccessToken': '', // 空 token
-        'User': {'Id': 'user-456'},
+        'User': {'Id': 'user-456', 'Name': 'test-user'},
       };
 
       final mockResponse = MockResponse<Map<String, dynamic>>(

@@ -45,40 +45,67 @@ class _MediaDetailViewState extends State<MediaDetailView> {
       initialData: widget.mediaItem,
       builder: (context, snapshot) {
         final mediaItem = snapshot.data ?? widget.mediaItem;
-        final playableItems = mediaItem.playableItems.isEmpty
+        final rawPlayableItems = mediaItem.playableItems.isEmpty
             ? [mediaItem]
             : mediaItem.playableItems;
+        final userDataProvider = context.watch<UserDataProvider>();
+        final isFavorite = userDataProvider.isFavorite(mediaItem.id);
+        final playableItems = rawPlayableItems
+            .map(
+              (item) => item.copyWith(
+                playbackProgress:
+                    userDataProvider.playbackProgressForItem(item) ??
+                    item.playbackProgress,
+              ),
+            )
+            .toList(growable: false);
         final hasPlayableUrl = playableItems.any(
           (item) => item.playUrl?.isNotEmpty ?? false,
         );
-        final userDataProvider = context.read<UserDataProvider>();
-        final isFavorite = context.select<UserDataProvider, bool>(
-          (provider) => provider.isFavorite(mediaItem.id),
+        final resumePlayableItemId = userDataProvider.resumePlayableItemIdForItem(
+          mediaItem,
         );
-        final playbackProgress = context
-            .select<UserDataProvider, MediaPlaybackProgress?>(
-              (provider) => provider.playbackProgressForItem(mediaItem),
-            );
-        final initialEpisodeIndex = context.select<UserDataProvider, int>(
-          (provider) => provider.episodeIndexForItem(mediaItem),
+        final fallbackEpisodeIndex = userDataProvider.episodeIndexForItem(
+          mediaItem,
         );
-        final hasRecentWatchRecord = context.select<UserDataProvider, bool>(
-          (provider) =>
-              provider.recentPlaybackMediaKeys.contains(mediaItem.mediaKey),
+        final initialEpisodeIndex = _resolveInitialEpisodeIndex(
+          mediaItem: mediaItem,
+          playableItems: playableItems,
+          resumePlayableItemId: resumePlayableItemId,
+          fallbackEpisodeIndex: fallbackEpisodeIndex,
         );
-
-        void handlePlayPressed(int episodeIndex, {bool openTrackSelector = false}) {
+        final selectedPlayableItem = playableItems[initialEpisodeIndex.clamp(
+          0,
+          playableItems.length - 1,
+        )];
+        debugPrint(
+          '[Resume][Detail] media=${mediaItem.dataSourceId} '
+          'resumePlayable=${resumePlayableItemId ?? ''} '
+          'fallbackIndex=$fallbackEpisodeIndex '
+          'selectedIndex=$initialEpisodeIndex '
+          'selectedItem=${selectedPlayableItem.dataSourceId} '
+          'selectedProgress=${selectedPlayableItem.playbackProgress?.position.inMilliseconds ?? 0}ms',
+        );
+        void handlePlayPressed(
+          int episodeIndex, {
+          bool openTrackSelector = false,
+        }) {
           final targetIndex = episodeIndex.clamp(0, playableItems.length - 1);
           final selectedItem = playableItems[targetIndex];
-          userDataProvider.markRecentlyWatchedItem(
-            mediaItem,
+          debugPrint(
+            '[Resume][Detail][Play] media=${mediaItem.dataSourceId} '
+            'targetIndex=$targetIndex '
+            'selectedItem=${selectedItem.dataSourceId} '
+            'selectedProgress=${selectedItem.playbackProgress?.position.inMilliseconds ?? 0}ms',
+          );
+          userDataProvider.markRecentlyWatchedItemMemoryOnly(
+            selectedItem,
             episodeIndex: targetIndex,
           );
-          final path = PlayerView.locationFor(selectedItem.id) + (openTrackSelector ? '?tracks=1' : '');
-          context.push(
-            path,
-            extra: selectedItem,
-          );
+          final path =
+              PlayerView.locationFor(selectedItem.id) +
+              (openTrackSelector ? '?tracks=1' : '');
+          context.push(path, extra: selectedItem);
         }
 
         void handleToggleFavorite() {
@@ -98,12 +125,11 @@ class _MediaDetailViewState extends State<MediaDetailView> {
               mediaItem: mediaItem,
               selectedServer: selectedServer,
               isFavorite: isFavorite,
-              hasRecentWatchRecord: hasRecentWatchRecord,
               initialEpisodeIndex: initialEpisodeIndex,
               playableItems: playableItems,
-              playbackProgress: playbackProgress,
               onPlayPressed: resolvePlayPressed(),
-              onOpenTrackSelector: (index) => handlePlayPressed(index, openTrackSelector: true),
+              onOpenTrackSelector: (index) =>
+                  handlePlayPressed(index, openTrackSelector: true),
               onToggleFavorite: handleToggleFavorite,
             );
           },
@@ -113,12 +139,11 @@ class _MediaDetailViewState extends State<MediaDetailView> {
               mediaItem: mediaItem,
               selectedServer: selectedServer,
               isFavorite: isFavorite,
-              hasRecentWatchRecord: hasRecentWatchRecord,
               initialEpisodeIndex: initialEpisodeIndex,
               playableItems: playableItems,
-              playbackProgress: playbackProgress,
               onPlayPressed: resolvePlayPressed(),
-              onOpenTrackSelector: (index) => handlePlayPressed(index, openTrackSelector: true),
+              onOpenTrackSelector: (index) =>
+                  handlePlayPressed(index, openTrackSelector: true),
               onToggleFavorite: handleToggleFavorite,
             );
           },
@@ -126,4 +151,55 @@ class _MediaDetailViewState extends State<MediaDetailView> {
       },
     );
   }
+}
+
+int _resolveInitialEpisodeIndex({
+  required MediaItem mediaItem,
+  required List<MediaItem> playableItems,
+  required String? resumePlayableItemId,
+  required int fallbackEpisodeIndex,
+}) {
+  if (mediaItem.type == MediaType.movie || playableItems.isEmpty) {
+    return 0;
+  }
+
+  if (resumePlayableItemId != null && resumePlayableItemId.isNotEmpty) {
+    final matchedIndex = playableItems.indexWhere(
+      (item) => item.dataSourceId == resumePlayableItemId,
+    );
+    if (matchedIndex >= 0) {
+      return matchedIndex;
+    }
+  }
+
+  if (fallbackEpisodeIndex >= 0 &&
+      fallbackEpisodeIndex < playableItems.length) {
+    return fallbackEpisodeIndex;
+  }
+
+  var latestIndex = -1;
+  DateTime? latestPlayedAt;
+  for (var index = 0; index < playableItems.length; index++) {
+    final item = playableItems[index];
+    final lastPlayedAt = item.lastPlayedAt;
+    if (lastPlayedAt == null) {
+      continue;
+    }
+    if (latestPlayedAt == null || lastPlayedAt.isAfter(latestPlayedAt)) {
+      latestPlayedAt = lastPlayedAt;
+      latestIndex = index;
+    }
+  }
+  if (latestIndex >= 0) {
+    return latestIndex;
+  }
+
+  for (var index = 0; index < playableItems.length; index++) {
+    final progress = playableItems[index].playbackProgress;
+    if (progress != null && progress.position > Duration.zero) {
+      return index;
+    }
+  }
+
+  return 0;
 }

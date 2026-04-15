@@ -25,10 +25,8 @@ class MobileMediaDetailScreen extends StatefulWidget {
     required this.mediaItem,
     required this.selectedServer,
     required this.isFavorite,
-    required this.hasRecentWatchRecord,
     required this.initialEpisodeIndex,
     required this.playableItems,
-    required this.playbackProgress,
     required this.onPlayPressed,
     required this.onOpenTrackSelector,
     required this.onToggleFavorite,
@@ -37,10 +35,8 @@ class MobileMediaDetailScreen extends StatefulWidget {
   final MediaItem mediaItem;
   final MediaServerInfo selectedServer;
   final bool isFavorite;
-  final bool hasRecentWatchRecord;
   final int initialEpisodeIndex;
   final List<MediaItem> playableItems;
-  final MediaPlaybackProgress? playbackProgress;
   final ValueChanged<int>? onPlayPressed;
   final ValueChanged<int> onOpenTrackSelector;
   final VoidCallback onToggleFavorite;
@@ -133,16 +129,30 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: FilledButton(
-                            onPressed: widget.onPlayPressed == null
-                                ? null
-                                : () => widget.onPlayPressed!(_selectedEpisode),
-                            style: FilledButton.styleFrom(
-                              minimumSize: const Size.fromHeight(52),
-                            ),
-                            child: Text(
-                              widget.hasRecentWatchRecord ? '继续播放' : '立即播放',
-                            ),
+                          child: Builder(
+                            builder: (context) {
+                              final currentPlayableItem =
+                                  episodes[_selectedEpisode];
+                              final hasResume =
+                                  currentPlayableItem.playbackProgress !=
+                                      null &&
+                                  currentPlayableItem
+                                          .playbackProgress!
+                                          .position >
+                                      Duration.zero;
+                              return FilledButton(
+                                onPressed: widget.onPlayPressed == null
+                                    ? null
+                                    : () =>
+                                          widget.onPlayPressed!(_selectedEpisode),
+                                style: FilledButton.styleFrom(
+                                  minimumSize: const Size.fromHeight(52),
+                                ),
+                                child: Text(
+                                  hasResume ? '继续播放' : '立即播放',
+                                ),
+                              );
+                            },
                           ),
                         ),
                         const SizedBox(width: 12),

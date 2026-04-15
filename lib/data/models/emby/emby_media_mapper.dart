@@ -12,6 +12,10 @@ extension EmbyMediaItemDtoMapper on EmbyMediaItemDto {
     String? accessToken,
     List<SubtitleInfo> subtitles = const [],
   }) {
+    final playbackProgress = _buildPlaybackProgress(
+      runTimeTicks: runTimeTicks,
+      playbackPositionTicks: userData?.playbackPositionTicks,
+    );
     return MediaItem(
       id: _stableNumericId(id),
       sourceId: id,
@@ -31,9 +35,12 @@ extension EmbyMediaItemDtoMapper on EmbyMediaItemDto {
       year: productionYear ?? premiereDate?.year,
       overview: overview ?? '',
       playUrl: _buildPlaybackUrl(serverUrl, id, accessToken),
+      playbackProgress: playbackProgress,
       parentTitle: seriesName,
+      seriesId: seriesId,
       indexNumber: indexNumber,
       parentIndexNumber: parentIndexNumber,
+      lastPlayedAt: userData?.lastPlayedDate,
       cast: people
           .where((person) => person.name.trim().isNotEmpty)
           .map(
@@ -55,6 +62,22 @@ extension EmbyMediaItemDtoMapper on EmbyMediaItemDto {
       subtitles: subtitles,
     );
   }
+}
+
+MediaPlaybackProgress? _buildPlaybackProgress({
+  required int? runTimeTicks,
+  required int? playbackPositionTicks,
+}) {
+  final durationTicks = runTimeTicks ?? 0;
+  if (durationTicks <= 0) {
+    return null;
+  }
+
+  final positionTicks = playbackPositionTicks ?? 0;
+  return MediaPlaybackProgress(
+    position: Duration(milliseconds: positionTicks ~/ 10000),
+    duration: Duration(milliseconds: durationTicks ~/ 10000),
+  );
 }
 
 String? _buildPrimaryImageUrl(

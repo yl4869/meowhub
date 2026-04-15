@@ -159,6 +159,7 @@ class EmbyMediaRepositoryImpl implements IMediaRepository {
 
     final playbackPositionTicks =
         (item['UserData'] as Map?)?['PlaybackPositionTicks'] as num? ?? 0;
+    final lastPlayedAtRaw = (item['UserData'] as Map?)?['LastPlayedDate'];
     final runTimeTicks = item['RunTimeTicks'] as num? ?? 0;
     final progress = runTimeTicks.toInt() > 0
         ? MediaPlaybackProgress(
@@ -185,8 +186,12 @@ class EmbyMediaRepositoryImpl implements IMediaRepository {
       playUrl: _buildPlaybackUrl(_apiClient.serverUrl, itemId, accessToken),
       playbackProgress: progress,
       parentTitle: item['SeriesName']?.toString(),
+      seriesId: item['SeriesId']?.toString(),
       indexNumber: (item['IndexNumber'] as num?)?.toInt(),
       parentIndexNumber: (item['ParentIndexNumber'] as num?)?.toInt(),
+      lastPlayedAt: lastPlayedAtRaw == null
+          ? null
+          : DateTime.tryParse(lastPlayedAtRaw.toString()),
     );
   }
 

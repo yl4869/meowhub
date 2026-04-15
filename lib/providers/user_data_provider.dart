@@ -32,7 +32,8 @@ class UserDataProvider extends ChangeNotifier {
   String? _activeConfigNamespace;
 
   final Map<int, MediaItem> _favoriteItems = {};
-  final Map<String, int> _recentEpisodeIndices = {'1002': 2, '1007': 0};
+  final Map<String, int> _recentEpisodeIndices = {};
+  final Map<String, String> _recentPlayableItemIds = {};
   List<WatchHistoryItem> _watchHistory = const [];
   bool _isLoading = false; // 防并发加载锁
   // 每个作品的音轨/字幕选择（仅内存保存，退出播放器后继续生效）
@@ -56,7 +57,10 @@ class UserDataProvider extends ChangeNotifier {
 
   List<String> get recentPlaybackMediaKeys {
     return _watchHistory
-        .map((item) => '${item.sourceType.name}:${item.id}')
+        .map((item) {
+          final targetId = item.seriesId ?? item.id;
+          return '${item.sourceType.name}:$targetId';
+        })
         .toList(growable: false);
   }
 
@@ -73,7 +77,8 @@ class UserDataProvider extends ChangeNotifier {
     }
 
     final latest = _watchHistory.first;
-    return '${latest.sourceType.name}:${latest.id}';
+    final targetId = latest.seriesId ?? latest.id;
+    return '${latest.sourceType.name}:$targetId';
   }
 
   // Query methods
@@ -92,18 +97,32 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   MediaPlaybackProgress? playbackProgressForItem(MediaItem mediaItem) {
-    final item = _watchHistoryItemFor(
+    final directItem = _watchHistoryItemFor(
       mediaItem.dataSourceId,
       sourceType: mediaItem.sourceType,
     );
-    if (item == null) {
-      return null;
+    final item = directItem ?? _watchHistoryItemForSeries(mediaItem);
+    if (item != null) {
+      debugPrint(
+        '[Resume][Provider] item=${mediaItem.dataSourceId} '
+        'series=${mediaItem.seriesId ?? ''} '
+        'matched=${item.id} '
+        'position=${item.position.inMilliseconds}ms '
+        'duration=${item.duration.inMilliseconds}ms',
+      );
+      return MediaPlaybackProgress(
+        position: item.position,
+        duration: item.duration,
+      );
     }
 
-    return MediaPlaybackProgress(
-      position: item.position,
-      duration: item.duration,
+    debugPrint(
+      '[Resume][Provider] item=${mediaItem.dataSourceId} '
+      'series=${mediaItem.seriesId ?? ''} '
+      'matched=<none> '
+      'fallback=${mediaItem.playbackProgress?.position.inMilliseconds ?? 0}ms',
     );
+    return mediaItem.playbackProgress;
   }
 
   int episodeIndexFor(int mediaId) {
@@ -112,6 +131,10 @@ class UserDataProvider extends ChangeNotifier {
 
   int episodeIndexForItem(MediaItem mediaItem) {
     return _recentEpisodeIndices[mediaItem.dataSourceId] ?? 0;
+  }
+
+  String? resumePlayableItemIdForItem(MediaItem mediaItem) {
+    return _recentPlayableItemIds[mediaItem.dataSourceId];
   }
 
   double progressFractionFor(int mediaId) {
@@ -197,6 +220,9 @@ class UserDataProvider extends ChangeNotifier {
       duration: normalizedDuration,
       updatedAt: DateTime.now(),
       sourceType: sourceType,
+      seriesId: previous?.seriesId,
+      parentIndexNumber: previous?.parentIndexNumber,
+      indexNumber: previous?.indexNumber,
     );
 
     // 内存更新：禁止 notifyListeners，禁止任何 IO
@@ -222,6 +248,9 @@ class UserDataProvider extends ChangeNotifier {
       duration: previous?.duration ?? Duration.zero,
       updatedAt: DateTime.now(),
       sourceType: sourceType,
+      seriesId: previous?.seriesId,
+      parentIndexNumber: previous?.parentIndexNumber,
+      indexNumber: previous?.indexNumber,
     );
 
     await updateProgress(historyItem, episodeIndex: episodeIndex);
@@ -245,9 +274,48 @@ class UserDataProvider extends ChangeNotifier {
       duration: previous?.duration ?? Duration.zero,
       updatedAt: DateTime.now(),
       sourceType: mediaItem.sourceType,
+      seriesId: mediaItem.seriesId ?? previous?.seriesId,
+      parentIndexNumber:
+          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
+      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
     );
 
     await updateProgress(historyItem, episodeIndex: episodeIndex);
+  }
+
+  /// 仅在内存中标记最近观看项，避免在真正开始播放前把服务器上的续播点覆盖掉。
+  void markRecentlyWatchedItemMemoryOnly(
+    MediaItem mediaItem, {
+    int episodeIndex = 0,
+  }) {
+    final previous = _watchHistoryItemFor(
+      mediaItem.dataSourceId,
+      sourceType: mediaItem.sourceType,
+    );
+    final historyItem = WatchHistoryItem(
+      id: mediaItem.dataSourceId,
+      title: mediaItem.title.isNotEmpty
+          ? mediaItem.title
+          : previous?.title ?? '未知视频',
+      poster: mediaItem.posterUrl ?? previous?.poster ?? '',
+      position:
+          mediaItem.playbackProgress?.position ??
+          previous?.position ??
+          Duration.zero,
+      duration:
+          mediaItem.playbackProgress?.duration ??
+          previous?.duration ??
+          Duration.zero,
+      updatedAt: DateTime.now(),
+      sourceType: mediaItem.sourceType,
+      seriesId: mediaItem.seriesId ?? previous?.seriesId,
+      parentIndexNumber:
+          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
+      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
+    );
+
+    updateProgressMemoryOnly(historyItem, episodeIndex: episodeIndex);
+    notifyListeners();
   }
 
   // ---------------- 新增：仅内存更新，不触发 IO ----------------
@@ -262,6 +330,7 @@ class UserDataProvider extends ChangeNotifier {
     required Duration position,
     Duration duration = Duration.zero,
     int? episodeIndex,
+    bool notify = false,
   }) {
     final previous = _watchHistoryItemFor(
       mediaItem.dataSourceId,
@@ -284,9 +353,16 @@ class UserDataProvider extends ChangeNotifier {
       duration: normalizedDuration,
       updatedAt: DateTime.now(),
       sourceType: mediaItem.sourceType,
+      seriesId: mediaItem.seriesId ?? previous?.seriesId,
+      parentIndexNumber:
+          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
+      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
     );
 
     updateProgressMemoryOnly(historyItem, episodeIndex: episodeIndex);
+    if (notify) {
+      notifyListeners();
+    }
   }
 
   /// 在退出播放时，将内存中的最终进度一次性写入服务器。
@@ -297,6 +373,8 @@ class UserDataProvider extends ChangeNotifier {
     );
     if (latest == null) return;
 
+    // 先把内存里的最新进度通知给 UI，避免返回详情页时还看到旧值。
+    notifyListeners();
     await _updateWatchProgress(latest);
     // 单次刷新以同步最新状态到 UI（非高频）。
     await _loadWatchHistory();
@@ -315,6 +393,8 @@ class UserDataProvider extends ChangeNotifier {
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
     _watchHistory = const [];
     _isLoading = false;
+    _recentEpisodeIndices.clear();
+    _recentPlayableItemIds.clear();
     notifyListeners();
     _loadWatchHistory();
   }
@@ -325,7 +405,7 @@ class UserDataProvider extends ChangeNotifier {
     _watchHistory = _watchHistory
         .where((item) => item.id != targetId)
         .toList(growable: false);
-    _recentEpisodeIndices.remove(targetId);
+    _rebuildDerivedProgressState();
 
     if (previousLength != _watchHistory.length) {
       notifyListeners();
@@ -341,7 +421,7 @@ class UserDataProvider extends ChangeNotifier {
               !(item.id == targetId && item.sourceType == mediaItem.sourceType),
         )
         .toList(growable: false);
-    _recentEpisodeIndices.remove(targetId);
+    _rebuildDerivedProgressState();
 
     if (previousLength != _watchHistory.length) {
       notifyListeners();
@@ -375,6 +455,10 @@ class UserDataProvider extends ChangeNotifier {
       duration: normalizedDuration,
       updatedAt: DateTime.now(),
       sourceType: mediaItem.sourceType,
+      seriesId: mediaItem.seriesId ?? previous?.seriesId,
+      parentIndexNumber:
+          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
+      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
     );
 
     // 内存更新：禁止 notifyListeners，禁止任何 IO
@@ -390,6 +474,7 @@ class UserDataProvider extends ChangeNotifier {
       _watchHistory = await _watchHistoryRepository.getHistoryBySource(
         WatchSourceType.emby,
       );
+      _rebuildDerivedProgressState();
 
       debugPrint('MeowHub-Log: 获取成功，数量: ${_watchHistory.length}');
       if (_watchHistory.isNotEmpty) {
@@ -436,6 +521,26 @@ class UserDataProvider extends ChangeNotifier {
     return null;
   }
 
+  WatchHistoryItem? _watchHistoryItemForSeries(MediaItem mediaItem) {
+    if (mediaItem.type != MediaType.series) {
+      return null;
+    }
+
+    WatchHistoryItem? matched;
+    for (final item in _watchHistory) {
+      if (item.sourceType != mediaItem.sourceType) {
+        continue;
+      }
+      if (item.seriesId != mediaItem.dataSourceId) {
+        continue;
+      }
+      if (matched == null || item.updatedAt.isAfter(matched.updatedAt)) {
+        matched = item;
+      }
+    }
+    return matched;
+  }
+
   void _upsertWatchHistory(
     WatchHistoryItem item, {
     int? episodeIndex,
@@ -448,12 +553,42 @@ class UserDataProvider extends ChangeNotifier {
       ),
     ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
 
-    if (episodeIndex != null) {
-      _recentEpisodeIndices[item.id] = episodeIndex;
-    }
+    _registerRecentProgress(item, explicitEpisodeIndex: episodeIndex);
 
     if (notify) {
       notifyListeners();
+    }
+  }
+
+  void _rebuildDerivedProgressState() {
+    _recentEpisodeIndices.clear();
+    _recentPlayableItemIds.clear();
+    for (final item in _watchHistory) {
+      _registerRecentProgress(item);
+    }
+  }
+
+  void _registerRecentProgress(
+    WatchHistoryItem item, {
+    int? explicitEpisodeIndex,
+  }) {
+    if (explicitEpisodeIndex != null) {
+      _recentEpisodeIndices[item.id] = explicitEpisodeIndex;
+    }
+
+    final seriesId = item.seriesId;
+    if (seriesId == null || seriesId.isEmpty) {
+      return;
+    }
+
+    _recentPlayableItemIds[seriesId] = item.id;
+    final resolvedEpisodeIndex =
+        explicitEpisodeIndex ??
+        ((item.indexNumber != null && item.indexNumber! > 0)
+            ? item.indexNumber! - 1
+            : null);
+    if (resolvedEpisodeIndex != null && resolvedEpisodeIndex >= 0) {
+      _recentEpisodeIndices[seriesId] = resolvedEpisodeIndex;
     }
   }
 }

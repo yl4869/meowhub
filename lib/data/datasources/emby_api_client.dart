@@ -203,7 +203,9 @@ class EmbyApiClient {
         'IncludeItemTypes': includeItemTypes,
         'SortBy': 'DateCreated,SortName',
         'SortOrder': 'Descending',
-        'Fields': 'PrimaryImageAspectRatio,ImageTags,Overview',
+        'EnableUserData': true,
+        'Fields':
+            'Overview,RunTimeTicks,ProductionYear,CommunityRating,PremiereDate,ImageTags,BackdropImageTags,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,UserData',
         'Limit': '$limit',
         if (libraryId != null && libraryId.isNotEmpty) 'ParentId': libraryId,
       },
@@ -239,7 +241,7 @@ class EmbyApiClient {
       '/emby/Users/$userId/Items/$itemId',
       queryParameters: const {
         'Fields':
-            'Overview,OriginalTitle,PrimaryImageAspectRatio,ImageTags,BackdropImageTags,People',
+            'Overview,OriginalTitle,RunTimeTicks,ProductionYear,CommunityRating,PremiereDate,ImageTags,BackdropImageTags,People,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,UserData',
       },
     );
     final data = response.data ?? <String, dynamic>{};
@@ -325,8 +327,9 @@ class EmbyApiClient {
     final response = await get<Map<String, dynamic>>(
       '/emby/Shows/$seriesId/Episodes',
       queryParameters: const {
+        'EnableUserData': true,
         'Fields':
-            'Overview,OriginalTitle,PrimaryImageAspectRatio,ImageTags,BackdropImageTags,ParentIndexNumber,IndexNumber,SeriesName',
+            'Overview,OriginalTitle,RunTimeTicks,ProductionYear,CommunityRating,PremiereDate,ImageTags,BackdropImageTags,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,UserData',
       },
     );
     final data = response.data ?? <String, dynamic>{};
@@ -344,7 +347,7 @@ class EmbyApiClient {
       queryParameters: const {
         'Limit': '5',
         'Fields':
-            'Overview,RunTimeTicks,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ImageTags,BackdropImageTags',
+            'Overview,RunTimeTicks,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ImageTags,BackdropImageTags,UserData',
       },
     );
     final data = response.data ?? <String, dynamic>{};
