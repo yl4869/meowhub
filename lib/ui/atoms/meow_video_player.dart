@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shimmer/shimmer.dart';
@@ -199,10 +198,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
 
     _initializeVideoFuture = () async {
       // 打开媒体
-      if (kDebugMode) {
-        // 注意：包含 api_key，仅用于本地调试。请勿在发布版本收集日志。
-        debugPrint('[MeowHub][FinalURL][open] ${widget.url}');
-      }
       await player.open(
         Media(widget.url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
@@ -252,10 +247,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       try {
         await player.stop();
       } catch (_) {}
-      if (kDebugMode) {
-        // 注意：包含 api_key，仅用于本地调试。请勿在发布版本收集日志。
-        debugPrint('[MeowHub][FinalURL][reopen] $url');
-      }
       await player.open(
         Media(url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
@@ -293,9 +284,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     try {
       final subtitleUri = widget.subtitleUri?.trim();
       if (subtitleUri != null && subtitleUri.isNotEmpty) {
-        if (kDebugMode) {
-          debugPrint('[MeowHub][Subtitle][uri] $subtitleUri');
-        }
         await target.setSubtitleTrack(
           SubtitleTrack.uri(
             subtitleUri,
@@ -306,21 +294,11 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         return;
       }
       if (widget.disableSubtitleTrack) {
-        if (kDebugMode) {
-          debugPrint('[MeowHub][Subtitle][off]');
-        }
         await target.setSubtitleTrack(SubtitleTrack.no());
         return;
       }
-      if (kDebugMode) {
-        debugPrint('[MeowHub][Subtitle][auto]');
-      }
       await target.setSubtitleTrack(SubtitleTrack.auto());
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('[MeowHub][Subtitle][error] $e');
-      }
-    }
+    } catch (_) {}
   }
 
   void _bindStreams(Player player) {

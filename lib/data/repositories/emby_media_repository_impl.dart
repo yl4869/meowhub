@@ -34,7 +34,7 @@ class EmbyMediaRepositoryImpl implements IMediaRepository {
     final accessToken = await _securityService.readAccessToken(
       namespace: _apiClient.securityNamespace,
     );
-    final items = await _apiClient.getResumeItems();
+    final items = await _apiClient.getRecentlyWatchedItems();
 
     return items
         .map((item) => _mapResumeItemToEntity(item, accessToken: accessToken))

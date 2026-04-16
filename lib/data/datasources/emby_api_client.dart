@@ -101,8 +101,6 @@ class EmbyApiClient {
         password.isEmpty) {
       throw Exception('Emby 登录需要用户名和密码');
     }
-    debugPrint('[EmbyAuth] 开始认证 namespace=${_config.credentialNamespace}');
-
     final response = await post<Map<String, dynamic>>(
       '/emby/Users/AuthenticateByName',
       data: {'Username': username, 'Pw': password},
@@ -133,7 +131,6 @@ class EmbyApiClient {
       ),
     ]);
 
-    debugPrint('[EmbyAuth] 认证成功 userId=$userId');
   }
 
   Future<Response<T>> get<T>(
@@ -158,7 +155,6 @@ class EmbyApiClient {
     if (withToken) {
       await _ensureSession();
     }
-    debugPrint("DebugInfo：输出post");
     return _dio.post<T>(
       path,
       data: data,
@@ -222,7 +218,6 @@ class EmbyApiClient {
     String? libraryId,
     int limit = 100,
   }) async {
-    debugPrint('📡 MeowHub: 正在从真实的 Emby 获取电影列表...');
     final items = await getMediaItems(
       includeItemTypes: 'Movie',
       libraryId: libraryId,
@@ -287,38 +282,12 @@ class EmbyApiClient {
         maxStreamingBitrate: effectiveMaxStreamingBitrate,
       ),
     };
-    debugPrint("getPlaybackInfo: the post is /emby/Items/$itemId/PlaybackInfo");
     final resp = await post<Map<String, dynamic>>(
       '/emby/Items/$itemId/PlaybackInfo',
       data: body,
       headers: {'X-Emby-Device-Id': _resolvedDeviceId},
     );
-    debugPrint("getPlaybackInfo: the get data is $resp.data");
     final data = resp.data ?? <String, dynamic>{};
-    // Debug: Print basic structure of PlaybackInfo to verify subtitle availability
-    if (kDebugMode) {
-      try {
-        final sources = (data['MediaSources'] as List?) ?? const [];
-        debugPrint('[PlaybackInfo] sources=${sources.length} for item=$itemId');
-        for (final s in sources.whereType<Map<String, dynamic>>()) {
-          final streams = (s['MediaStreams'] as List?) ?? const [];
-          final subsCount = streams
-              .where(
-                (e) =>
-                    e is Map &&
-                    (e['Type']?.toString().toLowerCase() == 'subtitle'),
-              )
-              .length;
-          final sid = s['Id'];
-          debugPrint(
-            '[PlaybackInfo]  - sourceId=${sid?.toString() ?? ''} '
-            'streams=${streams.length} subs=$subsCount',
-          );
-        }
-      } catch (e) {
-        debugPrint('[PlaybackInfo] debug print error: \$e');
-      }
-    }
     return EmbyPlaybackInfoDto.fromJson(data);
   }
 
@@ -340,18 +309,54 @@ class EmbyApiClient {
         .toList(growable: false);
   }
 
-  Future<List<Map<String, dynamic>>> getResumeItems() async {
+  Future<List<Map<String, dynamic>>> getRecentlyWatchedItems() async {
     final userId = await _requireUserId();
+    debugPrint(
+      '[Recent][Emby][Request] userId=$userId path=/emby/Users/$userId/Items',
+    );
+    try {
+      return await _fetchRecentlyWatchedItems(
+        userId: userId,
+        queryParameters: const <String, dynamic>{
+          'Limit': '20',
+          'Recursive': true,
+          'SortBy': 'DatePlayed',
+          'SortOrder': 'Descending',
+          'EnableUserData': true,
+          'IncludeItemTypes': 'Movie,Episode',
+          'Fields':
+              'Overview,RunTimeTicks,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,ImageTags,BackdropImageTags',
+        },
+      );
+    } on DioException catch (e) {
+      debugPrint(
+        '[Recent][Emby][Error] userId=$userId '
+        'status=${e.response?.statusCode} '
+        'message=${e.message}',
+      );
+      debugPrint(
+        '[Recent][Emby][ErrorBody] userId=$userId body=${e.response?.data}',
+      );
+      rethrow;
+    } catch (e) {
+      debugPrint('[Recent][Emby][Error] userId=$userId error=$e');
+      rethrow;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchRecentlyWatchedItems({
+    required String userId,
+    required Map<String, dynamic> queryParameters,
+  }) async {
     final response = await get<Map<String, dynamic>>(
-      '/emby/Users/$userId/Items/ResumeItems',
-      queryParameters: const {
-        'Limit': '5',
-        'Fields':
-            'Overview,RunTimeTicks,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,PrimaryImageAspectRatio,SeriesPrimaryImageTag,ImageTags,BackdropImageTags,UserData',
-      },
+      '/emby/Users/$userId/Items',
+      queryParameters: queryParameters,
     );
     final data = response.data ?? <String, dynamic>{};
     final items = data['Items'] as List<dynamic>? ?? const [];
+    debugPrint(
+      '[Recent][Emby][Response] userId=$userId count=${items.length} query=$queryParameters',
+    );
     return items.whereType<Map<String, dynamic>>().toList(growable: false);
   }
 

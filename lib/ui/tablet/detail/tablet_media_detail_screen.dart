@@ -1,6 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/entities/media_item.dart';
@@ -17,6 +16,7 @@ import '../../../domain/repositories/media_service_manager.dart';
 import '../../../data/datasources/emby_api_client.dart';
 import '../../../data/repositories/emby_playback_repository_impl.dart';
 import '../../../domain/usecases/get_playback_plan.dart';
+import '../../../providers/media_with_user_data_provider.dart';
 import '../../../providers/user_data_provider.dart';
 
 class TabletMediaDetailScreen extends StatefulWidget {
@@ -84,8 +84,14 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final episodes = widget.playableItems;
-    final cast = widget.mediaItem.cast;
+    final mediaWithUserDataProvider = context.watch<MediaWithUserDataProvider>();
+    final userDataProvider = context.watch<UserDataProvider>();
+    final mediaItem = _resolveLiveMediaItem(
+      mediaWithUserDataProvider: mediaWithUserDataProvider,
+      userDataProvider: userDataProvider,
+    );
+    final episodes = _buildLiveEpisodes(userDataProvider);
+    final cast = mediaItem.cast;
     final clampedEpisode = _selectedEpisode.clamp(0, episodes.length - 1);
     if (clampedEpisode != _selectedEpisode) {
       _selectedEpisode = clampedEpisode;
@@ -102,9 +108,9 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
             backgroundColor: AppTheme.backgroundColor,
             surfaceTintColor: Colors.transparent,
             flexibleSpace: FlexibleSpaceBar(
-              title: Text(widget.mediaItem.title),
+              title: Text(mediaItem.title),
               centerTitle: true,
-              background: _TabletHeader(mediaItem: widget.mediaItem),
+              background: _TabletHeader(mediaItem: mediaItem),
             ),
           ),
           SliverToBoxAdapter(
@@ -117,11 +123,11 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                   children: [
                     const SizedBox(height: 20),
                     Text(
-                      widget.mediaItem.title,
+                      mediaItem.title,
                       style: Theme.of(context).textTheme.headlineLarge,
                     ),
                     const SizedBox(height: 16),
-                    _TabletMetaRow(mediaItem: widget.mediaItem),
+                    _TabletMetaRow(mediaItem: mediaItem),
                     const SizedBox(height: 18),
                     Row(
                       children: [
@@ -160,11 +166,11 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                         ),
                         const SizedBox(width: 10),
                         _TabletIconButton(
-                          icon: widget.isFavorite
+                          icon: mediaItem.isFavorite
                               ? Icons.favorite_rounded
                               : Icons.favorite_border_rounded,
                           onTap: widget.onToggleFavorite,
-                          active: widget.isFavorite,
+                          active: mediaItem.isFavorite,
                         ),
                         const SizedBox(width: 10),
                         _TabletIconButton(
@@ -264,7 +270,7 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                     const SizedBox(height: 18),
                     AppSurfaceCard(
                       child: ExpandableOverviewSection(
-                        overview: widget.mediaItem.overview,
+                        overview: mediaItem.overview,
                         collapsedMaxLines: 5,
                       ),
                     ),
@@ -277,7 +283,7 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                     ),
                     const SizedBox(height: 18),
                     _TabletInfoSection(
-                      mediaItem: widget.mediaItem,
+                      mediaItem: mediaItem,
                       selectedServer: widget.selectedServer,
                     ),
                   ],
@@ -288,6 +294,39 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
         ],
       ),
     );
+  }
+
+  MediaItem _resolveLiveMediaItem({
+    required MediaWithUserDataProvider mediaWithUserDataProvider,
+    required UserDataProvider userDataProvider,
+  }) {
+    MediaItem? liveMediaItem;
+    for (final item in mediaWithUserDataProvider.allItems) {
+      if (item.mediaKey == widget.mediaItem.mediaKey) {
+        liveMediaItem = item;
+        break;
+      }
+    }
+
+    return widget.mediaItem.copyWith(
+      isFavorite: liveMediaItem?.isFavorite ?? widget.isFavorite,
+      playbackProgress:
+          userDataProvider.playbackProgressForItem(widget.mediaItem) ??
+          liveMediaItem?.playbackProgress ??
+          widget.mediaItem.playbackProgress,
+    );
+  }
+
+  List<MediaItem> _buildLiveEpisodes(UserDataProvider userDataProvider) {
+    return widget.playableItems
+        .map(
+          (episode) => episode.copyWith(
+            playbackProgress:
+                userDataProvider.playbackProgressForItem(episode) ??
+                episode.playbackProgress,
+          ),
+        )
+        .toList(growable: false);
   }
 
   void _showAllCast(BuildContext context, List<Cast> cast) {
@@ -352,7 +391,10 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
     );
   }
 
-  MediaItem get _currentPlayableItem => widget.playableItems[_selectedEpisode];
+  MediaItem get _currentPlayableItem {
+    final episodes = _buildLiveEpisodes(context.read<UserDataProvider>());
+    return episodes[_selectedEpisode.clamp(0, episodes.length - 1)];
+  }
 
   String get _subtitleButtonLabel {
     if (_loadingSubtitles) {
@@ -430,11 +472,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
         audioStreamIndex: saved?.audioIndex,
         subtitleStreamIndex: saved?.subtitleIndex,
       );
-      if (kDebugMode) {
-        debugPrint(
-          '[Detail][Tablet] subs fetched=${plan.subtitleStreams.length} item=${item.dataSourceId}',
-        );
-      }
       _subtitleOptionsByItem[item.mediaKey] = plan.subtitleStreams;
       if (mounted) {
         setState(() {

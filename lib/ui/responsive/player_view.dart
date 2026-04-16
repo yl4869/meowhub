@@ -119,6 +119,11 @@ class _PlayerViewState extends State<PlayerView> {
         .read<UserDataProvider>()
         .playbackProgressForItem(widget.mediaItem);
     _initialPosition = savedProgress?.position ?? Duration.zero;
+    debugPrint(
+      '[Resume][PlayerView][Init] item=${widget.mediaItem.dataSourceId} '
+      'initialPosition=${_initialPosition.inMilliseconds}ms '
+      'savedDuration=${savedProgress?.duration.inMilliseconds ?? 0}ms',
+    );
     _openSelectorPending = widget.openTrackSelectorOnStart;
     _preparePlaybackPlan();
   }

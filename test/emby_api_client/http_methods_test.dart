@@ -1,7 +1,6 @@
 // test/emby_api_client/http_methods_test.dart
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
-import 'package:dio/dio.dart';
 
 import 'package:meowhub/data/datasources/emby_api_client.dart';
 import 'package:meowhub/domain/entities/media_service_config.dart';

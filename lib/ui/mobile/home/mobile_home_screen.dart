@@ -135,19 +135,13 @@ class MobileHomeScreen extends StatelessWidget {
                                   Builder(
                                     builder: (context) {
                                       final mediaItem = recentWatching[index];
-                                      final localProgress = context
+                                      final progress = context
                                           .select<UserDataProvider, double>(
                                             (provider) => provider
                                                 .progressFractionForItem(
                                                   mediaItem,
                                                 ),
                                           );
-                                      final progress = localProgress > 0
-                                          ? localProgress
-                                          : mediaItem
-                                                    .playbackProgress
-                                                    ?.fraction ??
-                                                0;
                                       return _RecentWatchCard(
                                         mediaItem: mediaItem,
                                         progress: progress,

@@ -47,17 +47,26 @@ class MobilePlayerScreen extends StatefulWidget {
 }
 
 class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
+  static const Duration _backgroundSyncInterval = Duration(minutes: 1);
+  static const Duration _meaningfulProgressThreshold = Duration(seconds: 5);
+
   MeowVideoPlaybackStatus? _latestStatus;
+  MediaPlaybackProgress? _lastStablePlaybackProgress;
   Player? _player;
   late final UserDataProvider _udp;
   Future<void>? _syncOnExitFuture;
+  bool _isExiting = false;
   bool _allowImmediatePop = false;
+  DateTime? _lastBackgroundSyncAt;
+  int _lastUiProgressSecond = -1;
+  int _lastLoggedPlaybackSecond = -1;
 
   @override
   void initState() {
     super.initState();
     // 预先抓取 Provider 引用，避免在 dispose/异步回调里向上查找祖先导致断言
     _udp = context.read<UserDataProvider>();
+    _lastStablePlaybackProgress = widget.savedProgress;
   }
 
   // 播放页移除本地字幕切换
@@ -68,16 +77,81 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   }
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
+    if (_isExiting || _shouldIgnoreZeroProgressUpdate(status)) {
+      return;
+    }
     _latestStatus = status;
     // 仅内存更新，切断重绘循环
     if (status.isInitialized) {
-      _udp.updatePlaybackProgressMemoryOnlyForItem(
+      _lastStablePlaybackProgress = MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
+      _refreshPlaybackInfoUi(status);
+      _logPlaybackProgress(status);
+      _udp.updatePlaybackProgressForItem(
         widget.mediaItem,
         position: status.position,
         duration: status.duration,
       );
+      _maybeSyncProgressInBackground(status);
     }
     widget.onPlaybackStatusChanged(status);
+  }
+
+  bool _shouldIgnoreZeroProgressUpdate(MeowVideoPlaybackStatus status) {
+    if (status.position > Duration.zero) {
+      return false;
+    }
+
+    final latestPosition =
+        _latestStatus?.position ?? _lastStablePlaybackProgress?.position;
+    return latestPosition != null &&
+        latestPosition > _meaningfulProgressThreshold;
+  }
+
+  void _refreshPlaybackInfoUi(MeowVideoPlaybackStatus status) {
+    final nextSecond = status.position.inSeconds;
+    if (_lastUiProgressSecond == nextSecond) {
+      return;
+    }
+    _lastUiProgressSecond = nextSecond;
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
+  void _logPlaybackProgress(MeowVideoPlaybackStatus status) {
+    final currentSecond = status.position.inSeconds;
+    if (currentSecond <= 0 ||
+        currentSecond == _lastLoggedPlaybackSecond ||
+        currentSecond % 10 != 0) {
+      return;
+    }
+    _lastLoggedPlaybackSecond = currentSecond;
+    debugPrint(
+      '[Resume][Mobile][Playing] item=${widget.mediaItem.dataSourceId} '
+      'position=${status.position.inMilliseconds}ms '
+      'duration=${status.duration.inMilliseconds}ms',
+    );
+  }
+
+  void _maybeSyncProgressInBackground(MeowVideoPlaybackStatus status) {
+    if (!status.isPlaying || status.position <= Duration.zero) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final lastSyncAt = _lastBackgroundSyncAt;
+    if (lastSyncAt != null &&
+        now.difference(lastSyncAt) < _backgroundSyncInterval) {
+      return;
+    }
+
+    _lastBackgroundSyncAt = now;
+    // ignore: discarded_futures
+    _udp.syncProgressToServerForItem(widget.mediaItem);
   }
 
   Future<void> _syncOnExit() {
@@ -93,19 +167,16 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
 
   void _applyLocalProgressOnExit() {
     final status = _latestStatus;
-    if (status == null || !status.isInitialized) {
-      debugPrint(
-        '[Resume][Mobile][Exit][Local] item=${widget.mediaItem.dataSourceId} '
-        'status=<none>',
-      );
+    if (status == null ||
+        !status.isInitialized ||
+        status.position <= Duration.zero) {
       return;
     }
-    debugPrint(
-      '[Resume][Mobile][Exit][Local] item=${widget.mediaItem.dataSourceId} '
-      'position=${status.position.inMilliseconds}ms '
-      'duration=${status.duration.inMilliseconds}ms',
+    _lastStablePlaybackProgress = MediaPlaybackProgress(
+      position: status.position,
+      duration: status.duration,
     );
-    _udp.updatePlaybackProgressMemoryOnlyForItem(
+    _udp.updatePlaybackProgressForItem(
       widget.mediaItem,
       position: status.position,
       duration: status.duration,
@@ -115,6 +186,13 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
 
   Future<void> _performSyncOnExit() async {
     final capturedItem = widget.mediaItem;
+    final status = _latestStatus;
+    debugPrint(
+      '[Resume][Mobile][Exit] item=${capturedItem.dataSourceId} '
+      'position=${status?.position.inMilliseconds ?? 0}ms '
+      'duration=${status?.duration.inMilliseconds ?? 0}ms '
+      'sync=start',
+    );
     _applyLocalProgressOnExit();
     final p = _player;
     if (p != null) {
@@ -122,14 +200,10 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
         await p.stop();
       } catch (_) {}
     }
-    debugPrint(
-      '[Resume][Mobile][Exit][Remote] item=${capturedItem.dataSourceId} '
-      'begin sync',
-    );
     await _udp.syncProgressToServerForItem(capturedItem);
     debugPrint(
-      '[Resume][Mobile][Exit][Remote] item=${capturedItem.dataSourceId} '
-      'sync done',
+      '[Resume][Mobile][Exit] item=${capturedItem.dataSourceId} '
+      'sync=done',
     );
   }
 
@@ -157,15 +231,16 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
           _allowImmediatePop = false;
           return;
         }
-        debugPrint(
-          '[Resume][Mobile][Pop] item=${widget.mediaItem.dataSourceId} '
-          'triggered didPop=$didPop',
-        );
-        _applyLocalProgressOnExit();
-        _allowImmediatePop = true;
-        Navigator.of(context).pop();
+        final navigator = Navigator.of(context);
+        _isExiting = true;
         // ignore: discarded_futures
-        _syncOnExit();
+        _syncOnExit().whenComplete(() {
+          if (!mounted) {
+            return;
+          }
+          _allowImmediatePop = true;
+          navigator.pop();
+        });
       },
       child: OrientationBuilder(
         builder: (context, orientation) {
@@ -207,12 +282,12 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
                 const SizedBox(height: 18),
                 _PlaybackInfoCard(
                   selectedServer: widget.selectedServer,
-                  playbackProgress: widget.savedProgress,
+                  playbackProgress: _currentPlaybackProgress,
                   initialPosition: widget.initialPosition,
                 ),
                 const SizedBox(height: 18),
                 _PlaybackHintCard(
-                  hasSavedProgress: widget.savedProgress != null,
+                  hasSavedProgress: _currentPlaybackProgress != null,
                   overview: widget.mediaItem.overview,
                 ),
               ],
@@ -244,6 +319,20 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
       subtitleLanguage: widget.subtitleLanguage,
       disableSubtitleTrack: widget.disableSubtitleTrack,
     );
+  }
+
+  MediaPlaybackProgress? get _currentPlaybackProgress {
+    if (_isExiting) {
+      return _lastStablePlaybackProgress ?? widget.savedProgress;
+    }
+    final status = _latestStatus;
+    if (status != null && status.isInitialized) {
+      return MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    return _lastStablePlaybackProgress ?? widget.savedProgress;
   }
 
   // 抽离标题区域逻辑

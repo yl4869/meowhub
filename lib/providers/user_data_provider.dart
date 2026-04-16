@@ -102,27 +102,14 @@ class UserDataProvider extends ChangeNotifier {
       sourceType: mediaItem.sourceType,
     );
     final item = directItem ?? _watchHistoryItemForSeries(mediaItem);
-    if (item != null) {
-      debugPrint(
-        '[Resume][Provider] item=${mediaItem.dataSourceId} '
-        'series=${mediaItem.seriesId ?? ''} '
-        'matched=${item.id} '
-        'position=${item.position.inMilliseconds}ms '
-        'duration=${item.duration.inMilliseconds}ms',
-      );
-      return MediaPlaybackProgress(
-        position: item.position,
-        duration: item.duration,
-      );
+    if (item == null) {
+      return null;
     }
 
-    debugPrint(
-      '[Resume][Provider] item=${mediaItem.dataSourceId} '
-      'series=${mediaItem.seriesId ?? ''} '
-      'matched=<none> '
-      'fallback=${mediaItem.playbackProgress?.position.inMilliseconds ?? 0}ms',
+    return MediaPlaybackProgress(
+      position: item.position,
+      duration: item.duration,
     );
-    return mediaItem.playbackProgress;
   }
 
   int episodeIndexFor(int mediaId) {
@@ -143,6 +130,14 @@ class UserDataProvider extends ChangeNotifier {
 
   double progressFractionForItem(MediaItem mediaItem) {
     return playbackProgressForItem(mediaItem)?.fraction ?? 0;
+  }
+
+  void initializeProgress(List<MediaItem> items) {
+    final hydratedItems = <WatchHistoryItem>[];
+    for (final item in items) {
+      _collectHydratedProgressItems(item, hydratedItems);
+    }
+    _mergeWatchHistoryItems(hydratedItems);
   }
 
   // Track selection APIs
@@ -324,42 +319,35 @@ class UserDataProvider extends ChangeNotifier {
     _upsertWatchHistory(item, episodeIndex: episodeIndex, notify: false);
   }
 
-  /// 仅在内存中更新指定 MediaItem 的播放进度。
-  void updatePlaybackProgressMemoryOnlyForItem(
+  /// 统一的 MediaItem 播放进度更新入口。
+  /// 默认仅更新内存；通过 notify 控制是否同步刷新 UI。
+  void updatePlaybackProgressForItem(
     MediaItem mediaItem, {
     required Duration position,
     Duration duration = Duration.zero,
     int? episodeIndex,
     bool notify = false,
   }) {
+    final historyItem = _buildWatchHistoryItemFromMediaItem(
+      mediaItem,
+      position: position,
+      duration: duration,
+    );
     final previous = _watchHistoryItemFor(
       mediaItem.dataSourceId,
       sourceType: mediaItem.sourceType,
     );
-    final normalizedPosition = position < Duration.zero
-        ? Duration.zero
-        : position;
-    final normalizedDuration = duration > Duration.zero
-        ? duration
-        : previous?.duration ?? Duration.zero;
-
-    final historyItem = WatchHistoryItem(
-      id: mediaItem.dataSourceId,
-      title: mediaItem.title.isNotEmpty
-          ? mediaItem.title
-          : previous?.title ?? '未知视频',
-      poster: mediaItem.posterUrl ?? previous?.poster ?? '',
-      position: normalizedPosition,
-      duration: normalizedDuration,
-      updatedAt: DateTime.now(),
-      sourceType: mediaItem.sourceType,
-      seriesId: mediaItem.seriesId ?? previous?.seriesId,
-      parentIndexNumber:
-          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
-      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
-    );
 
     updateProgressMemoryOnly(historyItem, episodeIndex: episodeIndex);
+    if (notify) {
+      debugPrint(
+        '[Resume][Progress][Update] item=${mediaItem.dataSourceId} '
+        'from=${previous?.position.inMilliseconds ?? 0}ms '
+        'position=${historyItem.position.inMilliseconds}ms '
+        'duration=${historyItem.duration.inMilliseconds}ms '
+        'notify=$notify',
+      );
+    }
     if (notify) {
       notifyListeners();
     }
@@ -374,10 +362,24 @@ class UserDataProvider extends ChangeNotifier {
     if (latest == null) return;
 
     // 先把内存里的最新进度通知给 UI，避免返回详情页时还看到旧值。
+    debugPrint(
+      '[Resume][Progress][Sync] item=${mediaItem.dataSourceId} '
+      'ui-update position=${latest.position.inMilliseconds}ms '
+      'duration=${latest.duration.inMilliseconds}ms',
+    );
     notifyListeners();
     await _updateWatchProgress(latest);
     // 单次刷新以同步最新状态到 UI（非高频）。
     await _loadWatchHistory();
+    final refreshed = _watchHistoryItemFor(
+      mediaItem.dataSourceId,
+      sourceType: mediaItem.sourceType,
+    );
+    debugPrint(
+      '[Resume][Progress][Sync] item=${mediaItem.dataSourceId} '
+      'server-refresh position=${refreshed?.position.inMilliseconds ?? 0}ms '
+      'duration=${refreshed?.duration.inMilliseconds ?? 0}ms',
+    );
   }
 
   void updateMediaServiceManager(MediaServiceManager manager) {
@@ -428,62 +430,27 @@ class UserDataProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> updatePlaybackProgressForItem(
-    MediaItem mediaItem, {
-    required Duration position,
-    Duration duration = Duration.zero,
-    int? episodeIndex,
-  }) async {
-    final previous = _watchHistoryItemFor(
-      mediaItem.dataSourceId,
-      sourceType: mediaItem.sourceType,
-    );
-    final normalizedPosition = position < Duration.zero
-        ? Duration.zero
-        : position;
-    final normalizedDuration = duration > Duration.zero
-        ? duration
-        : previous?.duration ?? Duration.zero;
-
-    final historyItem = WatchHistoryItem(
-      id: mediaItem.dataSourceId,
-      title: mediaItem.title.isNotEmpty
-          ? mediaItem.title
-          : previous?.title ?? '未知视频',
-      poster: mediaItem.posterUrl ?? previous?.poster ?? '',
-      position: normalizedPosition,
-      duration: normalizedDuration,
-      updatedAt: DateTime.now(),
-      sourceType: mediaItem.sourceType,
-      seriesId: mediaItem.seriesId ?? previous?.seriesId,
-      parentIndexNumber:
-          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
-      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
-    );
-
-    // 内存更新：禁止 notifyListeners，禁止任何 IO
-    _upsertWatchHistory(historyItem, episodeIndex: episodeIndex, notify: false);
-  }
-
   // Private methods
   Future<void> _loadWatchHistory() async {
     if (_isLoading) return;
     _isLoading = true;
     try {
-      debugPrint('MeowHub-Log: 开始获取观看历史...');
-      _watchHistory = await _watchHistoryRepository.getHistoryBySource(
+      debugPrint('[Resume][Provider][Load] source=emby start');
+      final remoteHistory = await _watchHistoryRepository.getHistoryBySource(
         WatchSourceType.emby,
       );
-      _rebuildDerivedProgressState();
-
-      debugPrint('MeowHub-Log: 获取成功，数量: ${_watchHistory.length}');
-      if (_watchHistory.isNotEmpty) {
-        debugPrint('MeowHub-Log: 第一条数据标题: ${_watchHistory.first.title}');
-      }
-
+      _mergeWatchHistoryItems(remoteHistory, notify: false);
+      final firstItem = _watchHistory.isEmpty ? null : _watchHistory.first;
+      debugPrint(
+        '[Resume][Provider][Load] source=emby count=${_watchHistory.length} '
+        'firstId=${firstItem?.id ?? ''} '
+        'firstTitle=${firstItem?.title ?? ''} '
+        'firstPosition=${firstItem?.position.inMilliseconds ?? 0}ms',
+      );
       notifyListeners();
     } catch (e) {
-      debugPrint('MeowHub-Log: 获取历史失败，错误详情: $e');
+      debugPrint('[Resume][Provider][Load][Error] source=emby error=$e');
+      rethrow;
     } finally {
       _isLoading = false;
     }
@@ -539,6 +506,121 @@ class UserDataProvider extends ChangeNotifier {
       }
     }
     return matched;
+  }
+
+  WatchHistoryItem _buildWatchHistoryItemFromMediaItem(
+    MediaItem mediaItem, {
+    required Duration position,
+    Duration duration = Duration.zero,
+  }) {
+    final previous = _watchHistoryItemFor(
+      mediaItem.dataSourceId,
+      sourceType: mediaItem.sourceType,
+    );
+    final normalizedPosition = position < Duration.zero
+        ? Duration.zero
+        : position;
+    final normalizedDuration = duration > Duration.zero
+        ? duration
+        : previous?.duration ?? Duration.zero;
+
+    return WatchHistoryItem(
+      id: mediaItem.dataSourceId,
+      title: mediaItem.title.isNotEmpty
+          ? mediaItem.title
+          : previous?.title ?? '未知视频',
+      poster: mediaItem.posterUrl ?? previous?.poster ?? '',
+      position: normalizedPosition,
+      duration: normalizedDuration,
+      updatedAt: DateTime.now(),
+      sourceType: mediaItem.sourceType,
+      seriesId: mediaItem.seriesId ?? previous?.seriesId,
+      parentIndexNumber:
+          mediaItem.parentIndexNumber ?? previous?.parentIndexNumber,
+      indexNumber: mediaItem.indexNumber ?? previous?.indexNumber,
+    );
+  }
+
+  void _collectHydratedProgressItems(
+    MediaItem mediaItem,
+    List<WatchHistoryItem> target,
+  ) {
+    final progress = mediaItem.playbackProgress;
+    if (progress != null &&
+        progress.position > Duration.zero &&
+        progress.duration > Duration.zero) {
+      target.add(
+        WatchHistoryItem(
+          id: mediaItem.dataSourceId,
+          title: mediaItem.title.isNotEmpty ? mediaItem.title : '未知视频',
+          poster: mediaItem.posterUrl ?? '',
+          position: progress.position,
+          duration: progress.duration,
+          updatedAt:
+              mediaItem.lastPlayedAt ??
+              DateTime.fromMillisecondsSinceEpoch(0),
+          sourceType: mediaItem.sourceType,
+          seriesId: mediaItem.seriesId,
+          parentIndexNumber: mediaItem.parentIndexNumber,
+          indexNumber: mediaItem.indexNumber,
+        ),
+      );
+    }
+
+    for (final playableItem in mediaItem.playableItems) {
+      _collectHydratedProgressItems(playableItem, target);
+    }
+  }
+
+  void _mergeWatchHistoryItems(
+    Iterable<WatchHistoryItem> items, {
+    bool notify = true,
+  }) {
+    final merged = <String, WatchHistoryItem>{
+      for (final item in _watchHistory) item.uniqueKey: item,
+    };
+    var changed = false;
+
+    for (final item in items) {
+      final existing = merged[item.uniqueKey];
+      final preferred = _selectPreferredProgressItem(existing, item);
+      if (existing == null || !identical(existing, preferred)) {
+        merged[item.uniqueKey] = preferred;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    _watchHistory = merged.values.toList(growable: false)
+      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    _rebuildDerivedProgressState();
+
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  WatchHistoryItem _selectPreferredProgressItem(
+    WatchHistoryItem? existing,
+    WatchHistoryItem incoming,
+  ) {
+    if (existing == null) {
+      return incoming;
+    }
+    if (existing.updatedAt.isAfter(incoming.updatedAt)) {
+      return existing;
+    }
+    if (incoming.updatedAt.isAfter(existing.updatedAt)) {
+      return incoming;
+    }
+    if (existing.position >= incoming.position &&
+        existing.duration >= incoming.duration) {
+      return existing;
+    }
+    return incoming;
   }
 
   void _upsertWatchHistory(

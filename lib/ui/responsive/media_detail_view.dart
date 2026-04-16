@@ -26,6 +26,7 @@ class MediaDetailView extends StatefulWidget {
 
 class _MediaDetailViewState extends State<MediaDetailView> {
   late Future<MediaItem> _mediaDetailFuture;
+  String? _lastResumeLogSignature;
 
   @override
   void initState() {
@@ -74,17 +75,11 @@ class _MediaDetailViewState extends State<MediaDetailView> {
           resumePlayableItemId: resumePlayableItemId,
           fallbackEpisodeIndex: fallbackEpisodeIndex,
         );
-        final selectedPlayableItem = playableItems[initialEpisodeIndex.clamp(
-          0,
-          playableItems.length - 1,
-        )];
-        debugPrint(
-          '[Resume][Detail] media=${mediaItem.dataSourceId} '
-          'resumePlayable=${resumePlayableItemId ?? ''} '
-          'fallbackIndex=$fallbackEpisodeIndex '
-          'selectedIndex=$initialEpisodeIndex '
-          'selectedItem=${selectedPlayableItem.dataSourceId} '
-          'selectedProgress=${selectedPlayableItem.playbackProgress?.position.inMilliseconds ?? 0}ms',
+        _logResumeState(
+          mediaItem: mediaItem,
+          playableItems: playableItems,
+          initialEpisodeIndex: initialEpisodeIndex,
+          resumePlayableItemId: resumePlayableItemId,
         );
         void handlePlayPressed(
           int episodeIndex, {
@@ -92,20 +87,27 @@ class _MediaDetailViewState extends State<MediaDetailView> {
         }) {
           final targetIndex = episodeIndex.clamp(0, playableItems.length - 1);
           final selectedItem = playableItems[targetIndex];
+          final latestProgress =
+              userDataProvider.playbackProgressForItem(selectedItem) ??
+              selectedItem.playbackProgress;
+          final liveSelectedItem = selectedItem.copyWith(
+            playbackProgress: latestProgress,
+          );
+          final progress = liveSelectedItem.playbackProgress;
           debugPrint(
             '[Resume][Detail][Play] media=${mediaItem.dataSourceId} '
-            'targetIndex=$targetIndex '
-            'selectedItem=${selectedItem.dataSourceId} '
-            'selectedProgress=${selectedItem.playbackProgress?.position.inMilliseconds ?? 0}ms',
+            'selectedItem=${liveSelectedItem.dataSourceId} '
+            'position=${progress?.position.inMilliseconds ?? 0}ms '
+            'duration=${progress?.duration.inMilliseconds ?? 0}ms',
           );
           userDataProvider.markRecentlyWatchedItemMemoryOnly(
-            selectedItem,
+            liveSelectedItem,
             episodeIndex: targetIndex,
           );
           final path =
-              PlayerView.locationFor(selectedItem.id) +
+              PlayerView.locationFor(liveSelectedItem.id) +
               (openTrackSelector ? '?tracks=1' : '');
-          context.push(path, extra: selectedItem);
+          context.push(path, extra: liveSelectedItem);
         }
 
         void handleToggleFavorite() {
@@ -149,6 +151,38 @@ class _MediaDetailViewState extends State<MediaDetailView> {
           },
         );
       },
+    );
+  }
+
+  void _logResumeState({
+    required MediaItem mediaItem,
+    required List<MediaItem> playableItems,
+    required int initialEpisodeIndex,
+    required String? resumePlayableItemId,
+  }) {
+    if (playableItems.isEmpty) {
+      return;
+    }
+
+    final selectedIndex = initialEpisodeIndex.clamp(0, playableItems.length - 1);
+    final selectedItem = playableItems[selectedIndex];
+    final progress = selectedItem.playbackProgress;
+    final signature =
+        '${mediaItem.dataSourceId}|${selectedItem.dataSourceId}|'
+        '${progress?.position.inMilliseconds ?? 0}|'
+        '${progress?.duration.inMilliseconds ?? 0}|'
+        '${resumePlayableItemId ?? ''}|$selectedIndex';
+    if (_lastResumeLogSignature == signature) {
+      return;
+    }
+    _lastResumeLogSignature = signature;
+    debugPrint(
+      '[Resume][Detail][Refresh] media=${mediaItem.dataSourceId} '
+      'selectedItem=${selectedItem.dataSourceId} '
+      'selectedIndex=$selectedIndex '
+      'resumePlayable=${resumePlayableItemId ?? ''} '
+      'position=${progress?.position.inMilliseconds ?? 0}ms '
+      'duration=${progress?.duration.inMilliseconds ?? 0}ms',
     );
   }
 }

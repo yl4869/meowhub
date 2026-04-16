@@ -1,4 +1,3 @@
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/media_service_config.dart';
@@ -25,19 +24,16 @@ class EmbyWatchHistoryRemoteDataSourceImpl
 
   @override
   Future<List<EmbyResumeItemDto>> getHistory() async {
-    try {
-      final items = await _apiClient.getResumeItems();
-      return items.map(_parseResumeItem).toList(growable: false);
-    } on DioException catch (e) {
-      final statusCode = e.response?.statusCode;
-      debugPrint(
-        '[EmbyHistory] DioException status=$statusCode message=${e.message}',
-      );
-      if (statusCode == 500) {
-        debugPrint('[EmbyHistory] 500 response body=${e.response?.data}');
-      }
-      rethrow;
-    }
+    final items = await _apiClient.getRecentlyWatchedItems();
+    final parsed = items.map(_parseResumeItem).toList(growable: false);
+    final firstItem = parsed.isEmpty ? null : parsed.first;
+    debugPrint(
+      '[Recent][Emby][Parsed] count=${parsed.length} '
+      'firstId=${firstItem?.id ?? ''} '
+      'firstTitle=${firstItem?.name ?? ''} '
+      'firstPosition=${firstItem?.playbackPositionTicks ?? 0}',
+    );
+    return parsed;
   }
 
   @override

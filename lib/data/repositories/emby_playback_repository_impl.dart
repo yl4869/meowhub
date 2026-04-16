@@ -1,5 +1,6 @@
-import '../../core/services/security_service.dart';
 import 'package:flutter/foundation.dart';
+
+import '../../core/services/security_service.dart';
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/playback_plan.dart';
 import '../../domain/repositories/playback_repository.dart';
@@ -173,14 +174,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       if (audio.isEmpty) audio = mapAudioStreams(allStreams.toList());
       if (subs.isEmpty) subs = mapSubtitleStreams(allStreams.toList());
     }
-
-    // Debug: mapped stream counts & selected source
-    if (kDebugMode) {
-      debugPrint(
-        '[PlaybackPlan] url=$url source=${source.id} audio=${audio.length} subs=${subs.length}',
-      );
-    }
-
     return PlaybackPlan(
       url: url,
       playSessionId: info.playSessionId,
