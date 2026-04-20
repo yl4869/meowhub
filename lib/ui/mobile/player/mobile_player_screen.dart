@@ -1,13 +1,19 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
-// import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:audio_video_progress_bar/audio_video_progress_bar.dart'
+    as progress_bar;
+import 'package:media_kit/media_kit.dart' show Player;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/entities/media_item.dart';
-import 'package:media_kit/media_kit.dart' show Player;
 import '../../../providers/app_provider.dart';
 import '../../../providers/user_data_provider.dart';
-import '../../../theme/app_theme.dart';
-import '../../atoms/app_surface_card.dart';
 import '../../atoms/duration_formatter.dart';
 import '../../atoms/meow_video_player.dart';
 
@@ -21,6 +27,9 @@ class MobilePlayerScreen extends StatefulWidget {
     required this.onPlaybackStatusChanged,
     this.playUrlOverride,
     this.onShowTrackSelector,
+    this.resolutionOptions = const [],
+    this.selectedResolution,
+    this.onResolutionSelected,
     this.selectionRequest,
     this.subtitleUri,
     this.subtitleTitle,
@@ -35,7 +44,9 @@ class MobilePlayerScreen extends StatefulWidget {
   final MeowVideoPlaybackStatusChanged onPlaybackStatusChanged;
   final String? playUrlOverride;
   final VoidCallback? onShowTrackSelector;
-  // 播放页移除音轨/字幕选择
+  final List<PlayerResolutionOption> resolutionOptions;
+  final PlayerResolutionOption? selectedResolution;
+  final Future<void> Function(PlayerResolutionOption)? onResolutionSelected;
   final Object? selectionRequest;
   final String? subtitleUri;
   final String? subtitleTitle;
@@ -49,6 +60,10 @@ class MobilePlayerScreen extends StatefulWidget {
 class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   static const Duration _backgroundSyncInterval = Duration(minutes: 1);
   static const Duration _meaningfulProgressThreshold = Duration(seconds: 5);
+  static const Duration _controlsAutoHideDelay = Duration(seconds: 3);
+  static const List<double> _playbackSpeeds = [1.0, 1.25, 1.5, 2.0];
+
+  final GlobalKey _playerBoundaryKey = GlobalKey();
 
   MeowVideoPlaybackStatus? _latestStatus;
   MediaPlaybackProgress? _lastStablePlaybackProgress;
@@ -57,37 +72,109 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   Future<void>? _syncOnExitFuture;
   bool _isExiting = false;
   bool _allowImmediatePop = false;
+  bool _controlsVisible = true;
+  bool _isLocked = false;
+  bool _isScrubbing = false;
+  _PlayerOptionPanel? _activeOptionPanel;
+  double _currentSpeed = 1.0;
+  double? _scrubValue;
+  String? _centerToastText;
   DateTime? _lastBackgroundSyncAt;
   int _lastUiProgressSecond = -1;
   int _lastLoggedPlaybackSecond = -1;
+  Timer? _controlsHideTimer;
+  Timer? _centerToastTimer;
 
   @override
   void initState() {
     super.initState();
-    // 预先抓取 Provider 引用，避免在 dispose/异步回调里向上查找祖先导致断言
     _udp = context.read<UserDataProvider>();
     _lastStablePlaybackProgress = widget.savedProgress;
+    // ignore: discarded_futures
+    _enterImmersiveLandscapeMode();
+    _scheduleControlsAutoHide();
   }
 
-  // 播放页移除本地字幕切换
+  @override
+  void dispose() {
+    _controlsHideTimer?.cancel();
+    _centerToastTimer?.cancel();
+    // ignore: discarded_futures
+    _syncOnExit();
+    final p = _player;
+    if (p != null) {
+      try {
+        p.dispose();
+      } catch (_) {}
+    }
+    // ignore: discarded_futures
+    _restoreSystemUi();
+    super.dispose();
+  }
+
+  Future<void> _enterImmersiveLandscapeMode() async {
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    await SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+
+  Future<void> _restoreSystemUi() async {
+    await SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: SystemUiOverlay.values,
+    );
+    await SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.portraitUp,
+    ]);
+  }
 
   bool get _hasPlayableUrl {
     final playUrl = widget.mediaItem.playUrl;
     return playUrl != null && playUrl.isNotEmpty;
   }
 
+  MediaPlaybackProgress? get _currentPlaybackProgress {
+    if (_isExiting) {
+      return _lastStablePlaybackProgress ?? widget.savedProgress;
+    }
+    final status = _latestStatus;
+    if (status != null && status.isInitialized) {
+      return MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    return _lastStablePlaybackProgress ?? widget.savedProgress;
+  }
+
+  Duration get _displayPosition {
+    final current = _currentPlaybackProgress?.position ?? Duration.zero;
+    if (_scrubValue == null || _currentPlaybackProgress == null) {
+      return current;
+    }
+    final duration = _currentPlaybackProgress!.duration;
+    return duration * _scrubValue!;
+  }
+
+  Duration get _displayDuration {
+    return _currentPlaybackProgress?.duration ?? Duration.zero;
+  }
+
+  bool get _isPlaying => _latestStatus?.isPlaying ?? false;
+
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
     if (_isExiting || _shouldIgnoreZeroProgressUpdate(status)) {
       return;
     }
     _latestStatus = status;
-    // 仅内存更新，切断重绘循环
     if (status.isInitialized) {
       _lastStablePlaybackProgress = MediaPlaybackProgress(
         position: status.position,
         duration: status.duration,
       );
-      _refreshPlaybackInfoUi(status);
+      _refreshUi(status);
       _logPlaybackProgress(status);
       _udp.updatePlaybackProgressForItem(
         widget.mediaItem,
@@ -110,15 +197,12 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
         latestPosition > _meaningfulProgressThreshold;
   }
 
-  void _refreshPlaybackInfoUi(MeowVideoPlaybackStatus status) {
+  void _refreshUi(MeowVideoPlaybackStatus status) {
     final nextSecond = status.position.inSeconds;
-    if (_lastUiProgressSecond == nextSecond) {
+    if (_lastUiProgressSecond == nextSecond || !mounted) {
       return;
     }
     _lastUiProgressSecond = nextSecond;
-    if (!mounted) {
-      return;
-    }
     setState(() {});
   }
 
@@ -207,23 +291,262 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    // ignore: discarded_futures
-    _syncOnExit();
-    // 尽量先停止音频流并释放 VideoController，避免退出后残留音轨
-    final p = _player;
-    if (p != null) {
-      try {
-        p.dispose();
-      } catch (_) {}
+  void _scheduleControlsAutoHide() {
+    _controlsHideTimer?.cancel();
+    if (_isLocked || !_controlsVisible || !_isPlaying) {
+      return;
     }
-    super.dispose();
+    _controlsHideTimer = Timer(_controlsAutoHideDelay, () {
+      if (!mounted || _isLocked) {
+        return;
+      }
+      setState(() {
+        _controlsVisible = false;
+      });
+    });
+  }
+
+  void _handleScreenInteraction() {
+    if (_isLocked) {
+      return;
+    }
+    if (!_controlsVisible) {
+      setState(() {
+        _controlsVisible = true;
+      });
+    }
+    if (_activeOptionPanel != null) {
+      setState(() {
+        _activeOptionPanel = null;
+      });
+    }
+    _scheduleControlsAutoHide();
+  }
+
+  Future<void> _togglePlayPause() async {
+    if (_isLocked) {
+      return;
+    }
+    _handleScreenInteraction();
+    final p = _player;
+    if (p == null) {
+      return;
+    }
+    try {
+      if (_isPlaying) {
+        await p.pause();
+      } else {
+        await p.play();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _setPlaybackSpeed(double speed) async {
+    final p = _player;
+    if (p == null) {
+      return;
+    }
+    try {
+      await p.setRate(speed);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _currentSpeed = speed;
+      });
+      _showCenterToast('${speed.toStringAsFixed(speed == 1.0 ? 1 : 2)}x');
+      _handleScreenInteraction();
+    } catch (_) {}
+  }
+
+  Future<void> _showSpeedOptions() async {
+    if (_isLocked) {
+      return;
+    }
+    _handleScreenInteraction();
+    setState(() {
+      _activeOptionPanel = _activeOptionPanel == _PlayerOptionPanel.speed
+          ? null
+          : _PlayerOptionPanel.speed;
+    });
+  }
+
+  Future<void> _showResolutionOptions() async {
+    if (_isLocked || widget.onResolutionSelected == null) {
+      return;
+    }
+    _handleScreenInteraction();
+    setState(() {
+      _activeOptionPanel = _activeOptionPanel == _PlayerOptionPanel.resolution
+          ? null
+          : _PlayerOptionPanel.resolution;
+    });
+  }
+
+  Future<void> _selectResolutionOption(PlayerResolutionOption option) async {
+    setState(() {
+      _activeOptionPanel = null;
+    });
+    await widget.onResolutionSelected!(option);
+    _showCenterToast(option.label);
+  }
+
+  Future<void> _handlePiP() async {
+    _handleScreenInteraction();
+    _showCenterToast('PiP');
+  }
+
+  Future<void> _takeScreenshot() async {
+    if (_isLocked) {
+      return;
+    }
+    _handleScreenInteraction();
+    try {
+      final boundary =
+          _playerBoundaryKey.currentContext?.findRenderObject()
+              as RenderRepaintBoundary?;
+      if (boundary == null) {
+        throw StateError('boundary unavailable');
+      }
+      final image = await boundary.toImage(pixelRatio: 2);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) {
+        throw StateError('image bytes unavailable');
+      }
+      final directory = await getTemporaryDirectory();
+      final file = File(
+        '${directory.path}/meowhub-shot-${DateTime.now().millisecondsSinceEpoch}.png',
+      );
+      await file.writeAsBytes(byteData.buffer.asUint8List());
+      _showCenterToast('Saved');
+    } catch (_) {
+      _showCenterToast('Shot failed');
+    }
+  }
+
+  void _showCenterToast(String text) {
+    _centerToastTimer?.cancel();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _centerToastText = text;
+    });
+    _centerToastTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _centerToastText = null;
+      });
+    });
+  }
+
+  void _toggleLock() {
+    setState(() {
+      _isLocked = !_isLocked;
+      if (_isLocked) {
+        _controlsVisible = false;
+      } else {
+        _controlsVisible = true;
+      }
+    });
+    _scheduleControlsAutoHide();
+  }
+
+  Future<void> _seekToFraction(double value) async {
+    final p = _player;
+    final duration = _displayDuration;
+    if (p == null || duration <= Duration.zero) {
+      return;
+    }
+    final target = duration * value.clamp(0.0, 1.0);
+    try {
+      await p.seek(target);
+    } catch (_) {}
+  }
+
+  void _handleScrubChanged(double value) {
+    _handleScreenInteraction();
+    setState(() {
+      _isScrubbing = true;
+      _scrubValue = value;
+    });
+  }
+
+  void _handleScrubStarted() {
+    _handleScreenInteraction();
+    if (_isScrubbing) {
+      return;
+    }
+    setState(() {
+      _isScrubbing = true;
+    });
+  }
+
+  Future<void> _handleScrubEnd(double value) async {
+    await _seekToFraction(value);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isScrubbing = false;
+      _scrubValue = null;
+    });
+    _scheduleControlsAutoHide();
+  }
+
+  Future<void> _handleProgressBarSeek(Duration duration) async {
+    final total = _displayDuration;
+    if (total <= Duration.zero) {
+      return;
+    }
+    final fraction =
+        duration.inMilliseconds / total.inMilliseconds.clamp(1, 1 << 30);
+    await _handleScrubEnd(fraction.clamp(0.0, 1.0));
+  }
+
+  Widget _buildPlayer() {
+    if (!_hasPlayableUrl) {
+      return _UnavailablePlayerView(title: widget.mediaItem.title);
+    }
+    return RepaintBoundary(
+      key: _playerBoundaryKey,
+      child: MeowVideoPlayer(
+        key: ObjectKey(widget.mediaItem.dataSourceId),
+        url: widget.playUrlOverride ?? widget.mediaItem.playUrl!,
+        autoPlay: true,
+        fit: BoxFit.cover,
+        expandToFill: true,
+        borderRadius: BorderRadius.zero,
+        initialPosition: widget.initialPosition,
+        onPlaybackStatusChanged: _handlePlaybackStatusChanged,
+        onPlayerCreated: (p) async {
+          _player = p;
+          try {
+            await p.setRate(_currentSpeed);
+          } catch (_) {}
+        },
+        overlayCcButton: false,
+        onTapCc: widget.onShowTrackSelector,
+        subtitleUri: widget.subtitleUri,
+        subtitleTitle: widget.subtitleTitle,
+        subtitleLanguage: widget.subtitleLanguage,
+        disableSubtitleTrack: widget.disableSubtitleTrack,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    // 支持预测性返回：先停音频/同步，再退出
+    final mediaPadding = MediaQuery.of(context).padding;
+    final safeLeft = mediaPadding.left > 0 ? mediaPadding.left + 2.0 : 0.0;
+    final safeRight = mediaPadding.right > 0 ? mediaPadding.right + 2.0 : 0.0;
+    final safeTop = mediaPadding.top > 0 ? mediaPadding.top + 2.0 : 2.0;
+    final safeBottom = mediaPadding.bottom > 0
+        ? mediaPadding.bottom + 2.0
+        : 2.0;
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -238,277 +561,751 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
           if (!mounted) {
             return;
           }
+          // ignore: discarded_futures
+          _restoreSystemUi();
           _allowImmediatePop = true;
           navigator.pop();
         });
       },
-      child: OrientationBuilder(
-        builder: (context, orientation) {
-          final isLandscape = orientation == Orientation.landscape;
-
-          if (isLandscape) {
-            return Scaffold(
-              backgroundColor: Colors.black,
-              body: Center(child: _buildPlayer()),
-            );
-          }
-
-          return Scaffold(
-            appBar: AppBar(
-              title: Text(widget.mediaItem.title),
-              centerTitle: true,
-              backgroundColor: AppTheme.backgroundColor,
-              surfaceTintColor: Colors.transparent,
+      child: Material(
+        type: MaterialType.transparency,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: Colors.black),
+            Positioned.fill(child: _buildPlayer()),
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  if (_isLocked) {
+                    return;
+                  }
+                  setState(() {
+                    _controlsVisible = !_controlsVisible;
+                    if (!_controlsVisible) {
+                      _activeOptionPanel = null;
+                    }
+                  });
+                  _scheduleControlsAutoHide();
+                },
+                onDoubleTap: _handleScreenInteraction,
+              ),
             ),
-            body: ListView(
-              physics: const BouncingScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-              children: [
-                _buildPlayer(),
-                                // Track selector under the player
-                if (widget.onShowTrackSelector != null) ...[
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: OutlinedButton.icon(
-                      onPressed: widget.onShowTrackSelector,
-                      icon: const Icon(Icons.library_music_outlined),
-                      label: const Text('音轨/字幕'),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              height: 112,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.52),
+                        Colors.black.withValues(alpha: 0.14),
+                        Colors.transparent,
+                      ],
                     ),
                   ),
-                ],
-                const SizedBox(height: 20),
-                _buildTitleSection(context),
-                const SizedBox(height: 18),
-                _PlaybackInfoCard(
-                  selectedServer: widget.selectedServer,
-                  playbackProgress: _currentPlaybackProgress,
-                  initialPosition: widget.initialPosition,
                 ),
-                const SizedBox(height: 18),
-                _PlaybackHintCard(
-                  hasSavedProgress: _currentPlaybackProgress != null,
-                  overview: widget.mediaItem.overview,
-                ),
-              ],
+              ),
             ),
-          );
-        },
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              height: 148,
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.bottomCenter,
+                      end: Alignment.topCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.66),
+                        Colors.black.withValues(alpha: 0.16),
+                        Colors.transparent,
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (_controlsVisible && !_isLocked)
+              Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: _activeOptionPanel != null,
+                  child: _ControlsOverlay(
+                    state: this,
+                    safeLeft: safeLeft,
+                    safeRight: safeRight,
+                    safeTop: safeTop,
+                    safeBottom: safeBottom,
+                  ),
+                ),
+              ),
+            if (_controlsVisible || _isLocked)
+              Positioned(
+                left: safeLeft,
+                top: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  ignoring: _activeOptionPanel != null && !_isLocked,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: _SideActionButton(
+                      icon: _isLocked
+                          ? Icons.lock_rounded
+                          : Icons.lock_open_rounded,
+                      onPressed: _toggleLock,
+                    ),
+                  ),
+                ),
+              ),
+            if (_controlsVisible && !_isLocked)
+              Positioned(
+                right: safeRight,
+                top: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  ignoring: _activeOptionPanel != null,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: _SideActionButton(
+                      icon: Icons.photo_camera_outlined,
+                      onPressed: _takeScreenshot,
+                    ),
+                  ),
+                ),
+              ),
+            if (_controlsVisible && !_isLocked && _activeOptionPanel != null)
+              Positioned.fill(
+                child: _OptionDrawerLayer(
+                  activePanel: _activeOptionPanel!,
+                  safeTop: safeTop,
+                  safeRight: safeRight,
+                  title: _activeOptionPanel == _PlayerOptionPanel.speed
+                      ? '倍速'
+                      : '分辨率',
+                  onClose: () {
+                    setState(() {
+                      _activeOptionPanel = null;
+                    });
+                  },
+                  children: _activeOptionPanel == _PlayerOptionPanel.speed
+                      ? [
+                          for (final speed in _playbackSpeeds)
+                            _DrawerOptionTile(
+                              label:
+                                  '${speed.toStringAsFixed(speed == 1.0 ? 1 : 2)}x',
+                              selected: _currentSpeed == speed,
+                              onTap: () => _setPlaybackSpeed(speed).then((_) {
+                                if (!mounted) {
+                                  return;
+                                }
+                                setState(() {
+                                  _activeOptionPanel = null;
+                                });
+                              }),
+                            ),
+                        ]
+                      : [
+                          for (final option in widget.resolutionOptions)
+                            _DrawerOptionTile(
+                              label: option.label,
+                              selected: widget.selectedResolution == option,
+                              onTap: () => _selectResolutionOption(option),
+                            ),
+                        ],
+                ),
+              ),
+            if (_isLocked)
+              Positioned(
+                left: safeLeft + 56,
+                right: safeRight + 56,
+                bottom: safeBottom + 2,
+                child: Center(
+                  child: Text(
+                    'Screen Locked',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Colors.white70,
+                      shadows: _premiumShadows,
+                    ),
+                  ),
+                ),
+              ),
+            if (_centerToastText case final toast?)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Center(
+                    child: AnimatedOpacity(
+                      opacity: 1,
+                      duration: const Duration(milliseconds: 180),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.55),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text(
+                          toast,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: Colors.white,
+                                shadows: _premiumShadows,
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
+}
 
-  // 抽离播放器构建逻辑
-  Widget _buildPlayer() {
-    if (!_hasPlayableUrl) {
-      return _UnavailablePlayerCard(title: widget.mediaItem.title);
-    }
-    return MeowVideoPlayer(
-      key: ObjectKey(widget.mediaItem.dataSourceId),
-      url: widget.playUrlOverride ?? widget.mediaItem.playUrl!,
-      autoPlay: true,
-      initialPosition: widget.initialPosition,
-      onPlaybackStatusChanged: _handlePlaybackStatusChanged,
-      onPlayerCreated: (p) async {
-        _player = p;
-      },
-      overlayCcButton: widget.onShowTrackSelector != null,
-      onTapCc: widget.onShowTrackSelector,
-      subtitleUri: widget.subtitleUri,
-      subtitleTitle: widget.subtitleTitle,
-      subtitleLanguage: widget.subtitleLanguage,
-      disableSubtitleTrack: widget.disableSubtitleTrack,
-    );
-  }
+class _ControlsOverlay extends StatelessWidget {
+  const _ControlsOverlay({
+    required this.state,
+    required this.safeLeft,
+    required this.safeRight,
+    required this.safeTop,
+    required this.safeBottom,
+  });
 
-  MediaPlaybackProgress? get _currentPlaybackProgress {
-    if (_isExiting) {
-      return _lastStablePlaybackProgress ?? widget.savedProgress;
-    }
-    final status = _latestStatus;
-    if (status != null && status.isInitialized) {
-      return MediaPlaybackProgress(
-        position: status.position,
-        duration: status.duration,
-      );
-    }
-    return _lastStablePlaybackProgress ?? widget.savedProgress;
-  }
+  final _MobilePlayerScreenState state;
+  final double safeLeft;
+  final double safeRight;
+  final double safeTop;
+  final double safeBottom;
 
-  // 抽离标题区域逻辑
-  Widget _buildTitleSection(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
       children: [
-        Text(widget.mediaItem.title, style: theme.textTheme.headlineMedium),
-        if (widget.mediaItem.originalTitle.isNotEmpty &&
-            widget.mediaItem.originalTitle != widget.mediaItem.title) ...[
-          const SizedBox(height: 8),
-          Text(
-            widget.mediaItem.originalTitle,
-            style: theme.textTheme.bodyMedium,
+        Positioned(
+          top: safeTop,
+          left: safeLeft,
+          right: safeRight,
+          child: _TopControlBar(state: state),
+        ),
+        Positioned(
+          left: safeLeft,
+          right: safeRight,
+          bottom: safeBottom + 2,
+          child: _BottomControlBar(state: state),
+        ),
+        if (!state._isPlaying)
+          const Positioned.fill(
+            child: IgnorePointer(child: Center(child: _PausedPlayGlyph())),
           ),
-        ],
       ],
     );
   }
 }
 
-// --- 以下辅助组件保持不变 ---
+class _TopControlBar extends StatelessWidget {
+  const _TopControlBar({required this.state});
 
-class _PlaybackInfoCard extends StatelessWidget {
-  const _PlaybackInfoCard({
-    required this.selectedServer,
-    required this.playbackProgress,
-    required this.initialPosition,
-  });
-
-  final MediaServerInfo selectedServer;
-  final MediaPlaybackProgress? playbackProgress;
-  final Duration initialPosition;
+  final _MobilePlayerScreenState state;
 
   @override
   Widget build(BuildContext context) {
-    final hasResume = initialPosition > Duration.zero;
-
-    return AppSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('播放状态', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 14),
-          _InfoLine(
-            icon: Icons.dns_rounded,
-            label: '当前线路',
-            value: '${selectedServer.name} · ${selectedServer.region}',
+    return Row(
+      children: [
+        _GlassIconButton(
+          icon: Icons.arrow_back_ios_new_rounded,
+          onPressed: () => Navigator.of(context).maybePop(),
+          iconSize: 16,
+          padding: const EdgeInsets.all(7),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            state.widget.mediaItem.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Colors.white.withValues(alpha: 0.92),
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.2,
+              shadows: _premiumShadows,
+            ),
           ),
-          _InfoLine(
-            icon: Icons.restore_rounded,
-            label: '续播起点',
-            value: hasResume ? formatDurationLabel(initialPosition) : '从头开始',
-          ),
-          _InfoLine(
-            icon: Icons.timelapse_rounded,
-            label: '当前记录',
-            value: playbackProgress != null
-                ? '${formatDurationLabel(playbackProgress!.position)} / '
-                      '${formatDurationLabel(playbackProgress!.duration)}'
-                : '尚未生成播放记录',
-            isLast: true,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PlaybackHintCard extends StatelessWidget {
-  const _PlaybackHintCard({
-    required this.hasSavedProgress,
-    required this.overview,
-  });
-
-  final bool hasSavedProgress;
-  final String overview;
-
-  @override
-  Widget build(BuildContext context) {
-    return AppSurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            hasSavedProgress ? '已启用续播' : '首次播放',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 10),
-          Text(
-            hasSavedProgress
-                ? '播放器会在播放中自动保存进度，返回详情页后会继续显示最新续播位置。'
-                : '这次播放会自动开始记录进度，退出后你可以从上次位置继续观看。',
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-          if (overview.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            Text(overview, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        const SizedBox(width: 8),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _GlassIconButton(
+              icon: Icons.cast_connected_rounded,
+              onPressed: state._handlePiP,
+              iconSize: 16,
+              padding: const EdgeInsets.all(7),
+            ),
+            const SizedBox(width: 4),
+            _GlassIconButton(
+              icon: Icons.tune_rounded,
+              onPressed: state.widget.onShowTrackSelector ?? () {},
+              iconSize: 16,
+              padding: const EdgeInsets.all(7),
+            ),
           ],
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
 
-class _InfoLine extends StatelessWidget {
-  const _InfoLine({
+class _BottomControlBar extends StatelessWidget {
+  const _BottomControlBar({required this.state});
+
+  final _MobilePlayerScreenState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final displayDuration = state._displayDuration;
+    final displayPosition = state._displayPosition;
+    final cappedPosition = displayPosition > displayDuration
+        ? displayDuration
+        : displayPosition;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Theme(
+          data: Theme.of(context).copyWith(
+            sliderTheme: SliderTheme.of(
+              context,
+            ).copyWith(overlayShape: SliderComponentShape.noOverlay),
+          ),
+          child: progress_bar.ProgressBar(
+            progress: cappedPosition,
+            total: displayDuration,
+            timeLabelLocation: progress_bar.TimeLabelLocation.none,
+            barHeight: state._isScrubbing ? 3 : 1,
+            baseBarColor: Colors.white.withValues(alpha: 0.18),
+            progressBarColor: Colors.white,
+            thumbColor: const Color(0xFFE5484D),
+            thumbRadius: state._isScrubbing ? 4 : 0,
+            thumbGlowRadius: 0,
+            bufferedBarColor: Colors.transparent,
+            onSeek: state._handleProgressBarSeek,
+            onDragStart: (_) => state._handleScrubStarted(),
+            onDragUpdate: (details) {
+              if (displayDuration <= Duration.zero) {
+                return;
+              }
+              final fraction =
+                  details.timeStamp.inMilliseconds /
+                  displayDuration.inMilliseconds.clamp(1, 1 << 30);
+              state._handleScrubChanged(fraction.clamp(0.0, 1.0));
+            },
+            onDragEnd: () => state._scheduleControlsAutoHide(),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            Text(
+              formatDurationLabel(cappedPosition),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.white.withValues(alpha: 0.72),
+                fontSize: 11,
+                shadows: _premiumShadows,
+              ),
+            ),
+            const Spacer(),
+            Text(
+              _formatRemainingTime(cappedPosition, displayDuration),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.white.withValues(alpha: 0.72),
+                fontSize: 11,
+                shadows: _premiumShadows,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            _ControlDock(
+              child: _PrimaryActionButton(
+                icon: state._isPlaying
+                    ? Icons.pause_circle_filled_rounded
+                    : Icons.play_circle_fill_rounded,
+                onPressed: state._togglePlayPause,
+                size: 32,
+              ),
+            ),
+            const Spacer(),
+            _ControlDock(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _GlassIconButton(
+                    icon: Icons.speed_rounded,
+                    onPressed: state._showSpeedOptions,
+                    showChrome: true,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    iconSize: 18,
+                  ),
+                  const SizedBox(width: 4),
+                  _GlassIconButton(
+                    icon: Icons.high_quality_rounded,
+                    onPressed: state._showResolutionOptions,
+                    showChrome: false,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    iconSize: 18,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _GlassIconButton extends StatelessWidget {
+  const _GlassIconButton({
     required this.icon,
-    required this.label,
-    required this.value,
-    this.isLast = false,
+    required this.onPressed,
+    this.padding = const EdgeInsets.all(12),
+    this.iconSize = 20,
+    this.showChrome = true,
   });
 
   final IconData icon;
-  final String label;
-  final String value;
-  final bool isLast;
+  final VoidCallback onPressed;
+  final EdgeInsets padding;
+  final double iconSize;
+  final bool showChrome;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: isLast ? 0 : 14),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, size: 18, color: AppTheme.accentColor),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: Theme.of(context).textTheme.bodySmall),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.bodyMedium?.copyWith(color: Colors.white),
-                ),
-              ],
-            ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(999),
+        child: Ink(
+          padding: padding,
+          decoration: BoxDecoration(
+            color: showChrome
+                ? Colors.black.withValues(alpha: 0.18)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(999),
+            border: showChrome
+                ? Border.all(color: Colors.white.withValues(alpha: 0.08))
+                : null,
           ),
-        ],
+          child: Icon(
+            icon,
+            size: iconSize,
+            color: Colors.white,
+            shadows: _premiumShadows,
+          ),
+        ),
       ),
     );
   }
 }
 
-class _UnavailablePlayerCard extends StatelessWidget {
-  const _UnavailablePlayerCard({required this.title});
+class _PrimaryActionButton extends StatelessWidget {
+  const _PrimaryActionButton({
+    required this.icon,
+    required this.onPressed,
+    required this.size,
+  });
+
+  final IconData icon;
+  final VoidCallback onPressed;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onPressed,
+      iconSize: size,
+      splashRadius: size * 0.7,
+      color: Colors.white,
+      icon: Icon(icon, shadows: _premiumShadows),
+    );
+  }
+}
+
+class _SideActionButton extends StatelessWidget {
+  const _SideActionButton({required this.icon, required this.onPressed});
+
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return _GlassIconButton(
+      icon: icon,
+      onPressed: onPressed,
+      padding: const EdgeInsets.all(7),
+      iconSize: 15,
+    );
+  }
+}
+
+class _PausedPlayGlyph extends StatelessWidget {
+  const _PausedPlayGlyph();
+
+  @override
+  Widget build(BuildContext context) {
+    return Icon(
+      Icons.play_arrow_rounded,
+      size: 54,
+      color: Colors.white.withValues(alpha: 0.94),
+      shadows: const [
+        Shadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, 2)),
+      ],
+    );
+  }
+}
+
+class _ControlDock extends StatelessWidget {
+  const _ControlDock({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // return DecoratedBox(
+    //   decoration: BoxDecoration(
+    //     color: Colors.black.withValues(alpha: 0.16),
+    //     borderRadius: BorderRadius.circular(999),
+    //     border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+    //   ),
+    //   child: Padding(
+    //     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+    //     child: child,
+    //   ),
+    // );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: child,
+    );
+  }
+}
+
+String _formatRemainingTime(Duration position, Duration duration) {
+  final remaining = duration - position;
+  final normalized = remaining.isNegative ? Duration.zero : remaining;
+  return '-${formatDurationLabel(normalized)}';
+}
+
+class _UnavailablePlayerView extends StatelessWidget {
+  const _UnavailablePlayerView({required this.title});
 
   final String title;
 
   @override
   Widget build(BuildContext context) {
-    return AspectRatio(
-      aspectRatio: 16 / 9,
-      child: AppSurfaceCard(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.link_off_rounded, size: 42, color: Colors.white54),
-            const SizedBox(height: 14),
-            Text(
-              '$title 暂无可用播放地址',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleLarge,
+    return ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.link_off_rounded,
+                size: 42,
+                color: Colors.white54,
+              ),
+              const SizedBox(height: 14),
+              Text(
+                '$title 暂无可用播放地址',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+const List<Shadow> _premiumShadows = [
+  Shadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 2)),
+];
+
+enum _PlayerOptionPanel { speed, resolution }
+
+class PlayerResolutionOption {
+  const PlayerResolutionOption({
+    required this.label,
+    required this.maxStreamingBitrate,
+  });
+
+  final String label;
+  final int maxStreamingBitrate;
+
+  @override
+  bool operator ==(Object other) {
+    return other is PlayerResolutionOption &&
+        other.label == label &&
+        other.maxStreamingBitrate == maxStreamingBitrate;
+  }
+
+  @override
+  int get hashCode => Object.hash(label, maxStreamingBitrate);
+}
+
+class _OptionDrawerLayer extends StatelessWidget {
+  const _OptionDrawerLayer({
+    required this.activePanel,
+    required this.safeTop,
+    required this.safeRight,
+    required this.title,
+    required this.onClose,
+    required this.children,
+  });
+
+  final _PlayerOptionPanel activePanel;
+  final double safeTop;
+  final double safeRight;
+  final String title;
+  final VoidCallback onClose;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    final drawerWidth = (screenSize.width * 0.32).clamp(180.0, 320.0);
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          right: drawerWidth,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onClose,
+            child: ColoredBox(color: Colors.black.withValues(alpha: 0.06)),
+          ),
+        ),
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOutCubic,
+          top: 0,
+          bottom: 0,
+          right: 0,
+          width: drawerWidth,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              padding: EdgeInsets.fromLTRB(12, safeTop + 4, safeRight + 10, 12),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.76),
+                border: Border(
+                  left: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                ),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w600,
+                                shadows: _premiumShadows,
+                              ),
+                        ),
+                      ),
+                      _GlassIconButton(
+                        icon: Icons.close_rounded,
+                        onPressed: onClose,
+                        padding: const EdgeInsets.all(8),
+                        iconSize: 18,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      child: Column(children: children),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              '请先为这部作品配置可用的 playUrl，再进入播放页。',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DrawerOptionTile extends StatelessWidget {
+  const _DrawerOptionTile({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: selected
+                ? Colors.white.withValues(alpha: 0.12)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.white,
+                    shadows: _premiumShadows,
+                  ),
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_rounded, size: 16, color: Colors.white),
+            ],
+          ),
         ),
       ),
     );

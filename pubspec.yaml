@@ -46,6 +46,7 @@ dependencies:
   json_annotation: ^4.11.0
   path_provider: ^2.1.5
   shared_preferences: ^2.2.2
+  audio_video_progress_bar: ^2.0.3
   # media_kit 播放内核（替换 video_player + chewie）
   media_kit: any
   media_kit_video: any

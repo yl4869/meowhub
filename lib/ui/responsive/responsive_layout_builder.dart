@@ -23,7 +23,8 @@ class AppResponsiveBreakpoints {
 
   static const double tablet = 720;
 
-  static bool isTabletWidth(double width) => width >= tablet;
+  static bool isTabletShortestSide(double shortestSide) =>
+      shortestSide >= tablet;
 }
 
 /// Refactor reason:
@@ -47,7 +48,10 @@ class ResponsiveLayoutBuilder extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth;
-        final isTablet = AppResponsiveBreakpoints.isTabletWidth(maxWidth);
+        final shortestSide = MediaQuery.sizeOf(context).shortestSide;
+        final isTablet = AppResponsiveBreakpoints.isTabletShortestSide(
+          shortestSide,
+        );
         final layout = ResponsiveLayoutContext(
           maxWidth: maxWidth,
           layoutType: isTablet

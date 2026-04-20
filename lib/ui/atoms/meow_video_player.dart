@@ -58,6 +58,8 @@ class MeowVideoPlayer extends StatefulWidget {
     this.autoPlay = false,
     this.looping = false,
     this.renderMode = MeowVideoRenderMode.flutter,
+    this.fit = BoxFit.contain,
+    this.expandToFill = false,
     this.borderRadius = const BorderRadius.all(Radius.circular(24)),
     this.httpHeaders = const {},
     this.androidNativeBuilder,
@@ -78,6 +80,8 @@ class MeowVideoPlayer extends StatefulWidget {
   final bool autoPlay;
   final bool looping;
   final MeowVideoRenderMode renderMode;
+  final BoxFit fit;
+  final bool expandToFill;
   final BorderRadius borderRadius;
   final Map<String, String> httpHeaders;
   final MeowVideoNativeRendererBuilder? androidNativeBuilder;
@@ -359,21 +363,22 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       future: _initializeVideoFuture,
       builder: (context, snapshot) {
         final aspectRatio = widget.aspectRatio ?? _fallbackAspectRatio;
+        final playerContent = Container(
+          color: Colors.black,
+          child: _videoController != null
+              ? Video(
+                  controller: _videoController!,
+                  // 交给 media_kit 内部根据帧率/时钟同步渲染，通常能改善音画同步
+                  fit: widget.fit,
+                )
+              : const _VideoLoadingState(),
+        );
+
         return ClipRRect(
           borderRadius: widget.borderRadius,
-          child: AspectRatio(
-            aspectRatio: aspectRatio,
-            child: Container(
-              color: Colors.black,
-              child: _videoController != null
-                  ? Video(
-                      controller: _videoController!,
-                      // 交给 media_kit 内部根据帧率/时钟同步渲染，通常能改善音画同步
-                      fit: BoxFit.contain,
-                    )
-                  : const _VideoLoadingState(),
-            ),
-          ),
+          child: widget.expandToFill
+              ? SizedBox.expand(child: playerContent)
+              : AspectRatio(aspectRatio: aspectRatio, child: playerContent),
         );
       },
     );
