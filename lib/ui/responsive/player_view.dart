@@ -36,14 +36,29 @@ class PlayerView extends StatefulWidget {
 }
 
 class _PlayerViewState extends State<PlayerView> {
+  static const List<PlayerResolutionOption> _resolutionOptions = [
+    PlayerResolutionOption(
+      label: 'Auto',
+      maxStreamingBitrate: 10 * 1000 * 1000,
+    ),
+    PlayerResolutionOption(
+      label: '1080P',
+      maxStreamingBitrate: 8 * 1000 * 1000,
+    ),
+    PlayerResolutionOption(label: '720P', maxStreamingBitrate: 4 * 1000 * 1000),
+    PlayerResolutionOption(label: '480P', maxStreamingBitrate: 2 * 1000 * 1000),
+  ];
+
   late final Duration _initialPosition;
   // Child widget handles persistence; keep for potential UI reactions.
   // ignore: unused_field
   MeowVideoPlaybackStatus? _latestStatus;
   PlaybackPlan? _plan;
   String? _currentUrl; // url with track parameters applied
+  Duration? _resumePositionOverride;
   int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
+  PlayerResolutionOption _selectedResolution = _resolutionOptions.first;
   bool _openSelectorPending = false;
 
   PlaybackStream? get _selectedSubtitleStream {
@@ -161,12 +176,14 @@ class _PlayerViewState extends State<PlayerView> {
   Future<PlaybackPlan> _fetchPlaybackPlan({
     int? audioIndex,
     int? subtitleIndex,
+    int? maxStreamingBitrate,
   }) async {
     final repo = _buildPlaybackRepository();
     final usecase = GetPlaybackPlanUseCase(repo);
     return usecase(
       widget.mediaItem,
-      maxStreamingBitrate: 10 * 1000 * 1000,
+      maxStreamingBitrate:
+          maxStreamingBitrate ?? _selectedResolution.maxStreamingBitrate,
       requireAvc: true,
       audioStreamIndex: audioIndex,
       subtitleStreamIndex: subtitleIndex,
@@ -266,6 +283,8 @@ class _PlayerViewState extends State<PlayerView> {
     int? audioIndex,
     int? subtitleIndex,
   }) async {
+    _resumePositionOverride =
+        _latestStatus?.position ?? _resumePositionOverride;
     final nextPlan = await _fetchPlaybackPlan(
       audioIndex: audioIndex,
       subtitleIndex: subtitleIndex,
@@ -282,6 +301,24 @@ class _PlayerViewState extends State<PlayerView> {
       _plan = nextPlan;
       _selectedAudioIndex = audioIndex;
       _selectedSubtitleIndex = subtitleIndex;
+      _currentUrl = nextPlan.url;
+    });
+  }
+
+  Future<void> _applyResolutionSelection(PlayerResolutionOption option) async {
+    _resumePositionOverride =
+        _latestStatus?.position ?? _resumePositionOverride;
+    final nextPlan = await _fetchPlaybackPlan(
+      audioIndex: _selectedAudioIndex,
+      subtitleIndex: _selectedSubtitleIndex,
+      maxStreamingBitrate: option.maxStreamingBitrate,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _selectedResolution = option;
+      _plan = nextPlan;
       _currentUrl = nextPlan.url;
     });
   }
@@ -311,10 +348,13 @@ class _PlayerViewState extends State<PlayerView> {
           mediaItem: widget.mediaItem,
           selectedServer: selectedServer,
           savedProgress: savedProgress,
-          initialPosition: _initialPosition,
+          initialPosition: _resumePositionOverride ?? _initialPosition,
           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
           playUrlOverride: _currentUrl ?? _plan?.url,
           onShowTrackSelector: null,
+          resolutionOptions: _resolutionOptions,
+          selectedResolution: _selectedResolution,
+          onResolutionSelected: _applyResolutionSelection,
           subtitleUri: _selectedExternalSubtitleUri,
           subtitleTitle: _selectedSubtitleStream?.title,
           subtitleLanguage: _selectedSubtitleStream?.language,

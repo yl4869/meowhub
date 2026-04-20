@@ -108,7 +108,7 @@ final List<MediaItem> _movieFixtures = [
     year: 2024,
     overview: '一位落魄侦探在霓虹闪烁的旧城区追查连环失踪案。',
     isFavorite: true,
-    playUrl: 'https://media.w3.org/2010/05/sintel/trailer.mp4',
+    playUrl: 'http://vjs.zencdn.net/v/oceans.mp4',
   ),
   MediaItem(
     id: 1002,
@@ -121,7 +121,7 @@ final List<MediaItem> _movieFixtures = [
     rating: 8.2,
     year: 2023,
     overview: '风暴夜里，一座港口小城埋藏多年的秘密逐渐浮出水面。',
-    playUrl: 'https://example.com/play/movie-2',
+    playUrl: 'http://vjs.zencdn.net/v/oceans.mp4',
   ),
 ];
 
@@ -138,7 +138,7 @@ final List<MediaItem> _seriesFixtures = [
     year: 2024,
     overview: '五位性格迥异的年轻人在都市里合租，慢慢成为彼此的家人。',
     isFavorite: true,
-    playUrl: 'https://example.com/play/series-1',
+    playUrl: 'http://vjs.zencdn.net/v/oceans.mp4',
   ),
   MediaItem(
     id: 2002,
@@ -151,7 +151,7 @@ final List<MediaItem> _seriesFixtures = [
     rating: 8.3,
     year: 2023,
     overview: '一组网络安全调查员追踪神秘信号源，意外牵出跨国阴谋。',
-    playUrl: 'https://example.com/play/series-2',
+    playUrl: 'http://vjs.zencdn.net/v/oceans.mp4',
   ),
 ];
 
