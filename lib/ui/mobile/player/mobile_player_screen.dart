@@ -112,6 +112,29 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     super.dispose();
   }
 
+  // 切换横竖屏
+Future<void> _toggleOrientation() async {
+  _handleScreenInteraction(); // 保持控制条显示
+  
+  // 检查当前方向
+  final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+  
+  if (isPortrait) {
+    // 切换到横屏
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    _showCenterToast('已切换至横屏');
+  } else {
+    // 切换到竖屏
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
+    _showCenterToast('已切换至竖屏');
+  }
+}
+
   Future<void> _enterImmersiveLandscapeMode() async {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     await SystemChrome.setPreferredOrientations(const [
@@ -510,13 +533,17 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     if (!_hasPlayableUrl) {
       return _UnavailablePlayerView(title: widget.mediaItem.title);
     }
+
+    // 检查是否为竖屏
+    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+
     return RepaintBoundary(
       key: _playerBoundaryKey,
       child: MeowVideoPlayer(
         key: ObjectKey(widget.mediaItem.dataSourceId),
         url: widget.playUrlOverride ?? widget.mediaItem.playUrl!,
         autoPlay: true,
-        fit: BoxFit.cover,
+        fit: BoxFit.contain,
         expandToFill: true,
         borderRadius: BorderRadius.zero,
         initialPosition: widget.initialPosition,
@@ -574,6 +601,8 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
           children: [
             const ColoredBox(color: Colors.black),
             Positioned.fill(child: _buildPlayer()),
+
+            // 基础手势层：点击切换控制条
             Positioned.fill(
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
@@ -896,8 +925,8 @@ class _BottomControlBar extends StatelessWidget {
             baseBarColor: Colors.white.withValues(alpha: 0.18),
             progressBarColor: Colors.white,
             thumbColor: const Color(0xFFE5484D),
-            thumbRadius: state._isScrubbing ? 4 : 0,
-            thumbGlowRadius: 0,
+            thumbRadius: state._isScrubbing ? 4 : 2,
+            thumbGlowRadius: 10,
             bufferedBarColor: Colors.transparent,
             onSeek: state._handleProgressBarSeek,
             onDragStart: (_) => state._handleScrubStarted(),
@@ -971,6 +1000,15 @@ class _BottomControlBar extends StatelessWidget {
                       horizontal: 10,
                       vertical: 8,
                     ),
+                    iconSize: 18,
+                  ),
+                  const SizedBox(width: 4),
+                  // 新增：横竖屏切换按钮
+                  _GlassIconButton(
+                    icon: Icons.screen_rotation_rounded,
+                    onPressed: state._toggleOrientation,
+                    showChrome: false,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                     iconSize: 18,
                   ),
                 ],
@@ -1063,7 +1101,8 @@ class _SideActionButton extends StatelessWidget {
       icon: icon,
       onPressed: onPressed,
       padding: const EdgeInsets.all(7),
-      iconSize: 15,
+      iconSize: 22,
+      showChrome: false,
     );
   }
 }
@@ -1195,65 +1234,89 @@ class _OptionDrawerLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
-    final drawerWidth = (screenSize.width * 0.32).clamp(180.0, 320.0);
+    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+
+    // --- 动态计算尺寸和位置 ---
+    // 竖屏下：宽度占 60%，最大 280；横屏下：宽度占 32%
+    final drawerWidth = isPortrait 
+        ? (screenSize.width * 0.6).clamp(200.0, 280.0)
+        : (screenSize.width * 0.32).clamp(180.0, 320.0);
+
+    // 竖屏下不占满全高，高度根据内容自适应或限制最大高度
+    final drawerHeight = isPortrait ? screenSize.height * 0.45 : screenSize.height;
 
     return Stack(
       children: [
+        // 1. 全屏背景遮罩：点击关闭
         Positioned.fill(
-          right: drawerWidth,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onClose,
-            child: ColoredBox(color: Colors.black.withValues(alpha: 0.06)),
+            child: ColoredBox(color: Colors.black.withValues(alpha: 0.12)),
           ),
         ),
+
+        // 2. 动画面板
         AnimatedPositioned(
-          duration: const Duration(milliseconds: 250),
+          duration: const Duration(milliseconds: 300),
           curve: Curves.easeOutCubic,
-          top: 0,
-          bottom: 0,
-          right: 0,
+          // 【核心变化】竖屏时固定在右下角，横屏时长条展开
+          top: isPortrait ? null : 0, 
+          bottom: isPortrait ? 20 + MediaQuery.of(context).padding.bottom : 0,
+          right: isPortrait ? 16 : 0, 
           width: drawerWidth,
+          height: isPortrait ? null : drawerHeight, // 竖屏高度自适应
           child: Material(
             color: Colors.transparent,
-            child: Container(
-              padding: EdgeInsets.fromLTRB(12, safeTop + 4, safeRight + 10, 12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.76),
-                border: Border(
-                  left: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
-                ),
-              ),
-              child: Column(
-                children: [
-                  Row(
+            child: ClipRRect(
+              // 竖屏下使用全圆角卡片，横屏下只有左边圆角或无圆角
+              borderRadius: BorderRadius.circular(isPortrait ? 24 : 0),
+              child: BackdropFilter(
+                filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                child: Container(
+                  padding: EdgeInsets.fromLTRB(16, isPortrait ? 16 : (safeTop + 8), 16, 16),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.72),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                    borderRadius: BorderRadius.circular(isPortrait ? 24 : 0),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min, // 竖屏下包裹内容
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Expanded(
-                        child: Text(
-                          title,
-                          style: Theme.of(context).textTheme.titleMedium
-                              ?.copyWith(
+                      // 顶部标题
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
                                 color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                                shadows: _premiumShadows,
+                                fontWeight: FontWeight.bold,
                               ),
-                        ),
+                            ),
+                          ),
+                          // 竖屏下关闭按钮可以稍微小一点
+                          IconButton(
+                            icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                            onPressed: onClose,
+                          ),
+                        ],
                       ),
-                      _GlassIconButton(
-                        icon: Icons.close_rounded,
-                        onPressed: onClose,
-                        padding: const EdgeInsets.all(8),
-                        iconSize: 18,
+                      const SizedBox(height: 8),
+                      // 选项列表
+                      Flexible(
+                        child: SingleChildScrollView(
+                          physics: const BouncingScrollPhysics(),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min, 
+                            children: children
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: Column(children: children),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
