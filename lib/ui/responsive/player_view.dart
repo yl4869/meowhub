@@ -60,6 +60,20 @@ class _PlayerViewState extends State<PlayerView> {
   int? _selectedSubtitleIndex;
   PlayerResolutionOption _selectedResolution = _resolutionOptions.first;
   bool _openSelectorPending = false;
+  int _serverSeekRequestToken = 0;
+  bool _isPreparingPlan = true;
+  String? _planErrorMessage;
+
+  bool get _hasStrictPlaybackPlan {
+    final plan = _plan;
+    final url = _currentUrl ?? plan?.url;
+    final playSessionId = plan?.playSessionId;
+    return plan != null &&
+        url != null &&
+        url.isNotEmpty &&
+        playSessionId != null &&
+        playSessionId.isNotEmpty;
+  }
 
   PlaybackStream? get _selectedSubtitleStream {
     final plan = _plan;
@@ -144,32 +158,67 @@ class _PlayerViewState extends State<PlayerView> {
   }
 
   Future<void> _preparePlaybackPlan() async {
+    if (mounted) {
+      setState(() {
+        _isPreparingPlan = true;
+        _planErrorMessage = null;
+      });
+    }
     final manager = context.read<MediaServiceManager>();
     final config = manager.getSavedConfig();
     if (config == null || config.type != MediaServiceType.emby) {
-      setState(() => _plan = null);
+      if (!mounted) return;
+      setState(() {
+        _plan = null;
+        _currentUrl = null;
+        _isPreparingPlan = false;
+        _planErrorMessage = 'Emby 播放配置不可用';
+      });
       return;
     }
-    final saved = context.read<UserDataProvider>().trackSelectionForItem(
-      widget.mediaItem,
-    );
-    final plan = await _fetchPlaybackPlan(
-      audioIndex: saved?.audioIndex,
-      subtitleIndex: saved?.subtitleIndex,
-    );
-    if (!mounted) return;
-    setState(() {
-      _plan = plan;
-      _selectedAudioIndex = saved?.audioIndex;
-      _selectedSubtitleIndex = saved?.subtitleIndex;
-      _currentUrl = plan.url;
+    try {
+      final saved = context.read<UserDataProvider>().trackSelectionForItem(
+        widget.mediaItem,
+      );
+      final plan = await _fetchPlaybackPlan(
+        audioIndex: saved?.audioIndex,
+        subtitleIndex: saved?.subtitleIndex,
+      );
+      _assertStrictPlan(plan);
+      if (!mounted) return;
+      setState(() {
+        _plan = plan;
+        _selectedAudioIndex = saved?.audioIndex;
+        _selectedSubtitleIndex = saved?.subtitleIndex;
+        _currentUrl = plan.url;
+        _isPreparingPlan = false;
+        _planErrorMessage = null;
 
-      // 播放页不再处理字幕/音轨选择
-    });
+        // 播放页不再处理字幕/音轨选择
+      });
 
-    if (_openSelectorPending && mounted) {
-      _openSelectorPending = false;
-      await _openTrackSelector();
+      if (_openSelectorPending && mounted) {
+        _openSelectorPending = false;
+        await _openTrackSelector();
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _plan = null;
+        _currentUrl = null;
+        _isPreparingPlan = false;
+        _planErrorMessage = error.toString();
+      });
+    }
+  }
+
+  void _assertStrictPlan(PlaybackPlan plan) {
+    if (plan.url.trim().isEmpty) {
+      throw StateError('PlaybackInfo 未返回可用播放地址');
+    }
+    final playSessionId = plan.playSessionId?.trim();
+    if (playSessionId == null || playSessionId.isEmpty) {
+      throw StateError('PlaybackInfo 未返回有效 PlaySessionId');
     }
   }
 
@@ -177,6 +226,8 @@ class _PlayerViewState extends State<PlayerView> {
     int? audioIndex,
     int? subtitleIndex,
     int? maxStreamingBitrate,
+    String? playSessionIdOverride,
+    Duration? startPositionOverride,
   }) async {
     final repo = _buildPlaybackRepository();
     final usecase = GetPlaybackPlanUseCase(repo);
@@ -187,6 +238,9 @@ class _PlayerViewState extends State<PlayerView> {
       requireAvc: true,
       audioStreamIndex: audioIndex,
       subtitleStreamIndex: subtitleIndex,
+      playSessionId: playSessionIdOverride ?? _plan?.playSessionId,
+      startPosition:
+          startPositionOverride ?? _resumePositionOverride ?? _initialPosition,
     );
   }
 
@@ -289,6 +343,7 @@ class _PlayerViewState extends State<PlayerView> {
       audioIndex: audioIndex,
       subtitleIndex: subtitleIndex,
     );
+    _assertStrictPlan(nextPlan);
     if (!mounted) {
       return;
     }
@@ -313,11 +368,37 @@ class _PlayerViewState extends State<PlayerView> {
       subtitleIndex: _selectedSubtitleIndex,
       maxStreamingBitrate: option.maxStreamingBitrate,
     );
+    _assertStrictPlan(nextPlan);
     if (!mounted) {
       return;
     }
     setState(() {
       _selectedResolution = option;
+      _plan = nextPlan;
+      _currentUrl = nextPlan.url;
+    });
+  }
+
+  Future<void> _handleServerSeek(Duration target) async {
+    _resumePositionOverride = target;
+    final currentPlan = _plan;
+    if (currentPlan == null || !currentPlan.isTranscoding) {
+      return;
+    }
+
+    final requestToken = ++_serverSeekRequestToken;
+    final nextPlan = await _fetchPlaybackPlan(
+      audioIndex: _selectedAudioIndex,
+      subtitleIndex: _selectedSubtitleIndex,
+      maxStreamingBitrate: _selectedResolution.maxStreamingBitrate,
+      startPositionOverride: target,
+    );
+    _assertStrictPlan(nextPlan);
+    if (!mounted || requestToken != _serverSeekRequestToken) {
+      return;
+    }
+
+    setState(() {
       _plan = nextPlan;
       _currentUrl = nextPlan.url;
     });
@@ -342,6 +423,16 @@ class _PlayerViewState extends State<PlayerView> {
           (provider) => provider.playbackProgressForItem(widget.mediaItem),
         );
 
+    if (_isPreparingPlan) {
+      return const _StrictPlaybackLoadingView();
+    }
+    if (!_hasStrictPlaybackPlan) {
+      return _StrictPlaybackErrorView(
+        message: _planErrorMessage ?? '未获取到有效的播放会话',
+        onRetry: _preparePlaybackPlan,
+      );
+    }
+
     return ResponsiveLayoutBuilder(
       mobileBuilder: (context, maxWidth) {
         return MobilePlayerScreen(
@@ -349,8 +440,10 @@ class _PlayerViewState extends State<PlayerView> {
           selectedServer: selectedServer,
           savedProgress: savedProgress,
           initialPosition: _resumePositionOverride ?? _initialPosition,
+          isTranscoding: _plan!.isTranscoding,
           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
-          playUrlOverride: _currentUrl ?? _plan?.url,
+          onServerSeekRequested: _handleServerSeek,
+          playUrlOverride: _currentUrl ?? _plan!.url,
           onShowTrackSelector: null,
           resolutionOptions: _resolutionOptions,
           selectedResolution: _selectedResolution,
@@ -359,6 +452,10 @@ class _PlayerViewState extends State<PlayerView> {
           subtitleTitle: _selectedSubtitleStream?.title,
           subtitleLanguage: _selectedSubtitleStream?.language,
           disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
+          playSessionId: _plan!.playSessionId,
+          mediaSourceId: _plan!.mediaSourceId,
+          audioStreamIndex: _selectedAudioIndex,
+          subtitleStreamIndex: _selectedSubtitleIndex,
         );
       },
       tabletBuilder: (context, maxWidth) {
@@ -367,16 +464,100 @@ class _PlayerViewState extends State<PlayerView> {
           mediaItem: widget.mediaItem,
           selectedServer: selectedServer,
           savedProgress: savedProgress,
-          initialPosition: _initialPosition,
+          initialPosition: _resumePositionOverride ?? _initialPosition,
           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
-          playUrlOverride: _currentUrl ?? _plan?.url,
+          playUrlOverride: _currentUrl ?? _plan!.url,
           onShowTrackSelector: null,
           subtitleUri: _selectedExternalSubtitleUri,
           subtitleTitle: _selectedSubtitleStream?.title,
           subtitleLanguage: _selectedSubtitleStream?.language,
           disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
+          playSessionId: _plan!.playSessionId,
+          mediaSourceId: _plan!.mediaSourceId,
+          audioStreamIndex: _selectedAudioIndex,
+          subtitleStreamIndex: _selectedSubtitleIndex,
         );
       },
+    );
+  }
+}
+
+class _StrictPlaybackLoadingView extends StatelessWidget {
+  const _StrictPlaybackLoadingView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text(
+              '正在建立播放会话...',
+              style: TextStyle(color: Colors.white70),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StrictPlaybackErrorView extends StatelessWidget {
+  const _StrictPlaybackErrorView({
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String message;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.error_outline_rounded,
+                color: Colors.white70,
+                size: 40,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                '播放会话创建失败',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(color: Colors.white),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(color: Colors.white70),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: () {
+                  // ignore: discarded_futures
+                  onRetry();
+                },
+                child: const Text('重试'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

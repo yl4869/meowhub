@@ -1,3 +1,4 @@
+import '../../core/utils/emby_ticks.dart';
 import '../../domain/entities/watch_history_item.dart';
 import '../../domain/repositories/watch_history_repository.dart';
 import '../datasources/emby_watch_history_remote_data_source.dart';
@@ -42,15 +43,16 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   Future<List<WatchHistoryItem>> getHistoryBySource(
     WatchSourceType sourceType,
   ) async {
+    final localHistory = (await _localDataSource.getHistory())
+        .map((record) => record.toWatchHistoryItem())
+        .where((item) => item.sourceType == sourceType)
+        .toList(growable: false);
     final history = switch (sourceType) {
-      WatchSourceType.emby =>
-        (await _embyRemoteDataSource.getHistory())
-            .map(_mapEmbyDtoToEntity)
-            .toList(growable: false),
-      WatchSourceType.local =>
-        (await _localDataSource.getHistory())
-            .map((record) => record.toWatchHistoryItem())
-            .toList(growable: false),
+      WatchSourceType.emby => _mergeByLatest([
+        ...(await _embyRemoteDataSource.getHistory()).map(_mapEmbyDtoToEntity),
+        ...localHistory,
+      ]),
+      WatchSourceType.local => localHistory,
     };
 
     history.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
@@ -58,16 +60,75 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   }
 
   @override
-  Future<void> updateProgress(WatchHistoryItem item) {
-    return switch (item.sourceType) {
-      WatchSourceType.emby => _embyRemoteDataSource.updateProgress(
+  Future<void> startPlayback(
+    WatchHistoryItem item, {
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await _localDataSource.updateProgress(
+      PlaybackRecord.fromWatchHistoryItem(item),
+    );
+    if (item.sourceType == WatchSourceType.emby) {
+      await _embyRemoteDataSource.startPlayback(
         itemId: item.id,
         position: item.position,
-      ),
-      WatchSourceType.local => _localDataSource.updateProgress(
-        PlaybackRecord.fromWatchHistoryItem(item),
-      ),
-    };
+        duration: item.duration,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      );
+    }
+  }
+
+  @override
+  Future<void> updateProgress(
+    WatchHistoryItem item, {
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await _localDataSource.updateProgress(
+      PlaybackRecord.fromWatchHistoryItem(item),
+    );
+    if (item.sourceType == WatchSourceType.emby) {
+      await _embyRemoteDataSource.updateProgress(
+        itemId: item.id,
+        position: item.position,
+        duration: item.duration,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      );
+    }
+  }
+
+  @override
+  Future<void> stopPlayback(
+    WatchHistoryItem item, {
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await _localDataSource.updateProgress(
+      PlaybackRecord.fromWatchHistoryItem(item),
+    );
+    if (item.sourceType == WatchSourceType.emby) {
+      await _embyRemoteDataSource.stopPlayback(
+        itemId: item.id,
+        position: item.position,
+        duration: item.duration,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      );
+    }
   }
 
   WatchHistoryItem _mapEmbyDtoToEntity(EmbyResumeItemDto dto) {
@@ -78,13 +139,24 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
       id: dto.id,
       title: dto.name,
       poster: dto.primaryImageUrl ?? '',
-      position: Duration(milliseconds: dto.playbackPositionTicks ~/ 10000),
-      duration: Duration(milliseconds: dto.runTimeTicks ~/ 10000),
+      position: durationFromEmbyTicks(dto.playbackPositionTicks),
+      duration: durationFromEmbyTicks(dto.runTimeTicks),
       updatedAt: updatedAt,
       sourceType: WatchSourceType.emby,
       seriesId: dto.seriesId,
       parentIndexNumber: dto.parentIndexNumber,
       indexNumber: dto.indexNumber,
     );
+  }
+
+  List<WatchHistoryItem> _mergeByLatest(List<WatchHistoryItem> items) {
+    final merged = <String, WatchHistoryItem>{};
+    for (final item in items) {
+      final existing = merged[item.uniqueKey];
+      if (existing == null || item.updatedAt.isAfter(existing.updatedAt)) {
+        merged[item.uniqueKey] = item;
+      }
+    }
+    return merged.values.toList(growable: false);
   }
 }

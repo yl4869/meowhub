@@ -26,6 +26,10 @@ class TabletPlayerScreen extends StatefulWidget {
     this.subtitleTitle,
     this.subtitleLanguage,
     this.disableSubtitleTrack = false,
+    this.playSessionId,
+    this.mediaSourceId,
+    this.audioStreamIndex,
+    this.subtitleStreamIndex,
   });
 
   final double maxWidth;
@@ -42,6 +46,10 @@ class TabletPlayerScreen extends StatefulWidget {
   final String? subtitleTitle;
   final String? subtitleLanguage;
   final bool disableSubtitleTrack;
+  final String? playSessionId;
+  final String? mediaSourceId;
+  final int? audioStreamIndex;
+  final int? subtitleStreamIndex;
 
   @override
   State<TabletPlayerScreen> createState() => _TabletPlayerScreenState();
@@ -50,6 +58,7 @@ class TabletPlayerScreen extends StatefulWidget {
 class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
   static const Duration _backgroundSyncInterval = Duration(minutes: 1);
   static const Duration _meaningfulProgressThreshold = Duration(seconds: 5);
+  static const Duration _progressRollbackTolerance = Duration(seconds: 3);
 
   MeowVideoPlaybackStatus? _latestStatus;
   MediaPlaybackProgress? _lastStablePlaybackProgress;
@@ -58,6 +67,7 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
   Future<void>? _syncOnExitFuture;
   bool _isExiting = false;
   bool _allowImmediatePop = false;
+  bool _hasReportedPlaybackStarted = false;
   DateTime? _lastBackgroundSyncAt;
   int _lastUiProgressSecond = -1;
   int _lastLoggedPlaybackSecond = -1;
@@ -74,10 +84,23 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     _lastStablePlaybackProgress = widget.savedProgress;
   }
 
+  @override
+  void didUpdateWidget(covariant TabletPlayerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.mediaItem.dataSourceId != widget.mediaItem.dataSourceId ||
+        oldWidget.playUrlOverride != widget.playUrlOverride ||
+        oldWidget.playSessionId != widget.playSessionId ||
+        oldWidget.mediaSourceId != widget.mediaSourceId) {
+      _hasReportedPlaybackStarted = false;
+    }
+  }
+
   // 播放页移除本地字幕切换
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
-    if (_isExiting || _shouldIgnoreZeroProgressUpdate(status)) {
+    if (_isExiting ||
+        _shouldIgnoreZeroProgressUpdate(status) ||
+        _shouldIgnoreRegressiveProgressUpdate(status)) {
       return;
     }
     _latestStatus = status;
@@ -98,6 +121,25 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     widget.onPlaybackStatusChanged(status);
   }
 
+  Future<void> _handlePlaybackStarted(MeowVideoPlaybackStatus status) async {
+    if (_isExiting || _hasReportedPlaybackStarted) {
+      return;
+    }
+    _hasReportedPlaybackStarted = true;
+    final effectivePosition = status.position > Duration.zero
+        ? status.position
+        : widget.initialPosition;
+    await _udp.startPlaybackForItem(
+      widget.mediaItem,
+      position: effectivePosition,
+      duration: status.duration,
+      playSessionId: widget.playSessionId,
+      mediaSourceId: widget.mediaSourceId,
+      audioStreamIndex: widget.audioStreamIndex,
+      subtitleStreamIndex: widget.subtitleStreamIndex,
+    );
+  }
+
   bool _shouldIgnoreZeroProgressUpdate(MeowVideoPlaybackStatus status) {
     if (status.position > Duration.zero) {
       return false;
@@ -107,6 +149,20 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
         _latestStatus?.position ?? _lastStablePlaybackProgress?.position;
     return latestPosition != null &&
         latestPosition > _meaningfulProgressThreshold;
+  }
+
+  bool _shouldIgnoreRegressiveProgressUpdate(MeowVideoPlaybackStatus status) {
+    final latestPosition =
+        _latestStatus?.position ??
+        _lastStablePlaybackProgress?.position ??
+        widget.savedProgress?.position;
+    if (latestPosition == null ||
+        latestPosition <= _meaningfulProgressThreshold ||
+        status.position >= latestPosition) {
+      return false;
+    }
+
+    return latestPosition - status.position > _progressRollbackTolerance;
   }
 
   void _refreshPlaybackInfoUi(MeowVideoPlaybackStatus status) {
@@ -150,7 +206,15 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
 
     _lastBackgroundSyncAt = now;
     // ignore: discarded_futures
-    _udp.syncProgressToServerForItem(widget.mediaItem);
+    _udp.syncProgressToServerForItem(
+      widget.mediaItem,
+      position: status.position,
+      duration: status.duration,
+      playSessionId: widget.playSessionId,
+      mediaSourceId: widget.mediaSourceId,
+      audioStreamIndex: widget.audioStreamIndex,
+      subtitleStreamIndex: widget.subtitleStreamIndex,
+    );
   }
 
   Future<void> _syncOnExit() {
@@ -162,6 +226,26 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     final future = _performSyncOnExit();
     _syncOnExitFuture = future;
     return future;
+  }
+
+  Player? _detachPlayer() {
+    final player = _player;
+    _player = null;
+    return player;
+  }
+
+  Future<void> _disposePlayerSafely(
+    Player player,
+  ) async {
+    try {
+      player.dispose();
+    } catch (_) {}
+  }
+
+  Future<void> _stopPlayerSafely(Player player) async {
+    try {
+      await player.stop();
+    } catch (_) {}
   }
 
   void _applyLocalProgressOnExit() {
@@ -186,6 +270,7 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
   Future<void> _performSyncOnExit() async {
     final item = widget.mediaItem;
     final status = _latestStatus;
+    final player = _detachPlayer();
     debugPrint(
       '[Resume][Tablet][Exit] item=${item.dataSourceId} '
       'position=${status?.position.inMilliseconds ?? 0}ms '
@@ -193,17 +278,28 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
       'sync=start',
     );
     _applyLocalProgressOnExit();
-    final p = _player;
-    if (p != null) {
-      try {
-        await p.stop();
-      } catch (_) {}
+    try {
+      if (player != null) {
+        await _stopPlayerSafely(player);
+      }
+      await _udp.stopPlaybackForItem(
+        item,
+        position: status?.position ?? Duration.zero,
+        duration: status?.duration ?? Duration.zero,
+        playSessionId: widget.playSessionId,
+        mediaSourceId: widget.mediaSourceId,
+        audioStreamIndex: widget.audioStreamIndex,
+        subtitleStreamIndex: widget.subtitleStreamIndex,
+      );
+      debugPrint(
+        '[Resume][Tablet][Exit] item=${item.dataSourceId} '
+        'stopped=done',
+      );
+    } finally {
+      if (player != null) {
+        await _disposePlayerSafely(player);
+      }
     }
-    await _udp.syncProgressToServerForItem(item);
-    debugPrint(
-      '[Resume][Tablet][Exit] item=${item.dataSourceId} '
-      'sync=done',
-    );
   }
 
   @override
@@ -249,6 +345,7 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
                           autoPlay: true,
                           initialPosition: widget.initialPosition,
                           onPlaybackStatusChanged: _handlePlaybackStatusChanged,
+                          onPlaybackStarted: _handlePlaybackStarted,
                           onPlayerCreated: (p) async {
                             _player = p;
                           },
@@ -261,7 +358,7 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
                         )
                       else
                         _UnavailablePlayerCard(title: widget.mediaItem.title),
-                                            if (widget.onShowTrackSelector != null) ...[
+                      if (widget.onShowTrackSelector != null) ...[
                         const SizedBox(height: 12),
                         Align(
                           alignment: Alignment.centerRight,
@@ -329,12 +426,10 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
   void dispose() {
     // ignore: discarded_futures
     _syncOnExit();
-    // 仅负责尽力停止与释放底层资源；状态同步在 PopScope 中完成
-    final p = _player;
-    if (p != null) {
-      try {
-        p.dispose();
-      } catch (_) {}
+    final detachedPlayer = _detachPlayer();
+    if (detachedPlayer != null) {
+      // ignore: discarded_futures
+      _disposePlayerSafely(detachedPlayer);
     }
     super.dispose();
   }

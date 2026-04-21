@@ -3,12 +3,19 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/services/security_service.dart';
 import '../../core/session/session_expired_notifier.dart';
+import '../../core/utils/emby_ticks.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../models/emby/emby_media_item_dto.dart';
 import '../models/emby/emby_media_library_dto.dart';
 import '../models/emby_auth_response.dart';
 import '../network/emby_auth_interceptor.dart';
 import '../models/emby/emby_playback_info_dto.dart';
+
+const String _embyBaseItemFields =
+    'Overview,OriginalTitle,RunTimeTicks,ProductionYear,CommunityRating,'
+    'PremiereDate,DateCreated,People,ImageTags,BackdropImageTags,'
+    'ParentThumbItemId,ParentThumbImageTag,ParentIndexNumber,IndexNumber,'
+    'SeriesName,SeriesId,SeriesPrimaryImageTag,MediaSources,UserData';
 
 /// Emby API 客户端封装。
 /// 统一负责认证、基础 GET/POST、媒体库与影片列表接口访问。
@@ -30,9 +37,12 @@ class EmbyApiClient {
                receiveTimeout: const Duration(seconds: 20),
                headers: {
                  'Content-Type': 'application/json',
-                 'X-Emby-Authorization':
-                     'MediaBrowser Client="MeowHub", Device="MeowHub", DeviceId="${_normalizeDeviceId(config.deviceId)}", Version="1.0.0"',
-                 'X-Emby-Device-Id': _normalizeDeviceId(config.deviceId),
+                  // 关键修改 A：将 User-Agent 伪装成浏览器
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  // 关键修改 B：完全模仿网页端的 Authorization 格式
+                  'X-Emby-Authorization':
+                  'MediaBrowser Client="Emby Web", Device="Firefox", DeviceId="${_normalizeDeviceId(config.deviceId)}", Version="4.8.10.0"',
+                  'X-Emby-Device-Id': _normalizeDeviceId(config.deviceId),
                },
              ),
            ) {
@@ -130,7 +140,6 @@ class EmbyApiClient {
         namespace: _config.credentialNamespace,
       ),
     ]);
-
   }
 
   Future<Response<T>> get<T>(
@@ -195,13 +204,18 @@ class EmbyApiClient {
     final response = await get<Map<String, dynamic>>(
       '/emby/Users/$userId/Items',
       queryParameters: {
+        'UserId': userId,
         'Recursive': true,
         'IncludeItemTypes': includeItemTypes,
         'SortBy': 'DateCreated,SortName',
         'SortOrder': 'Descending',
+        'EnableImages': true,
+        'EnableImageTypes': 'Primary,Backdrop,Thumb',
+        'ImageTypeLimit': '1',
         'EnableUserData': true,
-        'Fields':
-            'Overview,RunTimeTicks,ProductionYear,CommunityRating,PremiereDate,ImageTags,BackdropImageTags,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,UserData',
+        'EnableTotalRecordCount': true,
+        'Fields': _embyBaseItemFields,
+        'StartIndex': '0',
         'Limit': '$limit',
         if (libraryId != null && libraryId.isNotEmpty) 'ParentId': libraryId,
       },
@@ -234,9 +248,13 @@ class EmbyApiClient {
     final userId = await _requireUserId();
     final response = await get<Map<String, dynamic>>(
       '/emby/Users/$userId/Items/$itemId',
-      queryParameters: const {
-        'Fields':
-            'Overview,OriginalTitle,RunTimeTicks,ProductionYear,CommunityRating,PremiereDate,ImageTags,BackdropImageTags,People,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,UserData',
+      queryParameters: {
+        'UserId': userId,
+        'EnableImages': true,
+        'EnableImageTypes': 'Primary,Backdrop,Thumb',
+        'ImageTypeLimit': '1',
+        'EnableUserData': true,
+        'Fields': _embyBaseItemFields,
       },
     );
     final data = response.data ?? <String, dynamic>{};
@@ -250,10 +268,26 @@ class EmbyApiClient {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
     String? mediaSourceId,
+    String? playSessionId,
+    Duration startPosition = Duration.zero,
   }) async {
     final userId = await _requireUserId();
     final effectiveMaxStreamingBitrate =
-        maxStreamingBitrate ?? 200 * 1000 * 1000;
+        maxStreamingBitrate ?? 1000 * 1000 * 1000;;
+    final startTimeTicks = durationToEmbyTicks(startPosition);
+
+    final playbackInfoQuery = <String, dynamic>{
+      'UserId': userId,
+      'StartTimeTicks': startTimeTicks.toString(),
+      'IsPlayback': 'true',
+      'AutoOpenLiveStream': 'true',
+      'MaxStreamingBitrate': '$effectiveMaxStreamingBitrate',
+      'X-Emby-Client': 'Emby Web', // 即使不改构造函数，这里建议也先填 Web 以绕过服务端限制
+      'X-Emby-Device-Name': 'MeowHub Player',
+      'X-Emby-Device-Id': _resolvedDeviceId,
+      'X-Emby-Client-Version': '4.8.10.0', // 对齐一个标准的稳定版号
+      'reqformat': 'json',
+    };
     final optionalBody = <String, dynamic>{};
     void putIfPresent(String key, Object? value) {
       if (value != null) {
@@ -261,44 +295,79 @@ class EmbyApiClient {
       }
     }
 
-    putIfPresent('MaxStreamingBitrate', maxStreamingBitrate);
+    optionalBody['MaxStreamingBitrate'] = effectiveMaxStreamingBitrate;
     putIfPresent('RequireAvc', requireAvc);
     putIfPresent('AudioStreamIndex', audioStreamIndex);
     putIfPresent('SubtitleStreamIndex', subtitleStreamIndex);
     putIfPresent('MediaSourceId', mediaSourceId);
+    putIfPresent('PlaySessionId', playSessionId);
+    if (requireAvc != null) {
+      playbackInfoQuery['RequireAvc'] = requireAvc.toString();
+    }
+    if (audioStreamIndex != null) {
+      playbackInfoQuery['AudioStreamIndex'] = '$audioStreamIndex';
+    }
+    if (subtitleStreamIndex != null) {
+      playbackInfoQuery['SubtitleStreamIndex'] = '$subtitleStreamIndex';
+    }
+    if (mediaSourceId != null && mediaSourceId.isNotEmpty) {
+      playbackInfoQuery['MediaSourceId'] = mediaSourceId;
+    }
+    if (playSessionId != null && playSessionId.isNotEmpty) {
+      playbackInfoQuery['PlaySessionId'] = playSessionId;
+    }
+    if (startPosition > Duration.zero) {
+      final startTimeTicks = durationToEmbyTicks(startPosition);
+      optionalBody['StartTimeTicks'] = startTimeTicks;
+      playbackInfoQuery['StartTimeTicks'] = '$startTimeTicks';
+    }
     final body = <String, dynamic>{
       'UserId': userId,
       'DeviceId': _resolvedDeviceId,
+      'StartTimeTicks': startTimeTicks, // 确保 Body 里的 Ticks 也是正确的 int
       'EnableDirectPlay': true,
       'EnableDirectStream': true,
       'EnableTranscoding': true,
+      'EnablePlaybackRemuxing': true,
+      'EnableSubtitlesInManifest': true,
+      'AutoOpenLiveStream': true,
       'AllowInterlacedVideoStreamCopy': true,
       'AllowVideoStreamCopy': true,
       'AllowAudioStreamCopy': true,
+      'MaxAudioChannels': 8,
+      'TranscodingMaxAudioChannels': 8,
       'IsPlayback': true,
       ...optionalBody,
       'DeviceProfile': _buildMediaKitDeviceProfile(
         deviceId: _resolvedDeviceId,
         maxStreamingBitrate: effectiveMaxStreamingBitrate,
-      ),
+    ),
     };
     final resp = await post<Map<String, dynamic>>(
       '/emby/Items/$itemId/PlaybackInfo',
       data: body,
-      headers: {'X-Emby-Device-Id': _resolvedDeviceId},
+      queryParameters: playbackInfoQuery,
+      headers: {
+        'X-Emby-Device-Id': _resolvedDeviceId,
+        // 关键：在请求头里也补全授权信息
+        'X-Emby-Authorization': 'MediaBrowser Client="Emby Web", Device="MeowHub Player", DeviceId="$_resolvedDeviceId", Version="4.8.10.0"',
+      },
     );
     final data = resp.data ?? <String, dynamic>{};
     return EmbyPlaybackInfoDto.fromJson(data);
   }
 
   Future<List<EmbyMediaItemDto>> getEpisodes(String seriesId) async {
-    await _requireUserId();
+    final userId = await _requireUserId();
     final response = await get<Map<String, dynamic>>(
       '/emby/Shows/$seriesId/Episodes',
-      queryParameters: const {
+      queryParameters: {
+        'UserId': userId,
+        'EnableImages': true,
+        'EnableImageTypes': 'Primary,Backdrop,Thumb',
+        'ImageTypeLimit': '1',
         'EnableUserData': true,
-        'Fields':
-            'Overview,OriginalTitle,RunTimeTicks,ProductionYear,CommunityRating,PremiereDate,ImageTags,BackdropImageTags,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,UserData',
+        'Fields': _embyBaseItemFields,
       },
     );
     final data = response.data ?? <String, dynamic>{};
@@ -317,15 +386,20 @@ class EmbyApiClient {
     try {
       return await _fetchRecentlyWatchedItems(
         userId: userId,
-        queryParameters: const <String, dynamic>{
+        queryParameters: <String, dynamic>{
+          'UserId': userId,
           'Limit': '20',
+          'StartIndex': '0',
           'Recursive': true,
           'SortBy': 'DatePlayed',
           'SortOrder': 'Descending',
+          'EnableImages': true,
+          'EnableImageTypes': 'Primary,Backdrop,Thumb',
+          'ImageTypeLimit': '1',
           'EnableUserData': true,
+          'EnableTotalRecordCount': true,
           'IncludeItemTypes': 'Movie,Episode',
-          'Fields':
-              'Overview,RunTimeTicks,ProductionYear,ParentIndexNumber,IndexNumber,SeriesName,SeriesId,ImageTags,BackdropImageTags',
+          'Fields': _embyBaseItemFields,
         },
       );
     } on DioException catch (e) {
@@ -360,17 +434,225 @@ class EmbyApiClient {
     return items.whereType<Map<String, dynamic>>().toList(growable: false);
   }
 
-  Future<void> updatePlaybackProgress({
+  Future<void> reportPlaybackProgress({
     required String itemId,
     required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   }) async {
     final userId = await _requireUserId();
-    await post<void>(
-      '/emby/Users/$userId/PlayingItems/$itemId',
-      queryParameters: {
-        'PositionTicks': (position.inMilliseconds * 10000).round().toString(),
-      },
+    final body = _buildPlaybackStateBody(
+      userId: userId,
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      isPaused: false,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
     );
+    try {
+      await post<void>('/emby/Sessions/Playing/Progress', data: body);
+    } on DioException catch (e) {
+      if (!_isUnsupportedPlaybackEndpoint(e)) {
+        rethrow;
+      }
+      debugPrint(
+        '[Resume][Emby][Progress] fallback=legacy-user-endpoint '
+        'status=${e.response?.statusCode}',
+      );
+      await post<void>(
+        '/emby/Users/$userId/PlayingItems/$itemId',
+        queryParameters: _buildLegacyPlaybackStateQuery(
+          position: position,
+          duration: duration,
+          isPaused: false,
+          playSessionId: playSessionId,
+          mediaSourceId: mediaSourceId,
+          audioStreamIndex: audioStreamIndex,
+          subtitleStreamIndex: subtitleStreamIndex,
+        ),
+        data: body,
+      );
+    }
+  }
+
+  Future<void> reportPlaybackStopped({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    final userId = await _requireUserId();
+    final body = _buildPlaybackStateBody(
+      userId: userId,
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      isPaused: true,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+    try {
+      await post<void>('/emby/Sessions/Playing/Stopped', data: body);
+    } on DioException catch (e) {
+      if (!_isUnsupportedPlaybackEndpoint(e)) {
+        rethrow;
+      }
+      debugPrint(
+        '[Resume][Emby][Stopped] fallback=legacy-user-endpoint '
+        'status=${e.response?.statusCode}',
+      );
+      await post<void>(
+        '/emby/Users/$userId/PlayingItems/$itemId',
+        queryParameters: _buildLegacyPlaybackStateQuery(
+          position: position,
+          duration: duration,
+          isPaused: true,
+          playSessionId: playSessionId,
+          mediaSourceId: mediaSourceId,
+          audioStreamIndex: audioStreamIndex,
+          subtitleStreamIndex: subtitleStreamIndex,
+        ),
+        data: body,
+      );
+    }
+  }
+
+  Future<void> reportPlaybackStarted({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    final userId = await _requireUserId();
+    final body = _buildPlaybackStateBody(
+      userId: userId,
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      isPaused: false,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+    try {
+      await post<void>('/emby/Sessions/Playing', data: body);
+    } on DioException catch (e) {
+      if (!_isUnsupportedPlaybackEndpoint(e)) {
+        rethrow;
+      }
+      debugPrint(
+        '[Resume][Emby][Start] fallback=legacy-user-endpoint '
+        'status=${e.response?.statusCode}',
+      );
+      await post<void>(
+        '/emby/Users/$userId/PlayingItems/$itemId',
+        queryParameters: _buildLegacyPlaybackStateQuery(
+          position: position,
+          duration: duration,
+          isPaused: false,
+          playSessionId: playSessionId,
+          mediaSourceId: mediaSourceId,
+          audioStreamIndex: audioStreamIndex,
+          subtitleStreamIndex: subtitleStreamIndex,
+        ),
+        data: body,
+      );
+    }
+  }
+
+  Map<String, dynamic> _buildPlaybackStateBody({
+    required String userId,
+    required String itemId,
+    required Duration position,
+    required Duration duration,
+    required bool isPaused,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) {
+    final body = <String, dynamic>{
+      'UserId': userId,
+      'ItemId': itemId,
+      'PositionTicks': durationToEmbyTicks(position),
+      'CanSeek': true,
+      'IsPaused': isPaused,
+      'IsMuted': false,
+      'PlaybackRate': 1,
+      'RepeatMode': 'RepeatNone',
+      'VolumeLevel': 100,
+    };
+    if (duration > Duration.zero) {
+      body['RunTimeTicks'] = durationToEmbyTicks(duration);
+    }
+    if (playSessionId != null && playSessionId.isNotEmpty) {
+      body['PlaySessionId'] = playSessionId;
+    }
+    if (mediaSourceId != null && mediaSourceId.isNotEmpty) {
+      body['MediaSourceId'] = mediaSourceId;
+    }
+    if (audioStreamIndex != null) {
+      body['AudioStreamIndex'] = audioStreamIndex;
+    }
+    if (subtitleStreamIndex != null) {
+      body['SubtitleStreamIndex'] = subtitleStreamIndex;
+    }
+    return body;
+  }
+
+  Map<String, dynamic> _buildLegacyPlaybackStateQuery({
+    required Duration position,
+    required Duration duration,
+    required bool isPaused,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) {
+    final query = <String, dynamic>{
+      'PositionTicks': durationToEmbyTicks(position).toString(),
+      'CanSeek': 'true',
+      'IsPaused': isPaused.toString(),
+    };
+    if (duration > Duration.zero) {
+      query['RunTimeTicks'] = durationToEmbyTicks(duration).toString();
+    }
+    if (playSessionId != null && playSessionId.isNotEmpty) {
+      query['PlaySessionId'] = playSessionId;
+    }
+    if (mediaSourceId != null && mediaSourceId.isNotEmpty) {
+      query['MediaSourceId'] = mediaSourceId;
+    }
+    if (audioStreamIndex != null) {
+      query['AudioStreamIndex'] = '$audioStreamIndex';
+    }
+    if (subtitleStreamIndex != null) {
+      query['SubtitleStreamIndex'] = '$subtitleStreamIndex';
+    }
+    return query;
+  }
+
+  bool _isUnsupportedPlaybackEndpoint(DioException error) {
+    final statusCode = error.response?.statusCode;
+    return statusCode == 400 ||
+        statusCode == 404 ||
+        statusCode == 405 ||
+        statusCode == 501;
   }
 
   Future<void> _ensureSession() async {
@@ -430,6 +712,7 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
   const audioCodecs =
       'aac,alac,ac3,eac3,dts,flac,mp2,mp3,opus,pcm_alaw,pcm_mulaw,pcm_s16le,pcm_s24le,truehd,vorbis,wavpack,wmav2';
   const audioContainers = 'aac,m4a,mp3,flac,ogg,oga,opus,wav,webma,wma';
+  const subtitleFormats = 'srt,subrip,ass,ssa,vtt,webvtt,pgs,pgssub,sup,dvdsub,sub,idx';
 
   return <String, dynamic>{
     'Name': 'MeowHub media_kit',
@@ -439,6 +722,16 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
     'MaxStaticBitrate': maxStreamingBitrate,
     'MusicStreamingTranscodingBitrate': 384000,
     'MaxStaticMusicBitrate': maxStreamingBitrate,
+    'SubtitleProfiles': [
+      // 关键：声明我们支持所有主流格式的“外部”加载，防止服务器强制转码烧录字幕
+      {'Format': 'srt', 'Method': 'External'},
+      {'Format': 'ass', 'Method': 'External'},
+      {'Format': 'ssa', 'Method': 'External'},
+      {'Format': 'vtt', 'Method': 'External'},
+      {'Format': 'pgs', 'Method': 'Embed'}, // PGS 改为内嵌，不强制烧录
+      {'Format': 'pgssub', 'Method': 'Embed'},
+      {'Format': 'subrip', 'Method': 'External'},
+    ],
     'DirectPlayProfiles': [
       {
         'Type': 'Video',
@@ -452,44 +745,105 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
         'AudioCodec': audioCodecs,
       },
     ],
+    'DirectStreamProfiles': [
+      {
+        'Type': 'Video',
+        'Container': videoContainers,
+        'VideoCodec': videoCodecs,
+        'AudioCodec': audioCodecs,
+      },
+      {
+        'Type': 'Audio',
+        'Container': audioContainers,
+        'AudioCodec': audioCodecs,
+      },
+    ],
     'TranscodingProfiles': [
-      {
-        'Type': 'Video',
-        'Container': 'ts',
-        'Protocol': 'hls',
-        'Context': 'Streaming',
-        'VideoCodec': 'h264,hevc,av1,vp9',
-        'AudioCodec': 'aac,ac3,eac3,mp3,opus,flac',
-        'TranscodeSeekInfo': 'Auto',
-        'ManifestSubtitles': 'vtt',
-        'CopyTimestamps': true,
-      },
-      {
-        'Type': 'Video',
-        'Container': 'ts',
-        'Protocol': 'http',
-        'Context': 'Streaming',
-        'VideoCodec': 'h264,hevc,av1,vp9',
-        'AudioCodec': 'aac,ac3,eac3,mp3,opus,flac',
-        'TranscodeSeekInfo': 'Auto',
-        'CopyTimestamps': true,
-      },
-      {
-        'Type': 'Video',
-        'Container': 'mp4',
-        'Protocol': 'http',
-        'Context': 'Static',
-        'VideoCodec': 'h264,hevc,av1',
-        'AudioCodec': 'aac,ac3,eac3,mp3,opus',
-        'TranscodeSeekInfo': 'Auto',
-        'CopyTimestamps': true,
-      },
+      _buildTimestampSafeTranscodingProfile(
+        container: 'ts',
+        protocol: 'hls',
+        context: 'Streaming',
+        videoCodec: 'h264,hevc,av1,vp9',
+        audioCodec: 'aac,ac3,eac3,mp3,opus,flac',
+        manifestSubtitles: 'vtt',
+      ),
+      _buildTimestampSafeTranscodingProfile(
+        container: 'ts',
+        protocol: 'http',
+        context: 'Streaming',
+        videoCodec: 'h264,hevc,av1,vp9',
+        audioCodec: 'aac,ac3,eac3,mp3,opus,flac',
+      ),
+      _buildTimestampSafeTranscodingProfile(
+        container: 'mp4',
+        protocol: 'http',
+        context: 'Static',
+        videoCodec: 'h264,hevc,av1',
+        audioCodec: 'aac,ac3,eac3,mp3,opus',
+      ),
       {
         'Type': 'Audio',
         'Container': 'aac',
         'Protocol': 'http',
         'Context': 'Streaming',
         'AudioCodec': 'aac,mp3,opus,flac',
+      },
+    ],
+    'ResponseProfiles': [
+      {
+        'Type': 'Video',
+        'Container': 'ts',
+        'MimeType': 'video/mp2t',
+      },
+      {
+        'Type': 'Video',
+        'Container': 'mp4',
+        'MimeType': 'video/mp4',
+      },
+      {
+        'Type': 'Audio',
+        'Container': 'aac',
+        'MimeType': 'audio/aac',
+      },
+    ],
+    'ContainerProfiles': [
+      {
+        'Type': 'Video',
+        'Container': 'matroska,webm',
+        'Conditions': [
+          {
+            'Condition': 'EqualsAny',
+            'Property': 'NumVideoStreams',
+            'Value': '1',
+            'IsRequired': false,
+          },
+        ],
+      },
+    ],
+    'CodecProfiles': [
+      {
+        'Type': 'Video',
+        'Codec': 'h264,hevc,av1,vp9',
+        'Conditions': [
+          {
+            'Condition': 'LessThanEqual',
+            'Property': 'VideoBitDepth',
+            'Value': '10',
+            'IsRequired': false,
+          },
+        ],
+      },
+      {
+        'Type': 'VideoAudio',
+        'Codec': 'aac,ac3,eac3,mp3,opus,flac',
+        'Conditions': [
+          {
+            'Condition': 'LessThanEqual',
+            'Property': 'AudioChannels',
+            'Value': '8',
+            'IsRequired': false,
+          },
+        ],
       },
     ],
     'SubtitleProfiles': [
@@ -512,5 +866,34 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
       {'Format': 'sub', 'Method': 'Embed'},
       {'Format': 'idx', 'Method': 'Embed'},
     ],
+    'SupportedSubtitles': subtitleFormats,
+  };
+}
+
+Map<String, dynamic> _buildTimestampSafeTranscodingProfile({
+  required String container,
+  required String protocol,
+  required String context,
+  required String videoCodec,
+  required String audioCodec,
+  String? manifestSubtitles,
+}) {
+  return <String, dynamic>{
+    'Type': 'Video',
+    'Container': container,
+    'Protocol': protocol,
+    'Context': context,
+    'VideoCodec': videoCodec,
+    'AudioCodec': audioCodec,
+    // 关键修改 A：声明支持自动寻址，触发 FFmpeg 的 -ss
+    'TranscodeSeekInfo': 'Auto', 
+    // 关键修改 B：必须为 true，让服务器移除 -start_at_zero
+    'CopyTimestamps': true, 
+    'BreakOnNonKeyFrames': true, // 提高切片效率
+    'MinSegments': 1,
+    'SegmentLength': 3,
+    // 关键修改 C：必须为 false，解决之前的 500 错误
+    'EnableMpegtsM2TsMode': false, 
+    'ManifestSubtitles': manifestSubtitles,
   };
 }

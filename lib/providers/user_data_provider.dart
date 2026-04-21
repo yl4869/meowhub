@@ -13,6 +13,9 @@ import '../domain/entities/media_item.dart';
 /// 用户个人数据 Provider
 /// 管理用户的收藏、观看历史、播放进度等个人数据
 class UserDataProvider extends ChangeNotifier {
+  static const Duration _manualSeekRegressionThreshold = Duration(seconds: 30);
+  static const Duration _progressRollbackTolerance = Duration(seconds: 3);
+
   UserDataProvider({
     required MediaServiceManager mediaServiceManager,
     WatchHistoryRepository? watchHistoryRepository,
@@ -315,8 +318,17 @@ class UserDataProvider extends ChangeNotifier {
 
   // ---------------- 新增：仅内存更新，不触发 IO ----------------
   /// 仅在内存中更新观看进度，不做任何网络/数据库 IO，也不触发重绘风暴。
-  void updateProgressMemoryOnly(WatchHistoryItem item, {int? episodeIndex}) {
-    _upsertWatchHistory(item, episodeIndex: episodeIndex, notify: false);
+  void updateProgressMemoryOnly(
+    WatchHistoryItem item, {
+    int? episodeIndex,
+    bool allowPositionRegression = false,
+  }) {
+    _upsertWatchHistory(
+      item,
+      episodeIndex: episodeIndex,
+      notify: false,
+      allowPositionRegression: allowPositionRegression,
+    );
   }
 
   /// 统一的 MediaItem 播放进度更新入口。
@@ -327,6 +339,7 @@ class UserDataProvider extends ChangeNotifier {
     Duration duration = Duration.zero,
     int? episodeIndex,
     bool notify = false,
+    bool allowPositionRegression = false,
   }) {
     final historyItem = _buildWatchHistoryItemFromMediaItem(
       mediaItem,
@@ -338,7 +351,11 @@ class UserDataProvider extends ChangeNotifier {
       sourceType: mediaItem.sourceType,
     );
 
-    updateProgressMemoryOnly(historyItem, episodeIndex: episodeIndex);
+    updateProgressMemoryOnly(
+      historyItem,
+      episodeIndex: episodeIndex,
+      allowPositionRegression: allowPositionRegression,
+    );
     if (notify) {
       debugPrint(
         '[Resume][Progress][Update] item=${mediaItem.dataSourceId} '
@@ -353,33 +370,121 @@ class UserDataProvider extends ChangeNotifier {
     }
   }
 
-  /// 在退出播放时，将内存中的最终进度一次性写入服务器。
-  Future<void> syncProgressToServerForItem(MediaItem mediaItem) async {
-    final latest = _watchHistoryItemFor(
-      mediaItem.dataSourceId,
-      sourceType: mediaItem.sourceType,
+  Future<void> startPlaybackForItem(
+    MediaItem mediaItem, {
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    final latest = _buildWatchHistoryItemFromMediaItem(
+      mediaItem,
+      position: position,
+      duration: duration,
     );
-    if (latest == null) return;
 
-    // 先把内存里的最新进度通知给 UI，避免返回详情页时还看到旧值。
+    _upsertWatchHistory(latest, notify: false, allowPositionRegression: true);
     debugPrint(
-      '[Resume][Progress][Sync] item=${mediaItem.dataSourceId} '
-      'ui-update position=${latest.position.inMilliseconds}ms '
+      '[Resume][Playback][Start] item=${mediaItem.dataSourceId} '
+      'position=${latest.position.inMilliseconds}ms '
+      'duration=${latest.duration.inMilliseconds}ms '
+      'playSessionId=${playSessionId ?? ''}',
+    );
+    notifyListeners();
+    try {
+      await _watchHistoryRepository.startPlayback(
+        latest,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      );
+    } catch (e) {
+      debugPrint(
+        '[Resume][Playback][Start][Error] '
+        'item=${mediaItem.dataSourceId} error=$e',
+      );
+    }
+  }
+
+  /// 播放过程中的心跳同步：明确走 Progress 通道。
+  Future<void> syncProgressToServerForItem(
+    MediaItem mediaItem, {
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    final latest = _buildWatchHistoryItemFromMediaItem(
+      mediaItem,
+      position: position,
+      duration: duration,
+    );
+
+    _upsertWatchHistory(latest, notify: false);
+    debugPrint(
+      '[Resume][Playback][Progress] item=${mediaItem.dataSourceId} '
+      'position=${latest.position.inMilliseconds}ms '
       'duration=${latest.duration.inMilliseconds}ms',
     );
     notifyListeners();
-    await _updateWatchProgress(latest);
-    // 单次刷新以同步最新状态到 UI（非高频）。
-    await _loadWatchHistory();
-    final refreshed = _watchHistoryItemFor(
-      mediaItem.dataSourceId,
-      sourceType: mediaItem.sourceType,
+    try {
+      await _watchHistoryRepository.updateProgress(
+        latest,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      );
+    } catch (e) {
+      debugPrint(
+        '[Resume][Playback][Progress][Error] '
+        'item=${mediaItem.dataSourceId} error=$e',
+      );
+    }
+  }
+
+  /// 退出播放器时的最终同步：明确走 Stopped 通道。
+  Future<void> stopPlaybackForItem(
+    MediaItem mediaItem, {
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    final latest = _buildWatchHistoryItemFromMediaItem(
+      mediaItem,
+      position: position,
+      duration: duration,
     );
+
+    _upsertWatchHistory(latest, notify: false);
     debugPrint(
-      '[Resume][Progress][Sync] item=${mediaItem.dataSourceId} '
-      'server-refresh position=${refreshed?.position.inMilliseconds ?? 0}ms '
-      'duration=${refreshed?.duration.inMilliseconds ?? 0}ms',
+      '[Resume][Playback][Stopped] item=${mediaItem.dataSourceId} '
+      'position=${latest.position.inMilliseconds}ms '
+      'duration=${latest.duration.inMilliseconds}ms',
     );
+    notifyListeners();
+    try {
+      await _watchHistoryRepository.stopPlayback(
+        latest,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      );
+    } catch (e) {
+      debugPrint(
+        '[Resume][Playback][Stopped][Error] '
+        'item=${mediaItem.dataSourceId} error=$e',
+      );
+    }
   }
 
   void updateMediaServiceManager(MediaServiceManager manager) {
@@ -557,8 +662,7 @@ class UserDataProvider extends ChangeNotifier {
           position: progress.position,
           duration: progress.duration,
           updatedAt:
-              mediaItem.lastPlayedAt ??
-              DateTime.fromMillisecondsSinceEpoch(0),
+              mediaItem.lastPlayedAt ?? DateTime.fromMillisecondsSinceEpoch(0),
           sourceType: mediaItem.sourceType,
           seriesId: mediaItem.seriesId,
           parentIndexNumber: mediaItem.parentIndexNumber,
@@ -584,7 +688,7 @@ class UserDataProvider extends ChangeNotifier {
     for (final item in items) {
       final existing = merged[item.uniqueKey];
       final preferred = _selectPreferredProgressItem(existing, item);
-      if (existing == null || !identical(existing, preferred)) {
+      if (existing == null || !_isSameWatchHistoryItem(existing, preferred)) {
         merged[item.uniqueKey] = preferred;
         changed = true;
       }
@@ -605,41 +709,113 @@ class UserDataProvider extends ChangeNotifier {
 
   WatchHistoryItem _selectPreferredProgressItem(
     WatchHistoryItem? existing,
-    WatchHistoryItem incoming,
-  ) {
+    WatchHistoryItem incoming, {
+    bool allowPositionRegression = false,
+  }) {
     if (existing == null) {
       return incoming;
     }
-    if (existing.updatedAt.isAfter(incoming.updatedAt)) {
-      return existing;
-    }
-    if (incoming.updatedAt.isAfter(existing.updatedAt)) {
-      return incoming;
-    }
-    if (existing.position >= incoming.position &&
-        existing.duration >= incoming.duration) {
-      return existing;
-    }
-    return incoming;
+    return _mergeWatchHistoryFields(
+      existing,
+      incoming,
+      allowPositionRegression: allowPositionRegression,
+    );
   }
 
   void _upsertWatchHistory(
     WatchHistoryItem item, {
     int? episodeIndex,
     bool notify = true,
+    bool allowPositionRegression = false,
   }) {
-    _watchHistory = <WatchHistoryItem>[
+    final existing = _watchHistoryItemFor(item.id, sourceType: item.sourceType);
+    final resolved = _selectPreferredProgressItem(
+      existing,
       item,
+      allowPositionRegression: allowPositionRegression,
+    );
+
+    if (existing != null && _isSameWatchHistoryItem(existing, resolved)) {
+      _registerRecentProgress(resolved, explicitEpisodeIndex: episodeIndex);
+      if (notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    _watchHistory = <WatchHistoryItem>[
+      resolved,
       ..._watchHistory.where(
-        (historyItem) => historyItem.uniqueKey != item.uniqueKey,
+        (historyItem) => historyItem.uniqueKey != resolved.uniqueKey,
       ),
     ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
 
-    _registerRecentProgress(item, explicitEpisodeIndex: episodeIndex);
+    _registerRecentProgress(resolved, explicitEpisodeIndex: episodeIndex);
 
     if (notify) {
       notifyListeners();
     }
+  }
+
+  bool _isMeaningfulProgressRollback(
+    WatchHistoryItem existing,
+    WatchHistoryItem incoming,
+  ) {
+    if (existing.uniqueKey != incoming.uniqueKey) {
+      return false;
+    }
+    if (existing.position <= Duration.zero ||
+        incoming.position >= existing.position) {
+      return false;
+    }
+    return existing.position - incoming.position >
+        _manualSeekRegressionThreshold;
+  }
+
+  WatchHistoryItem _mergeWatchHistoryFields(
+    WatchHistoryItem existing,
+    WatchHistoryItem incoming, {
+    required bool allowPositionRegression,
+  }) {
+    final canAcceptRegression =
+        allowPositionRegression &&
+        _isMeaningfulProgressRollback(existing, incoming);
+    final bestPosition = canAcceptRegression
+        ? incoming.position
+        : _maxDuration(existing.position, incoming.position);
+    final bestDuration = _maxDuration(existing.duration, incoming.duration);
+    final bestUpdatedAt = incoming.updatedAt.isAfter(existing.updatedAt)
+        ? incoming.updatedAt
+        : existing.updatedAt;
+
+    return existing.copyWith(
+      title: incoming.title.isNotEmpty ? incoming.title : existing.title,
+      poster: incoming.poster.isNotEmpty ? incoming.poster : existing.poster,
+      position: bestPosition,
+      duration: bestDuration,
+      updatedAt: bestUpdatedAt,
+      seriesId: incoming.seriesId ?? existing.seriesId,
+      parentIndexNumber:
+          incoming.parentIndexNumber ?? existing.parentIndexNumber,
+      indexNumber: incoming.indexNumber ?? existing.indexNumber,
+    );
+  }
+
+  Duration _maxDuration(Duration left, Duration right) {
+    return left >= right ? left : right;
+  }
+
+  bool _isSameWatchHistoryItem(WatchHistoryItem left, WatchHistoryItem right) {
+    return left.id == right.id &&
+        left.title == right.title &&
+        left.poster == right.poster &&
+        left.position == right.position &&
+        left.duration == right.duration &&
+        left.updatedAt == right.updatedAt &&
+        left.sourceType == right.sourceType &&
+        left.seriesId == right.seriesId &&
+        left.parentIndexNumber == right.parentIndexNumber &&
+        left.indexNumber == right.indexNumber;
   }
 
   void _rebuildDerivedProgressState() {

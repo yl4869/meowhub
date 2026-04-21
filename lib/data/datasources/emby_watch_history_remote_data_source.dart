@@ -1,3 +1,4 @@
+import '../../core/utils/emby_ticks.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../domain/entities/media_service_config.dart';
@@ -40,10 +41,62 @@ class EmbyWatchHistoryRemoteDataSourceImpl
   Future<void> updateProgress({
     required String itemId,
     required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   }) {
-    return _apiClient.updatePlaybackProgress(
+    return _apiClient.reportPlaybackProgress(
       itemId: itemId,
       position: position,
+      duration: duration,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+  }
+
+  @override
+  Future<void> startPlayback({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) {
+    return _apiClient.reportPlaybackStarted(
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+  }
+
+  @override
+  Future<void> stopPlayback({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) {
+    return _apiClient.reportPlaybackStopped(
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
     );
   }
 
@@ -89,10 +142,36 @@ class EmbyWatchHistoryRemoteDataSourceImpl
 }
 
 abstract class EmbyWatchHistoryRemoteDataSource {
+  Future<void> startPlayback({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  });
+
   Future<void> updateProgress({
     required String itemId,
     required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   });
+
+  Future<void> stopPlayback({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  });
+
   Future<List<EmbyResumeItemDto>> getHistory();
 }
 
@@ -111,18 +190,67 @@ class MockEmbyWatchHistoryRemoteDataSource
   }
 
   @override
+  Future<void> startPlayback({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await updateProgress(
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+  }
+
+  @override
   Future<void> updateProgress({
     required String itemId,
     required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
   }) async {
     final prev = _historyById[itemId];
     _historyById[itemId] = EmbyResumeItemDto(
       id: itemId,
       name: prev?.name ?? 'Unknown',
       primaryImageUrl: prev?.primaryImageUrl,
-      playbackPositionTicks: position.inMilliseconds * 10000,
-      runTimeTicks: prev?.runTimeTicks ?? 0,
+      playbackPositionTicks: durationToEmbyTicks(position),
+      runTimeTicks: duration > Duration.zero
+          ? durationToEmbyTicks(duration)
+          : prev?.runTimeTicks ?? 0,
       lastPlayedDate: DateTime.now().toIso8601String(),
+    );
+  }
+
+  @override
+  Future<void> stopPlayback({
+    required String itemId,
+    required Duration position,
+    Duration duration = Duration.zero,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await updateProgress(
+      itemId: itemId,
+      position: position,
+      duration: duration,
+      playSessionId: playSessionId,
+      mediaSourceId: mediaSourceId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
     );
   }
 }

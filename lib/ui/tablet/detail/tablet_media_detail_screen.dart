@@ -211,9 +211,26 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                         children: [
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 18),
-                            child: Text(
-                              '选集列表',
-                              style: Theme.of(context).textTheme.titleLarge,
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '选集列表',
+                                    style:
+                                        Theme.of(context).textTheme.titleLarge,
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: episodes.isEmpty
+                                      ? null
+                                      : () => _showAllEpisodes(
+                                          context,
+                                          episodes: episodes,
+                                        ),
+                                  icon: const Icon(Icons.grid_view_rounded),
+                                  label: const Text('查看全部'),
+                                ),
+                              ],
                             ),
                           ),
                           const SizedBox(height: 14),
@@ -327,6 +344,154 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
           ),
         )
         .toList(growable: false);
+  }
+
+  Future<void> _showAllEpisodes(
+    BuildContext context, {
+    required List<MediaItem> episodes,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.backgroundColor,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) {
+        return SafeArea(
+          child: FractionallySizedBox(
+            heightFactor: 0.78,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 12),
+                  child: Row(
+                    children: [
+                      Text(
+                        '全部剧集',
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${episodes.length} 集',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                    itemCount: episodes.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final episode = episodes[index];
+                      final isSelected = index == _selectedEpisode;
+                      final progress = episode.playbackProgress;
+                      final hasProgress =
+                          progress != null && progress.position > Duration.zero;
+                      return Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(18),
+                          onTap: () {
+                            setState(() {
+                              _selectedEpisode = index;
+                              _syncSelectedSubtitleForCurrentItem(
+                                notify: false,
+                              );
+                            });
+                            Navigator.of(context).pop();
+                          },
+                          child: Ink(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 16,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? Colors.blue.withValues(alpha: 0.18)
+                                  : AppTheme.cardColor,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: isSelected
+                                    ? Colors.blue.withValues(alpha: 0.7)
+                                    : Colors.white.withValues(alpha: 0.06),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        episode.playbackLabel,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        episode.title,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium,
+                                      ),
+                                      if (hasProgress) ...[
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          '已看到 ${_formatProgressText(progress)}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelMedium
+                                              ?.copyWith(
+                                                color: Colors.blue.shade200,
+                                              ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Icon(
+                                  isSelected
+                                      ? Icons.check_circle_rounded
+                                      : Icons.chevron_right_rounded,
+                                  color: isSelected
+                                      ? Colors.blue.shade300
+                                      : Colors.white54,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatProgressText(MediaPlaybackProgress progress) {
+    final totalSeconds = progress.duration.inSeconds;
+    if (totalSeconds <= 0) {
+      return '${progress.position.inMinutes} 分钟';
+    }
+    final percent =
+        ((progress.position.inMilliseconds / progress.duration.inMilliseconds) *
+                100)
+            .clamp(0, 100)
+            .round();
+    return '$percent%';
   }
 
   void _showAllCast(BuildContext context, List<Cast> cast) {

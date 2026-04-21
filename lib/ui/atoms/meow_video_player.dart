@@ -66,6 +66,7 @@ class MeowVideoPlayer extends StatefulWidget {
     this.harmonyNativeBuilder,
     this.initialPosition = Duration.zero,
     this.onPlaybackStatusChanged,
+    this.onPlaybackStarted,
     this.onPlayerCreated,
     this.overlayCcButton = false,
     this.onTapCc,
@@ -88,6 +89,7 @@ class MeowVideoPlayer extends StatefulWidget {
   final MeowVideoNativeRendererBuilder? harmonyNativeBuilder;
   final Duration initialPosition;
   final MeowVideoPlaybackStatusChanged? onPlaybackStatusChanged;
+  final MeowVideoPlaybackStatusChanged? onPlaybackStarted;
   final ValueChanged<Player>? onPlayerCreated;
   final bool overlayCcButton;
   final VoidCallback? onTapCc;
@@ -101,16 +103,20 @@ class MeowVideoPlayer extends StatefulWidget {
 }
 
 class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
+  static const Duration _seekCompensationDelay = Duration(milliseconds: 500);
+
   Player? _player;
   VideoController? _videoController;
   Future<void>? _initializeVideoFuture;
   bool _switchingSource = false; // 串行化切源，避免双音轨窗口
+  int _sourceTicket = 0;
 
   // Cached state for callback synthesis
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _isPlaying = false;
   bool _isBuffering = false;
+  bool _hasDispatchedPlaybackStarted = false;
 
   bool get _usesFlutterRenderer =>
       widget.renderMode == MeowVideoRenderMode.flutter;
@@ -151,6 +157,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   }
 
   void _disposeControllers() {
+    _sourceTicket += 1;
     for (final s in _subscriptions) {
       s.cancel();
     }
@@ -159,13 +166,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     final p = _player;
     _player = null;
     if (p != null) {
-      // 先尝试停止，确保音频流关闭，再释放底层资源
-      try {
-        // stop() 是异步；此处在 dispose 中无法 await，但调用可提示底层尽快切断流
-        // 若你希望严格 await，可将播放器抽到可控生命周期（如上层 State）并在其 dispose 中 await。
-        // ignore: discarded_futures
-        p.stop();
-      } catch (_) {}
       try {
         p.dispose();
       } catch (_) {}
@@ -185,6 +185,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
 
   Future<void> _initializeFlutterPlayer() async {
     _disposeControllers();
+    _resetPlaybackLifecycleState();
 
     // 确保底层已初始化（多平台安全）
     MediaKit.ensureInitialized();
@@ -194,6 +195,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
 
     _player = player;
     _videoController = videoController;
+    final sourceTicket = ++_sourceTicket;
     // 暴露底层 Player，便于上层在退出前 await stop()
     widget.onPlayerCreated?.call(player);
 
@@ -208,10 +210,11 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       );
       await _applySubtitleSelection(player: player);
 
-      // 起始位置
-      if (widget.initialPosition > Duration.zero) {
-        await player.seek(widget.initialPosition);
-      }
+      await _seekWithCompensation(
+        player,
+        widget.initialPosition,
+        sourceTicket: sourceTicket,
+      );
 
       // 循环逻辑：单源循环
       if (widget.looping) {
@@ -244,6 +247,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     }
     if (_switchingSource) return;
     _switchingSource = true;
+    final sourceTicket = ++_sourceTicket;
     try {
       try {
         await player.pause();
@@ -251,6 +255,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       try {
         await player.stop();
       } catch (_) {}
+      _resetPlaybackLifecycleState();
       await player.open(
         Media(url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
@@ -261,11 +266,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
           (widget.initialPosition > Duration.zero
               ? widget.initialPosition
               : Duration.zero);
-      if (pos > Duration.zero) {
-        try {
-          await player.seek(pos);
-        } catch (_) {}
-      }
+      await _seekWithCompensation(player, pos, sourceTicket: sourceTicket);
       if (widget.looping) {
         try {
           player.setPlaylistMode(PlaylistMode.loop);
@@ -279,6 +280,49 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   }
 
   final List<StreamSubscription> _subscriptions = [];
+
+  void _resetPlaybackLifecycleState() {
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _isPlaying = false;
+    _isBuffering = false;
+    _hasDispatchedPlaybackStarted = false;
+  }
+
+  Future<void> _seekWithCompensation(
+    Player player,
+    Duration target, {
+    required int sourceTicket,
+  }) async {
+    if (target <= Duration.zero) {
+      return;
+    }
+    await _seekIfStillActive(player, target, sourceTicket: sourceTicket);
+    // ignore: discarded_futures
+    _runCompensationSeek(player, target, sourceTicket: sourceTicket);
+  }
+
+  Future<void> _runCompensationSeek(
+    Player player,
+    Duration target, {
+    required int sourceTicket,
+  }) async {
+    await Future.delayed(_seekCompensationDelay);
+    await _seekIfStillActive(player, target, sourceTicket: sourceTicket);
+  }
+
+  Future<void> _seekIfStillActive(
+    Player player,
+    Duration target, {
+    required int sourceTicket,
+  }) async {
+    if (!mounted || _player != player || _sourceTicket != sourceTicket) {
+      return;
+    }
+    try {
+      await player.seek(target);
+    } catch (_) {}
+  }
 
   Future<void> _applySubtitleSelection({Player? player}) async {
     final target = player ?? _player;
@@ -312,21 +356,19 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       final completionThreshold = duration > const Duration(milliseconds: 600)
           ? duration - const Duration(milliseconds: 600)
           : duration;
-      final isCompleted =
-          duration > Duration.zero &&
-          position >= completionThreshold &&
-          !_isPlaying;
-
-      widget.onPlaybackStatusChanged?.call(
-        MeowVideoPlaybackStatus(
-          position: position,
-          duration: duration,
-          isInitialized: duration > Duration.zero,
-          isPlaying: _isPlaying,
-          isBuffering: _isBuffering,
-          isCompleted: isCompleted,
-        ),
+      final status = MeowVideoPlaybackStatus(
+        position: position,
+        duration: duration,
+        isInitialized: duration > Duration.zero,
+        isPlaying: _isPlaying,
+        isBuffering: _isBuffering,
+        isCompleted:
+            duration > Duration.zero &&
+            position >= completionThreshold &&
+            !_isPlaying,
       );
+      _maybeDispatchPlaybackStarted(status);
+      widget.onPlaybackStatusChanged?.call(status);
     }
 
     _subscriptions.addAll([
@@ -347,6 +389,17 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         emit();
       }),
     ]);
+  }
+
+  void _maybeDispatchPlaybackStarted(MeowVideoPlaybackStatus status) {
+    if (_hasDispatchedPlaybackStarted) {
+      return;
+    }
+    if (!status.isInitialized || !status.isPlaying) {
+      return;
+    }
+    _hasDispatchedPlaybackStarted = true;
+    widget.onPlaybackStarted?.call(status);
   }
 
   @override

@@ -40,7 +40,7 @@ class InMemoryLocalWatchHistoryDataSource
     if (_records.isEmpty) {
       final persistedRecords = await _persistenceStore.loadRecords();
       for (final record in persistedRecords) {
-        _records[record.id] = record;
+        _records['${record.sourceType.name}:${record.id}'] = record;
       }
     }
 
@@ -49,7 +49,7 @@ class InMemoryLocalWatchHistoryDataSource
 
   @override
   Future<void> updateProgress(PlaybackRecord record) async {
-    _records[record.id] = record;
+    _records['${record.sourceType.name}:${record.id}'] = record;
     await _persistenceStore.saveRecord(record);
   }
 }

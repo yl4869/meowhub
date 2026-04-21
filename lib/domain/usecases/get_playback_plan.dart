@@ -12,11 +12,15 @@ class GetPlaybackPlanUseCase {
     bool? requireAvc,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
+    String? playSessionId,
+    Duration startPosition = Duration.zero,
   }) => _repo.getPlaybackPlan(
     item,
     maxStreamingBitrate: maxStreamingBitrate,
     requireAvc: requireAvc,
     audioStreamIndex: audioStreamIndex,
     subtitleStreamIndex: subtitleStreamIndex,
+    playSessionId: playSessionId,
+    startPosition: startPosition,
   );
 }

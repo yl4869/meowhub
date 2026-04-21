@@ -8,7 +8,11 @@ class PlaybackRecord {
     required this.position,
     required this.duration,
     required this.updatedAt,
+    required this.sourceType,
     this.episodeIndex = 0,
+    this.seriesId,
+    this.parentIndexNumber,
+    this.indexNumber,
   });
 
   final String id;
@@ -17,7 +21,11 @@ class PlaybackRecord {
   final Duration position;
   final Duration duration;
   final DateTime updatedAt;
+  final WatchSourceType sourceType;
   final int episodeIndex;
+  final String? seriesId;
+  final int? parentIndexNumber;
+  final int? indexNumber;
 
   PlaybackRecord copyWith({
     String? id,
@@ -26,7 +34,11 @@ class PlaybackRecord {
     Duration? position,
     Duration? duration,
     DateTime? updatedAt,
+    WatchSourceType? sourceType,
     int? episodeIndex,
+    Object? seriesId = _sentinel,
+    Object? parentIndexNumber = _sentinel,
+    Object? indexNumber = _sentinel,
   }) {
     return PlaybackRecord(
       id: id ?? this.id,
@@ -35,7 +47,17 @@ class PlaybackRecord {
       position: position ?? this.position,
       duration: duration ?? this.duration,
       updatedAt: updatedAt ?? this.updatedAt,
+      sourceType: sourceType ?? this.sourceType,
       episodeIndex: episodeIndex ?? this.episodeIndex,
+      seriesId: identical(seriesId, _sentinel)
+          ? this.seriesId
+          : seriesId as String?,
+      parentIndexNumber: identical(parentIndexNumber, _sentinel)
+          ? this.parentIndexNumber
+          : parentIndexNumber as int?,
+      indexNumber: identical(indexNumber, _sentinel)
+          ? this.indexNumber
+          : indexNumber as int?,
     );
   }
 
@@ -47,7 +69,10 @@ class PlaybackRecord {
       position: position,
       duration: duration,
       updatedAt: updatedAt,
-      sourceType: WatchSourceType.local,
+      sourceType: sourceType,
+      seriesId: seriesId,
+      parentIndexNumber: parentIndexNumber,
+      indexNumber: indexNumber,
     );
   }
 
@@ -62,7 +87,13 @@ class PlaybackRecord {
       position: item.position,
       duration: item.duration,
       updatedAt: item.updatedAt,
+      sourceType: item.sourceType,
       episodeIndex: episodeIndex,
+      seriesId: item.seriesId,
+      parentIndexNumber: item.parentIndexNumber,
+      indexNumber: item.indexNumber,
     );
   }
 }
+
+const Object _sentinel = Object();

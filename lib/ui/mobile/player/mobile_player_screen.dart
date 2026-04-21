@@ -24,7 +24,9 @@ class MobilePlayerScreen extends StatefulWidget {
     required this.selectedServer,
     required this.savedProgress,
     required this.initialPosition,
+    required this.isTranscoding,
     required this.onPlaybackStatusChanged,
+    this.onServerSeekRequested,
     this.playUrlOverride,
     this.onShowTrackSelector,
     this.resolutionOptions = const [],
@@ -35,13 +37,19 @@ class MobilePlayerScreen extends StatefulWidget {
     this.subtitleTitle,
     this.subtitleLanguage,
     this.disableSubtitleTrack = false,
+    this.playSessionId,
+    this.mediaSourceId,
+    this.audioStreamIndex,
+    this.subtitleStreamIndex,
   });
 
   final MediaItem mediaItem;
   final MediaServerInfo selectedServer;
   final MediaPlaybackProgress? savedProgress;
   final Duration initialPosition;
+  final bool isTranscoding;
   final MeowVideoPlaybackStatusChanged onPlaybackStatusChanged;
+  final Future<void> Function(Duration target)? onServerSeekRequested;
   final String? playUrlOverride;
   final VoidCallback? onShowTrackSelector;
   final List<PlayerResolutionOption> resolutionOptions;
@@ -52,6 +60,10 @@ class MobilePlayerScreen extends StatefulWidget {
   final String? subtitleTitle;
   final String? subtitleLanguage;
   final bool disableSubtitleTrack;
+  final String? playSessionId;
+  final String? mediaSourceId;
+  final int? audioStreamIndex;
+  final int? subtitleStreamIndex;
 
   @override
   State<MobilePlayerScreen> createState() => _MobilePlayerScreenState();
@@ -59,8 +71,14 @@ class MobilePlayerScreen extends StatefulWidget {
 
 class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   static const Duration _backgroundSyncInterval = Duration(minutes: 1);
+  static const Duration _exitSyncTimeout = Duration(seconds: 8);
+  static const Duration _initialSeekStabilityTolerance = Duration(seconds: 2);
+  static const Duration _playbackStartStabilityThreshold = Duration(seconds: 1);
   static const Duration _meaningfulProgressThreshold = Duration(seconds: 5);
+  static const Duration _progressRollbackTolerance = Duration(seconds: 3);
+  static const Duration _manualSeekTargetTolerance = Duration(seconds: 15);
   static const Duration _controlsAutoHideDelay = Duration(seconds: 3);
+  static const double _progressBarTouchHeight = 44;
   static const List<double> _playbackSpeeds = [1.0, 1.25, 1.5, 2.0];
 
   final GlobalKey _playerBoundaryKey = GlobalKey();
@@ -75,6 +93,9 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   bool _controlsVisible = true;
   bool _isLocked = false;
   bool _isScrubbing = false;
+  bool _isInitialSeeking = true;
+  bool _hasReportedPlaybackStarted = false;
+  Duration? _pendingManualSeekTarget;
   _PlayerOptionPanel? _activeOptionPanel;
   double _currentSpeed = 1.0;
   double? _scrubValue;
@@ -90,9 +111,23 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     super.initState();
     _udp = context.read<UserDataProvider>();
     _lastStablePlaybackProgress = widget.savedProgress;
+    _isInitialSeeking = true;
     // ignore: discarded_futures
     _enterImmersiveLandscapeMode();
     _scheduleControlsAutoHide();
+  }
+
+  @override
+  void didUpdateWidget(covariant MobilePlayerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.mediaItem.dataSourceId != widget.mediaItem.dataSourceId ||
+        oldWidget.playUrlOverride != widget.playUrlOverride ||
+        oldWidget.playSessionId != widget.playSessionId ||
+        oldWidget.mediaSourceId != widget.mediaSourceId) {
+      _hasReportedPlaybackStarted = false;
+      _isInitialSeeking = true;
+      _pendingManualSeekTarget = null;
+    }
   }
 
   @override
@@ -101,11 +136,10 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     _centerToastTimer?.cancel();
     // ignore: discarded_futures
     _syncOnExit();
-    final p = _player;
-    if (p != null) {
-      try {
-        p.dispose();
-      } catch (_) {}
+    final detachedPlayer = _detachPlayer();
+    if (detachedPlayer != null) {
+      // ignore: discarded_futures
+      _disposePlayerSafely(detachedPlayer);
     }
     // ignore: discarded_futures
     _restoreSystemUi();
@@ -113,27 +147,28 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   }
 
   // 切换横竖屏
-Future<void> _toggleOrientation() async {
-  _handleScreenInteraction(); // 保持控制条显示
-  
-  // 检查当前方向
-  final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
-  
-  if (isPortrait) {
-    // 切换到横屏
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-    _showCenterToast('已切换至横屏');
-  } else {
-    // 切换到竖屏
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-    ]);
-    _showCenterToast('已切换至竖屏');
+  Future<void> _toggleOrientation() async {
+    _handleScreenInteraction(); // 保持控制条显示
+
+    // 检查当前方向
+    final isPortrait =
+        MediaQuery.of(context).orientation == Orientation.portrait;
+
+    if (isPortrait) {
+      // 切换到横屏
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+      _showCenterToast('已切换至横屏');
+    } else {
+      // 切换到竖屏
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+      ]);
+      _showCenterToast('已切换至竖屏');
+    }
   }
-}
 
   Future<void> _enterImmersiveLandscapeMode() async {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
@@ -188,7 +223,18 @@ Future<void> _toggleOrientation() async {
   bool get _isPlaying => _latestStatus?.isPlaying ?? false;
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
-    if (_isExiting || _shouldIgnoreZeroProgressUpdate(status)) {
+    final allowPositionRegression = _consumeManualSeekAllowance(
+      status.position,
+    );
+    if (_shouldShieldInitialProgress(status)) {
+      return;
+    }
+    if (_isExiting ||
+        _shouldIgnoreZeroProgressUpdate(status) ||
+        _shouldIgnoreRegressiveProgressUpdate(
+          status,
+          allowPositionRegression: allowPositionRegression,
+        )) {
       return;
     }
     _latestStatus = status;
@@ -203,10 +249,56 @@ Future<void> _toggleOrientation() async {
         widget.mediaItem,
         position: status.position,
         duration: status.duration,
+        allowPositionRegression: allowPositionRegression,
       );
       _maybeSyncProgressInBackground(status);
     }
     widget.onPlaybackStatusChanged(status);
+  }
+
+  bool _shouldShieldInitialProgress(MeowVideoPlaybackStatus status) {
+    if (!_isInitialSeeking || _isExiting) {
+      return false;
+    }
+    if (_hasStableInitialPlayback(status)) {
+      _isInitialSeeking = false;
+      return false;
+    }
+    return true;
+  }
+
+  bool _hasStableInitialPlayback(MeowVideoPlaybackStatus status) {
+    if (!status.isInitialized) {
+      return false;
+    }
+
+    final initialPosition = widget.initialPosition;
+    if (initialPosition > Duration.zero) {
+      return _durationDistance(status.position, initialPosition) <=
+              _initialSeekStabilityTolerance ||
+          status.position >= initialPosition;
+    }
+
+    return status.position >= _playbackStartStabilityThreshold;
+  }
+
+  Future<void> _handlePlaybackStarted(MeowVideoPlaybackStatus status) async {
+    if (_isExiting || _hasReportedPlaybackStarted) {
+      return;
+    }
+    _hasReportedPlaybackStarted = true;
+    final effectivePosition = status.position > Duration.zero
+        ? status.position
+        : widget.initialPosition;
+    await _udp.startPlaybackForItem(
+      widget.mediaItem,
+      position: effectivePosition,
+      duration: status.duration,
+      playSessionId: widget.playSessionId,
+      mediaSourceId: widget.mediaSourceId,
+      audioStreamIndex: widget.audioStreamIndex,
+      subtitleStreamIndex: widget.subtitleStreamIndex,
+    );
   }
 
   bool _shouldIgnoreZeroProgressUpdate(MeowVideoPlaybackStatus status) {
@@ -218,6 +310,45 @@ Future<void> _toggleOrientation() async {
         _latestStatus?.position ?? _lastStablePlaybackProgress?.position;
     return latestPosition != null &&
         latestPosition > _meaningfulProgressThreshold;
+  }
+
+  bool _shouldIgnoreRegressiveProgressUpdate(
+    MeowVideoPlaybackStatus status, {
+    required bool allowPositionRegression,
+  }) {
+    if (allowPositionRegression) {
+      return false;
+    }
+
+    final latestPosition =
+        _latestStatus?.position ??
+        _lastStablePlaybackProgress?.position ??
+        widget.savedProgress?.position;
+    if (latestPosition == null ||
+        latestPosition <= _meaningfulProgressThreshold ||
+        status.position >= latestPosition) {
+      return false;
+    }
+
+    return latestPosition - status.position > _progressRollbackTolerance;
+  }
+
+  bool _consumeManualSeekAllowance(Duration position) {
+    final target = _pendingManualSeekTarget;
+    if (target == null) {
+      return false;
+    }
+
+    final delta = _durationDistance(position, target);
+    if (delta <= _manualSeekTargetTolerance) {
+      _pendingManualSeekTarget = null;
+      return true;
+    }
+    return false;
+  }
+
+  Duration _durationDistance(Duration left, Duration right) {
+    return left >= right ? left - right : right - left;
   }
 
   void _refreshUi(MeowVideoPlaybackStatus status) {
@@ -258,7 +389,15 @@ Future<void> _toggleOrientation() async {
 
     _lastBackgroundSyncAt = now;
     // ignore: discarded_futures
-    _udp.syncProgressToServerForItem(widget.mediaItem);
+    _udp.syncProgressToServerForItem(
+      widget.mediaItem,
+      position: status.position,
+      duration: status.duration,
+      playSessionId: widget.playSessionId,
+      mediaSourceId: widget.mediaSourceId,
+      audioStreamIndex: widget.audioStreamIndex,
+      subtitleStreamIndex: widget.subtitleStreamIndex,
+    );
   }
 
   Future<void> _syncOnExit() {
@@ -272,46 +411,96 @@ Future<void> _toggleOrientation() async {
     return future;
   }
 
-  void _applyLocalProgressOnExit() {
+  Player? _detachPlayer() {
+    final player = _player;
+    _player = null;
+    return player;
+  }
+
+  Future<void> _disposePlayerSafely(Player player) async {
+    try {
+      player.dispose();
+    } catch (_) {}
+  }
+
+  Future<void> _stopPlayerSafely(Player player) async {
+    try {
+      await player.stop().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
+  MediaPlaybackProgress _captureExitSnapshot() {
     final status = _latestStatus;
-    if (status == null ||
-        !status.isInitialized ||
-        status.position <= Duration.zero) {
+    if (status != null &&
+        status.isInitialized &&
+        status.position > Duration.zero) {
+      return MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    return _lastStablePlaybackProgress ??
+        widget.savedProgress ??
+        const MediaPlaybackProgress(
+          position: Duration.zero,
+          duration: Duration.zero,
+        );
+  }
+
+  void _applyLocalProgressOnExit(MediaPlaybackProgress snapshot) {
+    if (snapshot.position <= Duration.zero) {
       return;
     }
-    _lastStablePlaybackProgress = MediaPlaybackProgress(
-      position: status.position,
-      duration: status.duration,
-    );
+    _lastStablePlaybackProgress = snapshot;
     _udp.updatePlaybackProgressForItem(
       widget.mediaItem,
-      position: status.position,
-      duration: status.duration,
+      position: snapshot.position,
+      duration: snapshot.duration,
       notify: true,
     );
   }
 
   Future<void> _performSyncOnExit() async {
     final capturedItem = widget.mediaItem;
-    final status = _latestStatus;
+    final snapshot = _captureExitSnapshot();
+    _isExiting = true;
+    final player = _detachPlayer();
     debugPrint(
       '[Resume][Mobile][Exit] item=${capturedItem.dataSourceId} '
-      'position=${status?.position.inMilliseconds ?? 0}ms '
-      'duration=${status?.duration.inMilliseconds ?? 0}ms '
+      'position=${snapshot.position.inMilliseconds}ms '
+      'duration=${snapshot.duration.inMilliseconds}ms '
       'sync=start',
     );
-    _applyLocalProgressOnExit();
-    final p = _player;
-    if (p != null) {
-      try {
-        await p.stop();
-      } catch (_) {}
+    _applyLocalProgressOnExit(snapshot);
+    try {
+      if (player != null) {
+        await _stopPlayerSafely(player);
+      }
+      await _udp
+          .stopPlaybackForItem(
+            capturedItem,
+            position: snapshot.position,
+            duration: snapshot.duration,
+            playSessionId: widget.playSessionId,
+            mediaSourceId: widget.mediaSourceId,
+            audioStreamIndex: widget.audioStreamIndex,
+            subtitleStreamIndex: widget.subtitleStreamIndex,
+          )
+          .timeout(_exitSyncTimeout);
+      debugPrint(
+        '[Resume][Mobile][Exit] item=${capturedItem.dataSourceId} '
+        'stopped=done',
+      );
+    } on TimeoutException {
+      debugPrint(
+        '[Resume][Mobile][Exit] item=${capturedItem.dataSourceId} '
+        'stopped=timeout',
+      );
+    } finally {
+      if (player != null) {
+        await _disposePlayerSafely(player);
+      }
     }
-    await _udp.syncProgressToServerForItem(capturedItem);
-    debugPrint(
-      '[Resume][Mobile][Exit] item=${capturedItem.dataSourceId} '
-      'sync=done',
-    );
   }
 
   void _scheduleControlsAutoHide() {
@@ -480,10 +669,40 @@ Future<void> _toggleOrientation() async {
   Future<void> _seekToFraction(double value) async {
     final p = _player;
     final duration = _displayDuration;
-    if (p == null || duration <= Duration.zero) {
+    if (duration <= Duration.zero) {
       return;
     }
     final target = duration * value.clamp(0.0, 1.0);
+    if (widget.isTranscoding && widget.onServerSeekRequested != null) {
+      try {
+        await widget.onServerSeekRequested!(target);
+        _latestStatus = null;
+        _lastStablePlaybackProgress = MediaPlaybackProgress(
+          position: target,
+          duration: duration,
+        );
+        _udp.updatePlaybackProgressForItem(
+          widget.mediaItem,
+          position: target,
+          duration: duration,
+          notify: true,
+          allowPositionRegression: true,
+        );
+        if (mounted) {
+          setState(() {});
+        }
+        return;
+      } catch (error) {
+        debugPrint(
+          '[Resume][Mobile][Seek][Server][Error] '
+          'item=${widget.mediaItem.dataSourceId} '
+          'target=${target.inMilliseconds}ms error=$error',
+        );
+      }
+    }
+    if (p == null) {
+      return;
+    }
     try {
       await p.seek(target);
     } catch (_) {}
@@ -508,6 +727,10 @@ Future<void> _toggleOrientation() async {
   }
 
   Future<void> _handleScrubEnd(double value) async {
+    final duration = _displayDuration;
+    if (duration > Duration.zero) {
+      _pendingManualSeekTarget = duration * value.clamp(0.0, 1.0);
+    }
     await _seekToFraction(value);
     if (!mounted) {
       return;
@@ -534,9 +757,6 @@ Future<void> _toggleOrientation() async {
       return _UnavailablePlayerView(title: widget.mediaItem.title);
     }
 
-    // 检查是否为竖屏
-    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
-
     return RepaintBoundary(
       key: _playerBoundaryKey,
       child: MeowVideoPlayer(
@@ -548,6 +768,7 @@ Future<void> _toggleOrientation() async {
         borderRadius: BorderRadius.zero,
         initialPosition: widget.initialPosition,
         onPlaybackStatusChanged: _handlePlaybackStatusChanged,
+        onPlaybackStarted: _handlePlaybackStarted,
         onPlayerCreated: (p) async {
           _player = p;
           try {
@@ -917,32 +1138,36 @@ class _BottomControlBar extends StatelessWidget {
               context,
             ).copyWith(overlayShape: SliderComponentShape.noOverlay),
           ),
-          child: progress_bar.ProgressBar(
-            progress: cappedPosition,
-            total: displayDuration,
-            timeLabelLocation: progress_bar.TimeLabelLocation.none,
-            barHeight: state._isScrubbing ? 3 : 1,
-            baseBarColor: Colors.white.withValues(alpha: 0.18),
-            progressBarColor: Colors.white,
-            thumbColor: const Color(0xFFE5484D),
-            thumbRadius: state._isScrubbing ? 4 : 2,
-            thumbGlowRadius: 10,
-            bufferedBarColor: Colors.transparent,
-            onSeek: state._handleProgressBarSeek,
-            onDragStart: (_) => state._handleScrubStarted(),
-            onDragUpdate: (details) {
-              if (displayDuration <= Duration.zero) {
-                return;
-              }
-              final fraction =
-                  details.timeStamp.inMilliseconds /
-                  displayDuration.inMilliseconds.clamp(1, 1 << 30);
-              state._handleScrubChanged(fraction.clamp(0.0, 1.0));
-            },
-            onDragEnd: () => state._scheduleControlsAutoHide(),
+          child: SizedBox(
+            height: _MobilePlayerScreenState._progressBarTouchHeight,
+            width: double.infinity,
+            child: progress_bar.ProgressBar(
+              progress: cappedPosition,
+              total: displayDuration,
+              timeLabelLocation: progress_bar.TimeLabelLocation.none,
+              barHeight: state._isScrubbing ? 4 : 2,
+              baseBarColor: Colors.white.withValues(alpha: 0.18),
+              progressBarColor: Colors.white,
+              thumbColor: const Color(0xFFE5484D),
+              thumbRadius: state._isScrubbing ? 8 : 6,
+              thumbGlowRadius: 14,
+              bufferedBarColor: Colors.transparent,
+              onSeek: state._handleProgressBarSeek,
+              onDragStart: (_) => state._handleScrubStarted(),
+              onDragUpdate: (details) {
+                if (displayDuration <= Duration.zero) {
+                  return;
+                }
+                final fraction =
+                    details.timeStamp.inMilliseconds /
+                    displayDuration.inMilliseconds.clamp(1, 1 << 30);
+                state._handleScrubChanged(fraction.clamp(0.0, 1.0));
+              },
+              onDragEnd: () => state._scheduleControlsAutoHide(),
+            ),
           ),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 2),
         Row(
           children: [
             Text(
@@ -1008,7 +1233,10 @@ class _BottomControlBar extends StatelessWidget {
                     icon: Icons.screen_rotation_rounded,
                     onPressed: state._toggleOrientation,
                     showChrome: false,
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
                     iconSize: 18,
                   ),
                 ],
@@ -1234,16 +1462,19 @@ class _OptionDrawerLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
-    final isPortrait = MediaQuery.of(context).orientation == Orientation.portrait;
+    final isPortrait =
+        MediaQuery.of(context).orientation == Orientation.portrait;
 
     // --- 动态计算尺寸和位置 ---
     // 竖屏下：宽度占 60%，最大 280；横屏下：宽度占 32%
-    final drawerWidth = isPortrait 
+    final drawerWidth = isPortrait
         ? (screenSize.width * 0.6).clamp(200.0, 280.0)
         : (screenSize.width * 0.32).clamp(180.0, 320.0);
 
     // 竖屏下不占满全高，高度根据内容自适应或限制最大高度
-    final drawerHeight = isPortrait ? screenSize.height * 0.45 : screenSize.height;
+    final drawerHeight = isPortrait
+        ? screenSize.height * 0.45
+        : screenSize.height;
 
     return Stack(
       children: [
@@ -1261,9 +1492,9 @@ class _OptionDrawerLayer extends StatelessWidget {
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOutCubic,
           // 【核心变化】竖屏时固定在右下角，横屏时长条展开
-          top: isPortrait ? null : 0, 
+          top: isPortrait ? null : 0,
           bottom: isPortrait ? 20 + MediaQuery.of(context).padding.bottom : 0,
-          right: isPortrait ? 16 : 0, 
+          right: isPortrait ? 16 : 0,
           width: drawerWidth,
           height: isPortrait ? null : drawerHeight, // 竖屏高度自适应
           child: Material(
@@ -1274,10 +1505,17 @@ class _OptionDrawerLayer extends StatelessWidget {
               child: BackdropFilter(
                 filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
                 child: Container(
-                  padding: EdgeInsets.fromLTRB(16, isPortrait ? 16 : (safeTop + 8), 16, 16),
+                  padding: EdgeInsets.fromLTRB(
+                    16,
+                    isPortrait ? 16 : (safeTop + 8),
+                    16,
+                    16,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.72),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.1),
+                    ),
                     borderRadius: BorderRadius.circular(isPortrait ? 24 : 0),
                   ),
                   child: Column(
@@ -1290,15 +1528,20 @@ class _OptionDrawerLayer extends StatelessWidget {
                           Expanded(
                             child: Text(
                               title,
-                              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                             ),
                           ),
                           // 竖屏下关闭按钮可以稍微小一点
                           IconButton(
-                            icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 20),
+                            icon: const Icon(
+                              Icons.close_rounded,
+                              color: Colors.white70,
+                              size: 20,
+                            ),
                             onPressed: onClose,
                           ),
                         ],
@@ -1309,8 +1552,8 @@ class _OptionDrawerLayer extends StatelessWidget {
                         child: SingleChildScrollView(
                           physics: const BouncingScrollPhysics(),
                           child: Column(
-                            mainAxisSize: MainAxisSize.min, 
-                            children: children
+                            mainAxisSize: MainAxisSize.min,
+                            children: children,
                           ),
                         ),
                       ),

@@ -16,6 +16,7 @@ import '../../../domain/repositories/media_service_manager.dart';
 import '../../../data/datasources/emby_api_client.dart';
 import '../../../data/repositories/emby_playback_repository_impl.dart';
 import '../../../domain/usecases/get_playback_plan.dart';
+import '../../../providers/media_detail_provider.dart';
 import '../../../providers/media_with_user_data_provider.dart';
 import '../../../providers/user_data_provider.dart';
 
@@ -25,7 +26,6 @@ class MobileMediaDetailScreen extends StatefulWidget {
     required this.mediaItem,
     required this.selectedServer,
     required this.isFavorite,
-    required this.initialEpisodeIndex,
     required this.playableItems,
     required this.onPlayPressed,
     required this.onOpenTrackSelector,
@@ -35,7 +35,6 @@ class MobileMediaDetailScreen extends StatefulWidget {
   final MediaItem mediaItem;
   final MediaServerInfo selectedServer;
   final bool isFavorite;
-  final int initialEpisodeIndex;
   final List<MediaItem> playableItems;
   final ValueChanged<int>? onPlayPressed;
   final ValueChanged<int> onOpenTrackSelector;
@@ -48,52 +47,101 @@ class MobileMediaDetailScreen extends StatefulWidget {
 
 class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   static const int _playbackPlanBitrate = 10 * 1000 * 1000;
+  static const double _episodeListHorizontalPadding = 18;
+  static const double _episodeChipHorizontalPadding = 18;
+  static const double _episodeChipGap = 10;
 
-  late int _selectedEpisode;
   final Map<String, List<PlaybackStream>> _subtitleOptionsByItem = {};
+  final Map<int, GlobalKey> _episodeItemKeys = {};
+  final GlobalKey _episodeListViewportKey = GlobalKey();
+  final ScrollController _episodeScrollController = ScrollController();
   bool _loadingSubtitles = false;
   int? _selectedSubtitleIndex;
+  String? _lastCenteredEpisodeSignature;
 
   @override
   void initState() {
     super.initState();
-    _selectedEpisode = widget.initialEpisodeIndex;
-    _syncSelectedSubtitleForCurrentItem(notify: false);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        return;
+      }
+      await context.read<MediaDetailProvider>().loadEpisodes(
+        widget.mediaItem.copyWith(playableItems: widget.playableItems),
+      );
+      if (!mounted) {
+        return;
+      }
+      _syncSelectedSubtitleForCurrentItem(notify: false);
+    });
   }
 
   @override
   void didUpdateWidget(covariant MobileMediaDetailScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final episodeChanged =
-        oldWidget.initialEpisodeIndex != widget.initialEpisodeIndex;
-
-    if (episodeChanged) {
-      _selectedEpisode = widget.initialEpisodeIndex;
-    }
-
     if (oldWidget.playableItems != widget.playableItems) {
       _subtitleOptionsByItem.clear();
+      _episodeItemKeys.clear();
+      _lastCenteredEpisodeSignature = null;
     }
 
-    if (oldWidget.playableItems != widget.playableItems || episodeChanged) {
-      _syncSelectedSubtitleForCurrentItem();
+    if (oldWidget.mediaItem.mediaKey != widget.mediaItem.mediaKey ||
+        oldWidget.playableItems != widget.playableItems) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) {
+          return;
+        }
+        await context.read<MediaDetailProvider>().loadEpisodes(
+          widget.mediaItem.copyWith(playableItems: widget.playableItems),
+        );
+        if (!mounted) {
+          return;
+        }
+        _syncSelectedSubtitleForCurrentItem(notify: false);
+      });
     }
   }
 
   @override
+  void dispose() {
+    _episodeScrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final mediaWithUserDataProvider = context.watch<MediaWithUserDataProvider>();
+    final detailProvider = context.watch<MediaDetailProvider>();
+    final mediaWithUserDataProvider = context
+        .watch<MediaWithUserDataProvider>();
     final userDataProvider = context.watch<UserDataProvider>();
     final mediaItem = _resolveLiveMediaItem(
       mediaWithUserDataProvider: mediaWithUserDataProvider,
       userDataProvider: userDataProvider,
     );
-    final episodes = _buildLiveEpisodes(userDataProvider);
+    final isLoading =
+        detailProvider.isLoading ||
+        detailProvider.loadedSeriesKey != widget.mediaItem.mediaKey;
+    final episodes = _buildLiveEpisodes(
+      detailProvider.episodes,
+      userDataProvider,
+    );
     final cast = mediaItem.cast;
-    final clampedEpisode = _selectedEpisode.clamp(0, episodes.length - 1);
-    if (clampedEpisode != _selectedEpisode) {
-      _selectedEpisode = clampedEpisode;
+
+    if (isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+
+    final selectedEpisode = detailProvider.selectedIndex.clamp(
+      0,
+      episodes.length - 1,
+    );
+    _scheduleCenterSelectedEpisode(
+      seriesKey: detailProvider.loadedSeriesKey ?? widget.mediaItem.mediaKey,
+      selectedIndex: selectedEpisode,
+      episodes: episodes,
+      screenWidth: MediaQuery.sizeOf(context).width,
+      episodesLength: episodes.length,
+    );
 
     return Scaffold(
       body: CustomScrollView(
@@ -138,7 +186,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                           child: Builder(
                             builder: (context) {
                               final currentPlayableItem =
-                                  episodes[_selectedEpisode];
+                                  episodes[selectedEpisode];
                               final hasResume =
                                   currentPlayableItem.playbackProgress !=
                                       null &&
@@ -149,14 +197,13 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                               return FilledButton(
                                 onPressed: widget.onPlayPressed == null
                                     ? null
-                                    : () =>
-                                          widget.onPlayPressed!(_selectedEpisode),
+                                    : () => widget.onPlayPressed!(
+                                        selectedEpisode,
+                                      ),
                                 style: FilledButton.styleFrom(
                                   minimumSize: const Size.fromHeight(52),
                                 ),
-                                child: Text(
-                                  hasResume ? '继续播放' : '立即播放',
-                                ),
+                                child: Text(hasResume ? '继续播放' : '立即播放'),
                               );
                             },
                           ),
@@ -182,21 +229,41 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 18),
-                            child: Text(
-                              '选集列表',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.titleColor,
-                              ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 18),
+                            child: Row(
+                              children: [
+                                const Expanded(
+                                  child: Text(
+                                    '选集列表',
+                                    style: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w700,
+                                      color: AppTheme.titleColor,
+                                    ),
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: episodes.isEmpty
+                                      ? null
+                                      : () => _showAllEpisodes(
+                                          context,
+                                          episodes: episodes,
+                                          selectedIndex: selectedEpisode,
+                                          detailProvider: detailProvider,
+                                        ),
+                                  icon: const Icon(Icons.grid_view_rounded),
+                                  label: const Text('查看全部'),
+                                ),
+                              ],
                             ),
                           ),
                           const SizedBox(height: 14),
                           SizedBox(
+                            key: _episodeListViewportKey,
                             height: 50,
                             child: ListView.separated(
+                              controller: _episodeScrollController,
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 18,
                               ),
@@ -206,15 +273,14 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                               separatorBuilder: (_, _) =>
                                   const SizedBox(width: 10),
                               itemBuilder: (context, index) {
-                                final isSelected = index == _selectedEpisode;
+                                final isSelected = index == selectedEpisode;
                                 return InkWell(
+                                  key: _episodeItemKeyFor(index),
                                   onTap: () {
-                                    setState(() {
-                                      _selectedEpisode = index;
-                                      _syncSelectedSubtitleForCurrentItem(
-                                        notify: false,
-                                      );
-                                    });
+                                    detailProvider.selectEpisode(index);
+                                    _syncSelectedSubtitleForCurrentItem(
+                                      notify: false,
+                                    );
                                   },
                                   borderRadius: BorderRadius.circular(14),
                                   child: AnimatedContainer(
@@ -274,6 +340,112 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
     );
   }
 
+  GlobalKey _episodeItemKeyFor(int index) {
+    return _episodeItemKeys.putIfAbsent(index, GlobalKey.new);
+  }
+
+  void _scheduleCenterSelectedEpisode({
+    required String seriesKey,
+    required int selectedIndex,
+    required List<MediaItem> episodes,
+    required double screenWidth,
+    required int episodesLength,
+  }) {
+    if (episodesLength <= 0) {
+      return;
+    }
+
+    final signature =
+        '$seriesKey|$selectedIndex|$episodesLength|${screenWidth.round()}';
+    if (_lastCenteredEpisodeSignature == signature) {
+      return;
+    }
+    _lastCenteredEpisodeSignature = signature;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _centerEpisodeChip(
+        index: selectedIndex,
+        episodes: episodes,
+      );
+    });
+  }
+
+  Future<void> _centerEpisodeChip({
+    required int index,
+    required List<MediaItem> episodes,
+  }) async {
+    final viewportContext = _episodeListViewportKey.currentContext;
+    if (viewportContext == null || !_episodeScrollController.hasClients) {
+      return;
+    }
+
+    final viewportBox = viewportContext.findRenderObject() as RenderBox?;
+    if (viewportBox == null) {
+      return;
+    }
+
+    final targetCenterX = _estimatedEpisodeCenterX(
+      context: viewportContext,
+      episodes: episodes,
+      index: index,
+    );
+    final viewportCenterX = viewportBox.size.width / 2;
+    final desiredOffset = targetCenterX - viewportCenterX;
+    final position = _episodeScrollController.position;
+    final clampedOffset = desiredOffset.clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+
+    if ((_episodeScrollController.offset - clampedOffset).abs() < 1) {
+      return;
+    }
+
+    await _episodeScrollController.animateTo(
+      clampedOffset,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  double _estimatedEpisodeCenterX({
+    required BuildContext context,
+    required List<MediaItem> episodes,
+    required int index,
+  }) {
+    var offset = _episodeListHorizontalPadding;
+    for (var itemIndex = 0; itemIndex < index; itemIndex++) {
+      offset += _estimatedEpisodeChipWidth(
+        context,
+        episodes[itemIndex].playbackLabel,
+      );
+      offset += _episodeChipGap;
+    }
+
+    final currentWidth = _estimatedEpisodeChipWidth(
+      context,
+      episodes[index].playbackLabel,
+    );
+    return offset + currentWidth / 2;
+  }
+
+  double _estimatedEpisodeChipWidth(BuildContext context, String label) {
+    final style =
+        Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.white) ??
+        const TextStyle(fontSize: 14, fontWeight: FontWeight.w500);
+    final textPainter = TextPainter(
+      text: TextSpan(text: label, style: style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+
+    return textPainter.width + (_episodeChipHorizontalPadding * 2);
+  }
+
   MediaItem _resolveLiveMediaItem({
     required MediaWithUserDataProvider mediaWithUserDataProvider,
     required UserDataProvider userDataProvider,
@@ -295,8 +467,11 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
     );
   }
 
-  List<MediaItem> _buildLiveEpisodes(UserDataProvider userDataProvider) {
-    return widget.playableItems
+  List<MediaItem> _buildLiveEpisodes(
+    List<MediaItem> episodes,
+    UserDataProvider userDataProvider,
+  ) {
+    return episodes
         .map(
           (episode) => episode.copyWith(
             playbackProgress:
@@ -305,6 +480,154 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
           ),
         )
         .toList(growable: false);
+  }
+
+  Future<void> _showAllEpisodes(
+    BuildContext context, {
+    required List<MediaItem> episodes,
+    required int selectedIndex,
+    required MediaDetailProvider detailProvider,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.backgroundColor,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) {
+        return SafeArea(
+          child: FractionallySizedBox(
+            heightFactor: 0.8,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                  child: Row(
+                    children: [
+                      Text(
+                        '全部剧集',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${episodes.length} 集',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                    itemCount: episodes.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      final episode = episodes[index];
+                      final isSelected = index == selectedIndex;
+                      final progress = episode.playbackProgress;
+                      final hasProgress =
+                          progress != null && progress.position > Duration.zero;
+                      return Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () {
+                            detailProvider.selectEpisode(index);
+                            _syncSelectedSubtitleForCurrentItem(notify: false);
+                            Navigator.of(context).pop();
+                          },
+                          child: Ink(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 14,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? Colors.blue.withValues(alpha: 0.18)
+                                  : AppTheme.cardColor,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: isSelected
+                                    ? Colors.blue.withValues(alpha: 0.7)
+                                    : Colors.white.withValues(alpha: 0.06),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        episode.playbackLabel,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        episode.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
+                                      ),
+                                      if (hasProgress) ...[
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          '已看到 ${_formatProgressText(progress)}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelSmall
+                                              ?.copyWith(
+                                                color: Colors.blue.shade200,
+                                              ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Icon(
+                                  isSelected
+                                      ? Icons.check_circle_rounded
+                                      : Icons.chevron_right_rounded,
+                                  color: isSelected
+                                      ? Colors.blue.shade300
+                                      : Colors.white54,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatProgressText(MediaPlaybackProgress progress) {
+    final totalSeconds = progress.duration.inSeconds;
+    if (totalSeconds <= 0) {
+      return '${progress.position.inMinutes} 分钟';
+    }
+    final percent =
+        ((progress.position.inMilliseconds / progress.duration.inMilliseconds) *
+                100)
+            .clamp(0, 100)
+            .round();
+    return '$percent%';
   }
 
   void _showAllCast(BuildContext context, List<Cast> cast) {
@@ -370,8 +693,16 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   }
 
   MediaItem get _currentPlayableItem {
-    final episodes = _buildLiveEpisodes(context.read<UserDataProvider>());
-    return episodes[_selectedEpisode.clamp(0, episodes.length - 1)];
+    final detailProvider = context.read<MediaDetailProvider>();
+    final episodes = _buildLiveEpisodes(
+      detailProvider.episodes,
+      context.read<UserDataProvider>(),
+    );
+    final selectedIndex = detailProvider.selectedIndex.clamp(
+      0,
+      episodes.length - 1,
+    );
+    return episodes[selectedIndex];
   }
 
   String get _subtitleButtonLabel {

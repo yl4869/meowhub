@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core/utils/emby_ticks.dart';
 import '../../core/services/security_service.dart';
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/playback_plan.dart';
@@ -36,6 +37,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     bool? requireAvc,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
+    String? playSessionId,
+    Duration startPosition = Duration.zero,
   }) async {
     final normalizedAudioIndex = _normalizeSelectedIndex(audioStreamIndex);
     final normalizedSubtitleIndex = _normalizeSelectedIndex(
@@ -48,6 +51,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       requireAvc: requireAvc,
       audioStreamIndex: normalizedAudioIndex,
       subtitleStreamIndex: normalizedSubtitleIndex,
+      playSessionId: playSessionId,
+      startPositionTicks: durationToEmbyTicks(startPosition),
     );
     _evictExpiredEntries();
 
@@ -67,6 +72,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       requireAvc: requireAvc,
       audioStreamIndex: normalizedAudioIndex,
       subtitleStreamIndex: normalizedSubtitleIndex,
+      playSessionId: playSessionId,
+      startPosition: startPosition,
     );
     _ongoingPlans[cacheKey] = future;
 
@@ -90,6 +97,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     bool? requireAvc,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
+    String? playSessionId,
+    Duration startPosition = Duration.zero,
   }) async {
     final info = await _apiClient.getPlaybackInfo(
       itemId: item.dataSourceId,
@@ -97,15 +106,20 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       requireAvc: requireAvc,
       audioStreamIndex: audioStreamIndex,
       subtitleStreamIndex: subtitleStreamIndex,
+      playSessionId: playSessionId,
+      startPosition: startPosition,
     );
 
     final source = _pickBestSource(info);
+    final transcodingUrl = _pickTranscodingUrl(info, source);
     final url = await _buildFinalUrl(
       item,
       info,
       source,
+      transcodingUrl: transcodingUrl,
       audioStreamIndex: audioStreamIndex,
       subtitleStreamIndex: subtitleStreamIndex,
+      startPosition: startPosition,
     );
 
     // 预读 token 以拼接外部字幕的绝对地址
@@ -176,7 +190,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     }
     return PlaybackPlan(
       url: url,
-      playSessionId: info.playSessionId,
+      isTranscoding: transcodingUrl != null,
+      playSessionId: info.playSessionId ?? playSessionId,
       mediaSourceId: source.id,
       audioStreams: audio,
       subtitleStreams: subs,
@@ -215,17 +230,22 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     MediaItem item,
     EmbyPlaybackInfoDto info,
     EmbyMediaSourceDto source, {
+    String? transcodingUrl,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
+    Duration startPosition = Duration.zero,
   }) async {
     final token =
         await _securityService.readAccessToken(
           namespace: _apiClient.securityNamespace,
         ) ??
         '';
-    final transcodingUrl = _pickTranscodingUrl(info, source);
     if (transcodingUrl != null) {
-      return _resolveAuthorizedUrl(transcodingUrl, token);
+      return _resolveAuthorizedUrl(
+        transcodingUrl,
+        token,
+        startPosition: startPosition,
+      );
     }
 
     final directUrl = Uri.parse(
@@ -237,6 +257,8 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       if (audioStreamIndex != null) 'AudioStreamIndex': '$audioStreamIndex',
       if (subtitleStreamIndex != null)
         'SubtitleStreamIndex': '$subtitleStreamIndex',
+      if (startPosition > Duration.zero)
+        'StartTimeTicks': '${durationToEmbyTicks(startPosition)}',
       if (token.isNotEmpty) 'api_key': token,
     };
     return directUrl.replace(queryParameters: queryParameters).toString();
@@ -266,12 +288,20 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     return null;
   }
 
-  String _resolveAuthorizedUrl(String rawUrl, String token) {
+  String _resolveAuthorizedUrl(
+    String rawUrl,
+    String token, {
+    Duration startPosition = Duration.zero,
+  }) {
     final isAbsolute =
         rawUrl.startsWith('http://') || rawUrl.startsWith('https://');
     final base = isAbsolute ? rawUrl : '${_apiClient.serverUrl}$rawUrl';
     final uri = Uri.parse(base);
     final queryParameters = Map<String, String>.from(uri.queryParameters);
+    if (startPosition > Duration.zero) {
+      queryParameters['StartTimeTicks'] =
+          '${durationToEmbyTicks(startPosition)}';
+    }
     if (token.isNotEmpty) {
       queryParameters['api_key'] = token;
     }
@@ -287,6 +317,8 @@ class _PlaybackPlanCacheKey {
     required this.requireAvc,
     required this.audioStreamIndex,
     required this.subtitleStreamIndex,
+    required this.playSessionId,
+    required this.startPositionTicks,
   });
 
   final String namespace;
@@ -295,6 +327,8 @@ class _PlaybackPlanCacheKey {
   final bool? requireAvc;
   final int? audioStreamIndex;
   final int? subtitleStreamIndex;
+  final String? playSessionId;
+  final int startPositionTicks;
 
   @override
   bool operator ==(Object other) {
@@ -304,7 +338,9 @@ class _PlaybackPlanCacheKey {
         other.maxStreamingBitrate == maxStreamingBitrate &&
         other.requireAvc == requireAvc &&
         other.audioStreamIndex == audioStreamIndex &&
-        other.subtitleStreamIndex == subtitleStreamIndex;
+        other.subtitleStreamIndex == subtitleStreamIndex &&
+        other.playSessionId == playSessionId &&
+        other.startPositionTicks == startPositionTicks;
   }
 
   @override
@@ -315,6 +351,8 @@ class _PlaybackPlanCacheKey {
     requireAvc,
     audioStreamIndex,
     subtitleStreamIndex,
+    playSessionId,
+    startPositionTicks,
   );
 }
 

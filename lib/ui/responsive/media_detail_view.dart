@@ -63,9 +63,8 @@ class _MediaDetailViewState extends State<MediaDetailView> {
         final hasPlayableUrl = playableItems.any(
           (item) => item.playUrl?.isNotEmpty ?? false,
         );
-        final resumePlayableItemId = userDataProvider.resumePlayableItemIdForItem(
-          mediaItem,
-        );
+        final resumePlayableItemId = userDataProvider
+            .resumePlayableItemIdForItem(mediaItem);
         final fallbackEpisodeIndex = userDataProvider.episodeIndexForItem(
           mediaItem,
         );
@@ -127,7 +126,6 @@ class _MediaDetailViewState extends State<MediaDetailView> {
               mediaItem: mediaItem,
               selectedServer: selectedServer,
               isFavorite: isFavorite,
-              initialEpisodeIndex: initialEpisodeIndex,
               playableItems: playableItems,
               onPlayPressed: resolvePlayPressed(),
               onOpenTrackSelector: (index) =>
@@ -164,7 +162,10 @@ class _MediaDetailViewState extends State<MediaDetailView> {
       return;
     }
 
-    final selectedIndex = initialEpisodeIndex.clamp(0, playableItems.length - 1);
+    final selectedIndex = initialEpisodeIndex.clamp(
+      0,
+      playableItems.length - 1,
+    );
     final selectedItem = playableItems[selectedIndex];
     final progress = selectedItem.playbackProgress;
     final signature =

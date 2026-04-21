@@ -8,5 +8,7 @@ abstract class PlaybackRepository {
     bool? requireAvc,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
+    String? playSessionId,
+    Duration startPosition = Duration.zero,
   });
 }

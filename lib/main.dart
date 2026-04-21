@@ -18,6 +18,7 @@ import 'domain/entities/media_service_config.dart';
 import 'domain/repositories/i_media_repository.dart';
 import 'domain/repositories/media_service_manager.dart';
 import 'providers/app_provider.dart';
+import 'providers/media_detail_provider.dart';
 import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
 import 'providers/user_data_provider.dart';
@@ -140,7 +141,12 @@ class _MeowHubAppState extends State<MeowHubApp> {
             return const _RouteErrorView(message: '没有接收到作品详情数据，请从首页重新进入。');
           }
 
-          return MediaDetailView(mediaItem: mediaItem);
+          return ChangeNotifierProvider(
+            create: (context) => MediaDetailProvider(
+              userDataProvider: context.read<UserDataProvider>(),
+            ),
+            child: MediaDetailView(mediaItem: mediaItem),
+          );
         },
       ),
       GoRoute(

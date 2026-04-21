@@ -1,6 +1,7 @@
 class PlaybackPlan {
   const PlaybackPlan({
     required this.url,
+    this.isTranscoding = false,
     this.playSessionId,
     this.mediaSourceId,
     this.audioStreams = const [],
@@ -8,6 +9,7 @@ class PlaybackPlan {
   });
 
   final String url; // absolute url to open
+  final bool isTranscoding;
   final String? playSessionId;
   final String? mediaSourceId;
   final List<PlaybackStream> audioStreams;
