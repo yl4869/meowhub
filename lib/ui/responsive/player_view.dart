@@ -39,7 +39,7 @@ class _PlayerViewState extends State<PlayerView> {
   static const List<PlayerResolutionOption> _resolutionOptions = [
     PlayerResolutionOption(
       label: 'Auto',
-      maxStreamingBitrate: 10 * 1000 * 1000,
+      maxStreamingBitrate: 1000 * 1000 * 1000,
     ),
     PlayerResolutionOption(
       label: '1080P',

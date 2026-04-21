@@ -46,7 +46,7 @@ class MobileMediaDetailScreen extends StatefulWidget {
 }
 
 class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
-  static const int _playbackPlanBitrate = 10 * 1000 * 1000;
+  static const int _playbackPlanBitrate = 1000 * 1000 * 1000;
   static const double _episodeListHorizontalPadding = 18;
   static const double _episodeChipHorizontalPadding = 18;
   static const double _episodeChipGap = 10;
