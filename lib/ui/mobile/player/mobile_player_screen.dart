@@ -223,20 +223,34 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   bool get _isPlaying => _latestStatus?.isPlaying ?? false;
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
-    final allowPositionRegression = _consumeManualSeekAllowance(
+    final isManualSeekAction = _consumeManualSeekAllowance(
       status.position,
     );
     if (_shouldShieldInitialProgress(status)) {
       return;
     }
+
+    if (_isScrubbing || isManualSeekAction) {
+      _applyValidStatusUpdate(status, allowPositionRegression: true);
+      return;
+    }
+
     if (_isExiting ||
         _shouldIgnoreZeroProgressUpdate(status) ||
         _shouldIgnoreRegressiveProgressUpdate(
           status,
-          allowPositionRegression: allowPositionRegression,
+          allowPositionRegression: false,
         )) {
       return;
     }
+
+    _applyValidStatusUpdate(status, allowPositionRegression: false);
+  }
+
+  void _applyValidStatusUpdate(
+    MeowVideoPlaybackStatus status, {
+    required bool allowPositionRegression,
+  }) {
     _latestStatus = status;
     if (status.isInitialized) {
       _lastStablePlaybackProgress = MediaPlaybackProgress(
