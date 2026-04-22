@@ -18,23 +18,13 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
 
   @override
   Future<List<WatchHistoryItem>> getUnifiedHistory() async {
-    final embyDtos = await _embyRemoteDataSource.getHistory();
-    final embyHistory = embyDtos.map(_mapEmbyDtoToEntity).toList();
-    final localHistory = await _localDataSource.getHistory();
+    final embyHistory = await _fetchAndCacheEmbyHistory();
+    final localHistory = (await _localDataSource.getHistory())
+        .map((record) => record.toWatchHistoryItem())
+        .where((item) => item.sourceType == WatchSourceType.local)
+        .toList(growable: false);
 
-    final merged = <String, WatchHistoryItem>{};
-    for (final item in embyHistory) {
-      merged[item.uniqueKey] = item;
-    }
-    for (final record in localHistory) {
-      final item = record.toWatchHistoryItem();
-      final existing = merged[item.uniqueKey];
-      if (existing == null || item.updatedAt.isAfter(existing.updatedAt)) {
-        merged[item.uniqueKey] = item;
-      }
-    }
-
-    final unifiedHistory = merged.values.toList(growable: false)
+    final unifiedHistory = [...embyHistory, ...localHistory]
       ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
     return unifiedHistory;
   }
@@ -43,16 +33,13 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   Future<List<WatchHistoryItem>> getHistoryBySource(
     WatchSourceType sourceType,
   ) async {
-    final localHistory = (await _localDataSource.getHistory())
-        .map((record) => record.toWatchHistoryItem())
-        .where((item) => item.sourceType == sourceType)
-        .toList(growable: false);
     final history = switch (sourceType) {
-      WatchSourceType.emby => _mergeByLatest([
-        ...(await _embyRemoteDataSource.getHistory()).map(_mapEmbyDtoToEntity),
-        ...localHistory,
-      ]),
-      WatchSourceType.local => localHistory,
+      WatchSourceType.emby => await _fetchAndCacheEmbyHistory(),
+      WatchSourceType.local =>
+        (await _localDataSource.getHistory())
+            .map((record) => record.toWatchHistoryItem())
+            .where((item) => item.sourceType == sourceType)
+            .toList(growable: false),
     };
 
     history.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
@@ -149,14 +136,16 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
     );
   }
 
-  List<WatchHistoryItem> _mergeByLatest(List<WatchHistoryItem> items) {
-    final merged = <String, WatchHistoryItem>{};
-    for (final item in items) {
-      final existing = merged[item.uniqueKey];
-      if (existing == null || item.updatedAt.isAfter(existing.updatedAt)) {
-        merged[item.uniqueKey] = item;
-      }
-    }
-    return merged.values.toList(growable: false);
+  Future<List<WatchHistoryItem>> _fetchAndCacheEmbyHistory() async {
+    final embyHistory = (await _embyRemoteDataSource.getHistory())
+        .map(_mapEmbyDtoToEntity)
+        .toList(growable: false);
+    await _localDataSource.replaceHistoryForSource(
+      WatchSourceType.emby,
+      embyHistory
+          .map(PlaybackRecord.fromWatchHistoryItem)
+          .toList(growable: false),
+    );
+    return embyHistory;
   }
 }

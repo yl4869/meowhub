@@ -544,7 +544,11 @@ class UserDataProvider extends ChangeNotifier {
       final remoteHistory = await _watchHistoryRepository.getHistoryBySource(
         WatchSourceType.emby,
       );
-      _mergeWatchHistoryItems(remoteHistory, notify: false);
+      _replaceWatchHistoryItemsForSource(
+        WatchSourceType.emby,
+        remoteHistory,
+        notify: false,
+      );
       final firstItem = _watchHistory.isEmpty ? null : _watchHistory.first;
       debugPrint(
         '[Resume][Provider][Load] source=emby count=${_watchHistory.length} '
@@ -700,6 +704,44 @@ class UserDataProvider extends ChangeNotifier {
 
     _watchHistory = merged.values.toList(growable: false)
       ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    _rebuildDerivedProgressState();
+
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  void _replaceWatchHistoryItemsForSource(
+    WatchSourceType sourceType,
+    Iterable<WatchHistoryItem> items, {
+    bool notify = true,
+  }) {
+    final replacements = items
+        .where((item) => item.sourceType == sourceType)
+        .toList(growable: false);
+    final retained = _watchHistory
+        .where((item) => item.sourceType != sourceType)
+        .toList(growable: false);
+    final nextHistory = [...retained, ...replacements]
+      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+
+    if (_watchHistory.length == nextHistory.length) {
+      var changed = false;
+      for (var index = 0; index < nextHistory.length; index++) {
+        if (!_isSameWatchHistoryItem(
+          _watchHistory[index],
+          nextHistory[index],
+        )) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) {
+        return;
+      }
+    }
+
+    _watchHistory = nextHistory;
     _rebuildDerivedProgressState();
 
     if (notify) {
