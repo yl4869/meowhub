@@ -56,7 +56,7 @@ class TabletPlayerScreen extends StatefulWidget {
 }
 
 class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
-  static const Duration _backgroundSyncInterval = Duration(minutes: 1);
+  static const Duration _backgroundSyncInterval = Duration(seconds: 15);
   static const Duration _meaningfulProgressThreshold = Duration(seconds: 5);
   static const Duration _progressRollbackTolerance = Duration(seconds: 3);
 
@@ -234,9 +234,7 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
     return player;
   }
 
-  Future<void> _disposePlayerSafely(
-    Player player,
-  ) async {
+  Future<void> _disposePlayerSafely(Player player) async {
     try {
       player.dispose();
     } catch (_) {}

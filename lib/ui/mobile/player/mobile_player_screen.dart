@@ -70,7 +70,7 @@ class MobilePlayerScreen extends StatefulWidget {
 }
 
 class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
-  static const Duration _backgroundSyncInterval = Duration(minutes: 1);
+  static const Duration _backgroundSyncInterval = Duration(seconds: 15);
   static const Duration _exitSyncTimeout = Duration(seconds: 8);
   static const Duration _initialSeekStabilityTolerance = Duration(seconds: 2);
   static const Duration _playbackStartStabilityThreshold = Duration(seconds: 1);
@@ -78,7 +78,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   static const Duration _progressRollbackTolerance = Duration(seconds: 3);
   static const Duration _manualSeekTargetTolerance = Duration(seconds: 15);
   static const Duration _controlsAutoHideDelay = Duration(seconds: 3);
-  static const double _progressBarTouchHeight = 44;
+  static const double _progressBarTouchHeight = 30;
   static const List<double> _playbackSpeeds = [1.0, 1.25, 1.5, 2.0];
 
   final GlobalKey _playerBoundaryKey = GlobalKey();
@@ -223,9 +223,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   bool get _isPlaying => _latestStatus?.isPlaying ?? false;
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
-    final isManualSeekAction = _consumeManualSeekAllowance(
-      status.position,
-    );
+    final isManualSeekAction = _consumeManualSeekAllowance(status.position);
     if (_shouldShieldInitialProgress(status)) {
       return;
     }
@@ -1098,9 +1096,11 @@ class _TopControlBar extends StatelessWidget {
             state.widget.mediaItem.title,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Colors.white.withValues(alpha: 0.92),
-              fontWeight: FontWeight.w600,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontSize: 19,
+              height: 1.05,
+              color: Colors.white.withValues(alpha: 0.96),
+              fontWeight: FontWeight.w700,
               letterSpacing: 0.2,
               shadows: _premiumShadows,
             ),
@@ -1159,7 +1159,7 @@ class _BottomControlBar extends StatelessWidget {
               progress: cappedPosition,
               total: displayDuration,
               timeLabelLocation: progress_bar.TimeLabelLocation.none,
-              barHeight: state._isScrubbing ? 4 : 2,
+              barHeight: state._isScrubbing ? 4 : 3,
               baseBarColor: Colors.white.withValues(alpha: 0.18),
               progressBarColor: Colors.white,
               thumbColor: const Color(0xFFE5484D),
@@ -1181,29 +1181,31 @@ class _BottomControlBar extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 2),
+        const SizedBox(height: 0),
         Row(
           children: [
             Text(
               formatDurationLabel(cappedPosition),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.white.withValues(alpha: 0.72),
-                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.98),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
                 shadows: _premiumShadows,
               ),
             ),
             const Spacer(),
             Text(
-              _formatRemainingTime(cappedPosition, displayDuration),
+              formatDurationLabel(displayDuration),
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.white.withValues(alpha: 0.72),
-                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.84),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
                 shadows: _premiumShadows,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Row(
           children: [
             _ControlDock(
@@ -1390,12 +1392,6 @@ class _ControlDock extends StatelessWidget {
   }
 }
 
-String _formatRemainingTime(Duration position, Duration duration) {
-  final remaining = duration - position;
-  final normalized = remaining.isNegative ? Duration.zero : remaining;
-  return '-${formatDurationLabel(normalized)}';
-}
-
 class _UnavailablePlayerView extends StatelessWidget {
   const _UnavailablePlayerView({required this.title});
 
@@ -1485,7 +1481,7 @@ class _OptionDrawerLayer extends StatelessWidget {
         ? (screenSize.width * 0.6).clamp(200.0, 280.0)
         : (screenSize.width * 0.32).clamp(180.0, 320.0);
 
-    // 竖屏下不占满全高，高度根据内容自适应或限制最大高度
+    // 竖屏下也给一个明确高度，避免抽屉内部的 Flex 在无界高度下报错。
     final drawerHeight = isPortrait
         ? screenSize.height * 0.45
         : screenSize.height;
@@ -1505,16 +1501,14 @@ class _OptionDrawerLayer extends StatelessWidget {
         AnimatedPositioned(
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOutCubic,
-          // 【核心变化】竖屏时固定在右下角，横屏时长条展开
           top: isPortrait ? null : 0,
           bottom: isPortrait ? 20 + MediaQuery.of(context).padding.bottom : 0,
           right: isPortrait ? 16 : 0,
           width: drawerWidth,
-          height: isPortrait ? null : drawerHeight, // 竖屏高度自适应
+          height: isPortrait ? drawerHeight : null,
           child: Material(
             color: Colors.transparent,
             child: ClipRRect(
-              // 竖屏下使用全圆角卡片，横屏下只有左边圆角或无圆角
               borderRadius: BorderRadius.circular(isPortrait ? 24 : 0),
               child: BackdropFilter(
                 filter: ui.ImageFilter.blur(sigmaX: 15, sigmaY: 15),
@@ -1533,10 +1527,9 @@ class _OptionDrawerLayer extends StatelessWidget {
                     borderRadius: BorderRadius.circular(isPortrait ? 24 : 0),
                   ),
                   child: Column(
-                    mainAxisSize: MainAxisSize.min, // 竖屏下包裹内容
+                    mainAxisSize: MainAxisSize.max,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // 顶部标题
                       Row(
                         children: [
                           Expanded(
@@ -1549,7 +1542,6 @@ class _OptionDrawerLayer extends StatelessWidget {
                                   ),
                             ),
                           ),
-                          // 竖屏下关闭按钮可以稍微小一点
                           IconButton(
                             icon: const Icon(
                               Icons.close_rounded,
@@ -1561,12 +1553,11 @@ class _OptionDrawerLayer extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 8),
-                      // 选项列表
-                      Flexible(
+                      Expanded(
                         child: SingleChildScrollView(
                           physics: const BouncingScrollPhysics(),
                           child: Column(
-                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: children,
                           ),
                         ),

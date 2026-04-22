@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/datasources/emby_watch_history_remote_data_source.dart';
@@ -13,8 +15,8 @@ import '../domain/entities/media_item.dart';
 /// 用户个人数据 Provider
 /// 管理用户的收藏、观看历史、播放进度等个人数据
 class UserDataProvider extends ChangeNotifier {
+  static const Duration _serverWatchHistorySyncInterval = Duration(seconds: 15);
   static const Duration _manualSeekRegressionThreshold = Duration(seconds: 30);
-  static const Duration _progressRollbackTolerance = Duration(seconds: 3);
 
   UserDataProvider({
     required MediaServiceManager mediaServiceManager,
@@ -26,6 +28,7 @@ class UserDataProvider extends ChangeNotifier {
     _watchHistoryRepository =
         watchHistoryRepository ?? _buildWatchHistoryRepository();
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
+    _restartServerWatchHistorySync();
     _loadWatchHistory();
   }
 
@@ -39,6 +42,8 @@ class UserDataProvider extends ChangeNotifier {
   final Map<String, String> _recentPlayableItemIds = {};
   List<WatchHistoryItem> _watchHistory = const [];
   bool _isLoading = false; // 防并发加载锁
+  final Set<String> _activePlaybackKeys = <String>{};
+  Timer? _serverWatchHistorySyncTimer;
   // 每个作品的音轨/字幕选择（仅内存保存，退出播放器后继续生效）
   final Map<String, TrackSelection> _trackSelections = {};
 
@@ -379,6 +384,7 @@ class UserDataProvider extends ChangeNotifier {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
   }) async {
+    _setPlaybackActive(mediaItem, active: true);
     final latest = _buildWatchHistoryItemFromMediaItem(
       mediaItem,
       position: position,
@@ -484,6 +490,9 @@ class UserDataProvider extends ChangeNotifier {
         '[Resume][Playback][Stopped][Error] '
         'item=${mediaItem.dataSourceId} error=$e',
       );
+    } finally {
+      _setPlaybackActive(mediaItem, active: false);
+      unawaited(_loadWatchHistory(rethrowOnError: false));
     }
   }
 
@@ -500,8 +509,10 @@ class UserDataProvider extends ChangeNotifier {
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
     _watchHistory = const [];
     _isLoading = false;
+    _activePlaybackKeys.clear();
     _recentEpisodeIndices.clear();
     _recentPlayableItemIds.clear();
+    _restartServerWatchHistorySync();
     notifyListeners();
     _loadWatchHistory();
   }
@@ -536,7 +547,7 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   // Private methods
-  Future<void> _loadWatchHistory() async {
+  Future<void> _loadWatchHistory({bool rethrowOnError = true}) async {
     if (_isLoading) return;
     _isLoading = true;
     try {
@@ -559,10 +570,43 @@ class UserDataProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('[Resume][Provider][Load][Error] source=emby error=$e');
-      rethrow;
+      if (rethrowOnError) {
+        rethrow;
+      }
     } finally {
       _isLoading = false;
     }
+  }
+
+  void _restartServerWatchHistorySync() {
+    _serverWatchHistorySyncTimer?.cancel();
+    final savedConfig = _mediaServiceManager.getSavedConfig();
+    if (savedConfig == null || savedConfig.type != MediaServiceType.emby) {
+      return;
+    }
+
+    _serverWatchHistorySyncTimer = Timer.periodic(
+      _serverWatchHistorySyncInterval,
+      (_) => _syncWatchHistoryFromServerInBackground(),
+    );
+  }
+
+  void _syncWatchHistoryFromServerInBackground() {
+    if (_activePlaybackKeys.isNotEmpty) {
+      return;
+    }
+
+    // ignore: discarded_futures
+    _loadWatchHistory(rethrowOnError: false);
+  }
+
+  void _setPlaybackActive(MediaItem mediaItem, {required bool active}) {
+    final key = mediaItem.mediaKey;
+    if (active) {
+      _activePlaybackKeys.add(key);
+      return;
+    }
+    _activePlaybackKeys.remove(key);
   }
 
   WatchHistoryRepository _buildWatchHistoryRepository() {
@@ -890,6 +934,12 @@ class UserDataProvider extends ChangeNotifier {
     if (resolvedEpisodeIndex != null && resolvedEpisodeIndex >= 0) {
       _recentEpisodeIndices[seriesId] = resolvedEpisodeIndex;
     }
+  }
+
+  @override
+  void dispose() {
+    _serverWatchHistorySyncTimer?.cancel();
+    super.dispose();
   }
 }
 
