@@ -37,12 +37,13 @@ class EmbyApiClient {
                receiveTimeout: const Duration(seconds: 20),
                headers: {
                  'Content-Type': 'application/json',
-                  // 关键修改 A：将 User-Agent 伪装成浏览器
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                  // 关键修改 B：完全模仿网页端的 Authorization 格式
-                  'X-Emby-Authorization':
-                  'MediaBrowser Client="Emby Web", Device="Firefox", DeviceId="${_normalizeDeviceId(config.deviceId)}", Version="4.8.10.0"',
-                  'X-Emby-Device-Id': _normalizeDeviceId(config.deviceId),
+                 // 关键修改 A：将 User-Agent 伪装成浏览器
+                 'User-Agent':
+                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                 // 关键修改 B：完全模仿网页端的 Authorization 格式
+                 'X-Emby-Authorization':
+                     'MediaBrowser Client="Emby Web", Device="Firefox", DeviceId="${_normalizeDeviceId(config.deviceId)}", Version="4.8.10.0"',
+                 'X-Emby-Device-Id': _normalizeDeviceId(config.deviceId),
                },
              ),
            ) {
@@ -273,7 +274,7 @@ class EmbyApiClient {
   }) async {
     final userId = await _requireUserId();
     final effectiveMaxStreamingBitrate =
-        maxStreamingBitrate ?? 1000 * 1000 * 1000;;
+        maxStreamingBitrate ?? 1000 * 1000 * 1000;
     final startTimeTicks = durationToEmbyTicks(startPosition);
 
     final playbackInfoQuery = <String, dynamic>{
@@ -282,6 +283,7 @@ class EmbyApiClient {
       'IsPlayback': 'true',
       'AutoOpenLiveStream': 'true',
       'MaxStreamingBitrate': '$effectiveMaxStreamingBitrate',
+      'SubtitleMethod': 'External',
       'X-Emby-Client': 'Emby Web', // 即使不改构造函数，这里建议也先填 Web 以绕过服务端限制
       'X-Emby-Device-Name': 'MeowHub Player',
       'X-Emby-Device-Id': _resolvedDeviceId,
@@ -296,6 +298,7 @@ class EmbyApiClient {
     }
 
     optionalBody['MaxStreamingBitrate'] = effectiveMaxStreamingBitrate;
+    optionalBody['SubtitleMethod'] = 'External';
     putIfPresent('RequireAvc', requireAvc);
     putIfPresent('AudioStreamIndex', audioStreamIndex);
     putIfPresent('SubtitleStreamIndex', subtitleStreamIndex);
@@ -341,7 +344,7 @@ class EmbyApiClient {
       'DeviceProfile': _buildMediaKitDeviceProfile(
         deviceId: _resolvedDeviceId,
         maxStreamingBitrate: effectiveMaxStreamingBitrate,
-    ),
+      ),
     };
     final resp = await post<Map<String, dynamic>>(
       '/emby/Items/$itemId/PlaybackInfo',
@@ -350,11 +353,59 @@ class EmbyApiClient {
       headers: {
         'X-Emby-Device-Id': _resolvedDeviceId,
         // 关键：在请求头里也补全授权信息
-        'X-Emby-Authorization': 'MediaBrowser Client="Emby Web", Device="MeowHub Player", DeviceId="$_resolvedDeviceId", Version="4.8.10.0"',
+        'X-Emby-Authorization':
+            'MediaBrowser Client="Emby Web", Device="MeowHub Player", DeviceId="$_resolvedDeviceId", Version="4.8.10.0"',
       },
     );
     final data = resp.data ?? <String, dynamic>{};
     return EmbyPlaybackInfoDto.fromJson(data);
+  }
+
+  Future<String?> buildSubtitleVttUrl({
+    required String itemId,
+    required int streamIndex,
+    String? mediaSourceId,
+    String? deliveryUrl,
+  }) async {
+    final token =
+        await _securityService.readAccessToken(
+          namespace: _config.credentialNamespace,
+        ) ??
+        '';
+    final normalizedMediaSourceId = mediaSourceId?.trim();
+    if (normalizedMediaSourceId != null && normalizedMediaSourceId.isNotEmpty) {
+      final queryParameters = <String, String>{
+        if (token.isNotEmpty) 'api_key': token,
+      };
+      return Uri.parse(
+        '$serverUrl/emby/Videos/$itemId/'
+        '$normalizedMediaSourceId/Subtitles/$streamIndex/0/Stream.vtt',
+      ).replace(queryParameters: queryParameters).toString();
+    }
+
+    final rawDeliveryUrl = deliveryUrl?.trim();
+    if (rawDeliveryUrl == null || rawDeliveryUrl.isEmpty) {
+      return null;
+    }
+    final isAbsolute =
+        rawDeliveryUrl.startsWith('http://') ||
+        rawDeliveryUrl.startsWith('https://');
+    final base = isAbsolute ? rawDeliveryUrl : '$serverUrl$rawDeliveryUrl';
+    final uri = Uri.parse(base);
+    final rewrittenPath = uri.path.replaceFirst(
+      RegExp(r'Stream\.[^/?.]+$'),
+      'Stream.vtt',
+    );
+    final queryParameters = Map<String, String>.from(uri.queryParameters);
+    if (!queryParameters.containsKey('api_key') && token.isNotEmpty) {
+      queryParameters['api_key'] = token;
+    }
+    return uri
+        .replace(
+          path: rewrittenPath == uri.path ? '${uri.path}.vtt' : rewrittenPath,
+          queryParameters: queryParameters,
+        )
+        .toString();
   }
 
   Future<List<EmbyMediaItemDto>> getEpisodes(String seriesId) async {
@@ -712,7 +763,8 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
   const audioCodecs =
       'aac,alac,ac3,eac3,dts,flac,mp2,mp3,opus,pcm_alaw,pcm_mulaw,pcm_s16le,pcm_s24le,truehd,vorbis,wavpack,wmav2';
   const audioContainers = 'aac,m4a,mp3,flac,ogg,oga,opus,wav,webma,wma';
-  const subtitleFormats = 'srt,subrip,ass,ssa,vtt,webvtt,pgs,pgssub,sup,dvdsub,sub,idx';
+  const subtitleFormats =
+      'srt,subrip,ass,ssa,vtt,webvtt,pgs,pgssub,sup,dvdsub,sub,idx';
 
   return <String, dynamic>{
     'Name': 'MeowHub media_kit',
@@ -722,16 +774,6 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
     'MaxStaticBitrate': maxStreamingBitrate,
     'MusicStreamingTranscodingBitrate': 384000,
     'MaxStaticMusicBitrate': maxStreamingBitrate,
-    'SubtitleProfiles': [
-      // 关键：声明我们支持所有主流格式的“外部”加载，防止服务器强制转码烧录字幕
-      {'Format': 'srt', 'Method': 'External'},
-      {'Format': 'ass', 'Method': 'External'},
-      {'Format': 'ssa', 'Method': 'External'},
-      {'Format': 'vtt', 'Method': 'External'},
-      {'Format': 'pgs', 'Method': 'Embed'}, // PGS 改为内嵌，不强制烧录
-      {'Format': 'pgssub', 'Method': 'Embed'},
-      {'Format': 'subrip', 'Method': 'External'},
-    ],
     'DirectPlayProfiles': [
       {
         'Type': 'Video',
@@ -790,21 +832,9 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
       },
     ],
     'ResponseProfiles': [
-      {
-        'Type': 'Video',
-        'Container': 'ts',
-        'MimeType': 'video/mp2t',
-      },
-      {
-        'Type': 'Video',
-        'Container': 'mp4',
-        'MimeType': 'video/mp4',
-      },
-      {
-        'Type': 'Audio',
-        'Container': 'aac',
-        'MimeType': 'audio/aac',
-      },
+      {'Type': 'Video', 'Container': 'ts', 'MimeType': 'video/mp2t'},
+      {'Type': 'Video', 'Container': 'mp4', 'MimeType': 'video/mp4'},
+      {'Type': 'Audio', 'Container': 'aac', 'MimeType': 'audio/aac'},
     ],
     'ContainerProfiles': [
       {
@@ -886,14 +916,14 @@ Map<String, dynamic> _buildTimestampSafeTranscodingProfile({
     'VideoCodec': videoCodec,
     'AudioCodec': audioCodec,
     // 关键修改 A：声明支持自动寻址，触发 FFmpeg 的 -ss
-    'TranscodeSeekInfo': 'Auto', 
+    'TranscodeSeekInfo': 'Auto',
     // 关键修改 B：必须为 true，让服务器移除 -start_at_zero
-    'CopyTimestamps': true, 
+    'CopyTimestamps': true,
     'BreakOnNonKeyFrames': true, // 提高切片效率
     'MinSegments': 1,
     'SegmentLength': 3,
     // 关键修改 C：必须为 false，解决之前的 500 错误
-    'EnableMpegtsM2TsMode': false, 
+    'EnableMpegtsM2TsMode': false,
     'ManifestSubtitles': manifestSubtitles,
   };
 }

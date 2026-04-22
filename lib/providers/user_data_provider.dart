@@ -17,6 +17,11 @@ import '../domain/entities/media_item.dart';
 class UserDataProvider extends ChangeNotifier {
   static const Duration _serverWatchHistorySyncInterval = Duration(seconds: 15);
   static const Duration _manualSeekRegressionThreshold = Duration(seconds: 30);
+  static const Duration _optimisticSeekProtectionWindow = Duration(seconds: 2);
+  static const Duration _optimisticSeekBackwardTolerance = Duration(
+    milliseconds: 900,
+  );
+  static const Duration _optimisticSeekForwardTolerance = Duration(seconds: 4);
 
   UserDataProvider({
     required MediaServiceManager mediaServiceManager,
@@ -46,6 +51,7 @@ class UserDataProvider extends ChangeNotifier {
   Timer? _serverWatchHistorySyncTimer;
   // 每个作品的音轨/字幕选择（仅内存保存，退出播放器后继续生效）
   final Map<String, TrackSelection> _trackSelections = {};
+  final Map<String, _OptimisticSeekState> _optimisticSeekStates = {};
 
   // Getters
   List<MediaItem> get favoriteItems => _favoriteItems.values.toList();
@@ -157,10 +163,18 @@ class UserDataProvider extends ChangeNotifier {
     MediaItem mediaItem, {
     int? audioIndex,
     int? subtitleIndex,
+    String? audioTitle,
+    String? subtitleTitle,
+    String? subtitleLanguage,
+    String? subtitleUri,
   }) {
     _trackSelections[mediaItem.mediaKey] = TrackSelection(
       audioIndex: audioIndex,
       subtitleIndex: subtitleIndex,
+      audioTitle: audioTitle,
+      subtitleTitle: subtitleTitle,
+      subtitleLanguage: subtitleLanguage,
+      subtitleUri: subtitleUri,
     );
   }
 
@@ -375,6 +389,33 @@ class UserDataProvider extends ChangeNotifier {
     }
   }
 
+  void registerOptimisticSeekForItem(
+    MediaItem mediaItem, {
+    required Duration position,
+    Duration duration = Duration.zero,
+    int? episodeIndex,
+    bool notify = true,
+  }) {
+    final historyItem = _buildWatchHistoryItemFromMediaItem(
+      mediaItem,
+      position: position,
+      duration: duration,
+    );
+    _optimisticSeekStates[historyItem.uniqueKey] = _OptimisticSeekState(
+      targetPosition: historyItem.position,
+      expiresAt: DateTime.now().add(_optimisticSeekProtectionWindow),
+    );
+    _upsertWatchHistory(
+      historyItem,
+      episodeIndex: episodeIndex,
+      notify: false,
+      allowPositionRegression: true,
+    );
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
   Future<void> startPlaybackForItem(
     MediaItem mediaItem, {
     required Duration position,
@@ -510,6 +551,7 @@ class UserDataProvider extends ChangeNotifier {
     _watchHistory = const [];
     _isLoading = false;
     _activePlaybackKeys.clear();
+    _optimisticSeekStates.clear();
     _recentEpisodeIndices.clear();
     _recentPlayableItemIds.clear();
     _restartServerWatchHistorySync();
@@ -607,6 +649,7 @@ class UserDataProvider extends ChangeNotifier {
       return;
     }
     _activePlaybackKeys.remove(key);
+    _optimisticSeekStates.remove(key);
   }
 
   WatchHistoryRepository _buildWatchHistoryRepository() {
@@ -801,10 +844,47 @@ class UserDataProvider extends ChangeNotifier {
     if (existing == null) {
       return incoming;
     }
+    final optimisticResolved = _resolveOptimisticSeekConflict(
+      existing,
+      incoming,
+    );
+    if (optimisticResolved != null) {
+      return optimisticResolved;
+    }
     return _mergeWatchHistoryFields(
       existing,
       incoming,
       allowPositionRegression: allowPositionRegression,
+    );
+  }
+
+  WatchHistoryItem? _resolveOptimisticSeekConflict(
+    WatchHistoryItem existing,
+    WatchHistoryItem incoming,
+  ) {
+    final state = _optimisticSeekStates[existing.uniqueKey];
+    if (state == null) {
+      return null;
+    }
+    if (DateTime.now().isAfter(state.expiresAt)) {
+      _optimisticSeekStates.remove(existing.uniqueKey);
+      return null;
+    }
+
+    final target = state.targetPosition;
+    final lowerBound = target - _optimisticSeekBackwardTolerance;
+    final upperBound = target + _optimisticSeekForwardTolerance;
+    final isConsistent =
+        incoming.position >= lowerBound && incoming.position <= upperBound;
+    if (isConsistent) {
+      _optimisticSeekStates.remove(existing.uniqueKey);
+      return null;
+    }
+
+    return _mergeWatchHistoryFields(
+      existing,
+      incoming.copyWith(position: existing.position),
+      allowPositionRegression: false,
     );
   }
 
@@ -943,10 +1023,31 @@ class UserDataProvider extends ChangeNotifier {
   }
 }
 
-/// 用户在 UI 中选择的音轨/字幕索引（可空表示跟随服务器默认）。
+/// 用户在 UI 中选择的音轨/字幕配置（可空表示跟随服务器默认）。
 class TrackSelection {
-  const TrackSelection({this.audioIndex, this.subtitleIndex});
+  const TrackSelection({
+    this.audioIndex,
+    this.subtitleIndex,
+    this.audioTitle,
+    this.subtitleTitle,
+    this.subtitleLanguage,
+    this.subtitleUri,
+  });
 
   final int? audioIndex; // null 表示未指定，沿用默认
   final int? subtitleIndex; // null 表示未指定，沿用默认 / -1 表示明确关闭字幕
+  final String? audioTitle;
+  final String? subtitleTitle;
+  final String? subtitleLanguage;
+  final String? subtitleUri;
+}
+
+class _OptimisticSeekState {
+  const _OptimisticSeekState({
+    required this.targetPosition,
+    required this.expiresAt,
+  });
+
+  final Duration targetPosition;
+  final DateTime expiresAt;
 }

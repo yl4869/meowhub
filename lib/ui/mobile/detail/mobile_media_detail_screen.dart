@@ -51,11 +51,14 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   static const double _episodeChipHorizontalPadding = 18;
   static const double _episodeChipGap = 10;
 
+  final Map<String, List<PlaybackStream>> _audioOptionsByItem = {};
+  final Map<String, String?> _mediaSourceIdByItem = {};
   final Map<String, List<PlaybackStream>> _subtitleOptionsByItem = {};
   final Map<int, GlobalKey> _episodeItemKeys = {};
   final GlobalKey _episodeListViewportKey = GlobalKey();
   final ScrollController _episodeScrollController = ScrollController();
-  bool _loadingSubtitles = false;
+  bool _loadingTrackOptions = false;
+  int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
   String? _lastCenteredEpisodeSignature;
 
@@ -72,21 +75,27 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       if (!mounted) {
         return;
       }
-      _syncSelectedSubtitleForCurrentItem(notify: false);
+      _syncSelectedTrackSelectionsForCurrentItem(notify: false);
     });
   }
 
   @override
   void didUpdateWidget(covariant MobileMediaDetailScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.playableItems != widget.playableItems) {
+    final playableItemsChanged = !_hasSamePlayableEntries(
+      oldWidget.playableItems,
+      widget.playableItems,
+    );
+    if (playableItemsChanged) {
+      _audioOptionsByItem.clear();
+      _mediaSourceIdByItem.clear();
       _subtitleOptionsByItem.clear();
       _episodeItemKeys.clear();
       _lastCenteredEpisodeSignature = null;
     }
 
     if (oldWidget.mediaItem.mediaKey != widget.mediaItem.mediaKey ||
-        oldWidget.playableItems != widget.playableItems) {
+        playableItemsChanged) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         if (!mounted) {
           return;
@@ -97,9 +106,24 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
         if (!mounted) {
           return;
         }
-        _syncSelectedSubtitleForCurrentItem(notify: false);
+        _syncSelectedTrackSelectionsForCurrentItem(notify: false);
       });
     }
+  }
+
+  bool _hasSamePlayableEntries(List<MediaItem> left, List<MediaItem> right) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      if (left[index].mediaKey != right[index].mediaKey) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @override
@@ -168,16 +192,14 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 14),
-                    _MetaChipRow(
-                      mediaItem: mediaItem,
-                      trailing: SizedBox(
-                        width: 104,
-                        child: _SubtitlePickerButton(
-                          loading: _loadingSubtitles,
-                          label: _subtitleButtonLabel,
-                          onTap: _openSubtitleSelector,
-                        ),
-                      ),
+                    _MetaChipRow(mediaItem: mediaItem),
+                    const SizedBox(height: 14),
+                    _PlaybackConfigSection(
+                      audioLabel: _audioButtonLabel,
+                      subtitleLabel: _subtitleButtonLabel,
+                      loading: _loadingTrackOptions,
+                      onAudioTap: _openAudioSelector,
+                      onSubtitleTap: _openSubtitleSelector,
                     ),
                     const SizedBox(height: 18),
                     Row(
@@ -197,9 +219,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                               return FilledButton(
                                 onPressed: widget.onPlayPressed == null
                                     ? null
-                                    : () => widget.onPlayPressed!(
-                                        selectedEpisode,
-                                      ),
+                                    : () => _handlePlayPressed(selectedEpisode),
                                 style: FilledButton.styleFrom(
                                   minimumSize: const Size.fromHeight(52),
                                 ),
@@ -278,7 +298,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                                   key: _episodeItemKeyFor(index),
                                   onTap: () {
                                     detailProvider.selectEpisode(index);
-                                    _syncSelectedSubtitleForCurrentItem(
+                                    _syncSelectedTrackSelectionsForCurrentItem(
                                       notify: false,
                                     );
                                   },
@@ -366,10 +386,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       if (!mounted) {
         return;
       }
-      _centerEpisodeChip(
-        index: selectedIndex,
-        episodes: episodes,
-      );
+      _centerEpisodeChip(index: selectedIndex, episodes: episodes);
     });
   }
 
@@ -532,7 +549,9 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                           borderRadius: BorderRadius.circular(16),
                           onTap: () {
                             detailProvider.selectEpisode(index);
-                            _syncSelectedSubtitleForCurrentItem(notify: false);
+                            _syncSelectedTrackSelectionsForCurrentItem(
+                              notify: false,
+                            );
                             Navigator.of(context).pop();
                           },
                           child: Ink(
@@ -573,9 +592,9 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                                         episode.title,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
                                       ),
                                       if (hasProgress) ...[
                                         const SizedBox(height: 6),
@@ -705,8 +724,27 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
     return episodes[selectedIndex];
   }
 
+  String get _audioButtonLabel {
+    if (_loadingTrackOptions) {
+      return '加载中';
+    }
+    final selectedIndex = _selectedAudioIndex;
+    if (selectedIndex == null) {
+      return '默认音轨';
+    }
+    final options = _audioOptionsByItem[_currentPlayableItem.mediaKey];
+    final matched = options?.where((stream) => stream.index == selectedIndex);
+    final title = matched?.isNotEmpty == true
+        ? matched!.first.title
+        : context
+              .read<UserDataProvider>()
+              .trackSelectionForItem(_currentPlayableItem)
+              ?.audioTitle;
+    return title ?? '音轨';
+  }
+
   String get _subtitleButtonLabel {
-    if (_loadingSubtitles) {
+    if (_loadingTrackOptions) {
       return '加载中';
     }
     final selectedIndex = _selectedSubtitleIndex ?? -1;
@@ -715,55 +753,73 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
     }
     final options = _subtitleOptionsByItem[_currentPlayableItem.mediaKey];
     final matched = options?.where((stream) => stream.index == selectedIndex);
-    final title = matched?.isNotEmpty == true ? matched!.first.title : null;
+    final title = matched?.isNotEmpty == true
+        ? matched!.first.title
+        : context
+              .read<UserDataProvider>()
+              .trackSelectionForItem(_currentPlayableItem)
+              ?.subtitleTitle;
     return title ?? '字幕';
   }
 
-  void _syncSelectedSubtitleForCurrentItem({bool notify = true}) {
+  void _syncSelectedTrackSelectionsForCurrentItem({bool notify = true}) {
     final saved = context.read<UserDataProvider>().trackSelectionForItem(
       _currentPlayableItem,
     );
-    final nextValue = saved?.subtitleIndex ?? -1;
+    final nextAudioValue = saved?.audioIndex;
+    final nextSubtitleValue = saved?.subtitleIndex ?? -1;
     if (!notify || !mounted) {
-      _selectedSubtitleIndex = nextValue;
+      _selectedAudioIndex = nextAudioValue;
+      _selectedSubtitleIndex = nextSubtitleValue;
       return;
     }
     setState(() {
-      _selectedSubtitleIndex = nextValue;
+      _selectedAudioIndex = nextAudioValue;
+      _selectedSubtitleIndex = nextSubtitleValue;
     });
   }
 
-  Future<List<PlaybackStream>> _ensureSubtitleOptions() async {
+  Future<void> _ensureTrackOptionsLoaded() async {
     final item = _currentPlayableItem;
     final manager = context.read<MediaServiceManager>();
     final udp = context.read<UserDataProvider>();
     if (!_supportsPlaybackInfo(item)) {
       if (mounted) {
         setState(() {
+          _selectedAudioIndex = udp.trackSelectionForItem(item)?.audioIndex;
           _selectedSubtitleIndex =
               udp.trackSelectionForItem(item)?.subtitleIndex ?? -1;
         });
       }
-      return const [];
+      return;
     }
 
-    final cached = _subtitleOptionsByItem[item.mediaKey];
-    if (cached != null) {
-      return cached;
+    final cachedAudio = _audioOptionsByItem[item.mediaKey];
+    final cachedSubtitle = _subtitleOptionsByItem[item.mediaKey];
+    if (cachedAudio != null && cachedSubtitle != null) {
+      final saved = udp.trackSelectionForItem(item);
+      if (mounted) {
+        setState(() {
+          _selectedAudioIndex = saved?.audioIndex;
+          _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
+        });
+      }
+      return;
     }
 
     final config = manager.getSavedConfig();
     if (config == null || config.type != MediaServiceType.emby) {
       if (mounted) {
         setState(() {
+          _selectedAudioIndex = udp.trackSelectionForItem(item)?.audioIndex;
           _selectedSubtitleIndex =
               udp.trackSelectionForItem(item)?.subtitleIndex ?? -1;
         });
       }
-      return const [];
+      return;
     }
 
-    setState(() => _loadingSubtitles = true);
+    setState(() => _loadingTrackOptions = true);
     try {
       final saved = udp.trackSelectionForItem(item);
       final api = EmbyApiClient(
@@ -780,18 +836,106 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
         maxStreamingBitrate: _playbackPlanBitrate,
         requireAvc: true,
         audioStreamIndex: saved?.audioIndex,
-        subtitleStreamIndex: saved?.subtitleIndex,
       );
+      _audioOptionsByItem[item.mediaKey] = plan.audioStreams;
+      _mediaSourceIdByItem[item.mediaKey] = plan.mediaSourceId;
       _subtitleOptionsByItem[item.mediaKey] = plan.subtitleStreams;
       if (mounted) {
         setState(() {
+          _selectedAudioIndex = saved?.audioIndex;
           _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
         });
       }
-      return plan.subtitleStreams;
     } finally {
-      if (mounted) setState(() => _loadingSubtitles = false);
+      if (mounted) setState(() => _loadingTrackOptions = false);
     }
+  }
+
+  Future<List<PlaybackStream>> _ensureAudioOptions() async {
+    await _ensureTrackOptionsLoaded();
+    return _audioOptionsByItem[_currentPlayableItem.mediaKey] ?? const [];
+  }
+
+  Future<List<PlaybackStream>> _ensureSubtitleOptions() async {
+    await _ensureTrackOptionsLoaded();
+    return _subtitleOptionsByItem[_currentPlayableItem.mediaKey] ?? const [];
+  }
+
+  Future<void> _openAudioSelector() async {
+    final item = _currentPlayableItem;
+    final options = await _ensureAudioOptions();
+    if (!mounted) {
+      return;
+    }
+    final initialValue = _selectedAudioIndex;
+    final selected = await showModalBottomSheet<int?>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('选择音轨', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                ListTile(
+                  leading: Icon(
+                    initialValue == null
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                  ),
+                  title: const Text('默认音轨'),
+                  onTap: () => Navigator.of(context).pop(),
+                ),
+                ...options.map(
+                  (stream) => ListTile(
+                    leading: Icon(
+                      initialValue == stream.index
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
+                    ),
+                    title: Text(stream.title),
+                    subtitle: stream.language == null
+                        ? null
+                        : Text(stream.language!),
+                    onTap: () => Navigator.of(context).pop(stream.index),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted) {
+      return;
+    }
+    PlaybackStream? selectedStream;
+    if (selected != null) {
+      for (final stream in options) {
+        if (stream.index == selected) {
+          selectedStream = stream;
+          break;
+        }
+      }
+    }
+    final udp = context.read<UserDataProvider>();
+    final previous = udp.trackSelectionForItem(item);
+    udp.setTrackSelectionForItem(
+      item,
+      audioIndex: selected,
+      subtitleIndex: previous?.subtitleIndex,
+      audioTitle: selectedStream?.title,
+      subtitleTitle: previous?.subtitleTitle,
+      subtitleLanguage: previous?.subtitleLanguage,
+      subtitleUri: previous?.subtitleUri,
+    );
+    setState(() {
+      _selectedAudioIndex = selected;
+    });
   }
 
   Future<void> _openSubtitleSelector() async {
@@ -846,15 +990,93 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
     if (selected == null || !mounted) {
       return;
     }
+    PlaybackStream? selectedStream;
+    if (selected >= 0) {
+      for (final stream in options) {
+        if (stream.index == selected) {
+          selectedStream = stream;
+          break;
+        }
+      }
+    }
+    final subtitleUri = selectedStream == null
+        ? null
+        : await _buildSubtitleVttUrl(item, selectedStream);
+    if (!mounted) {
+      return;
+    }
     final udp = context.read<UserDataProvider>();
+    final previous = udp.trackSelectionForItem(item);
     udp.setTrackSelectionForItem(
       item,
       subtitleIndex: selected,
-      audioIndex: udp.trackSelectionForItem(item)?.audioIndex,
+      audioIndex: previous?.audioIndex,
+      audioTitle: previous?.audioTitle,
+      subtitleTitle: selectedStream?.title,
+      subtitleLanguage: selectedStream?.language,
+      subtitleUri: subtitleUri,
     );
     setState(() {
       _selectedSubtitleIndex = selected;
     });
+  }
+
+  Future<String?> _buildSubtitleVttUrl(
+    MediaItem item,
+    PlaybackStream stream,
+  ) async {
+    final manager = context.read<MediaServiceManager>();
+    final config = manager.getSavedConfig();
+    if (config == null || config.type != MediaServiceType.emby) {
+      return null;
+    }
+    final api = EmbyApiClient(
+      config: config,
+      securityService: manager.securityService,
+      sessionExpiredNotifier: manager.sessionExpiredNotifier,
+    );
+    return api.buildSubtitleVttUrl(
+      itemId: item.dataSourceId,
+      streamIndex: stream.index,
+      mediaSourceId: _mediaSourceIdByItem[item.mediaKey],
+      deliveryUrl: stream.deliveryUrl,
+    );
+  }
+
+  Future<void> _handlePlayPressed(int selectedEpisode) async {
+    final item = _currentPlayableItem;
+    final udp = context.read<UserDataProvider>();
+    final saved = udp.trackSelectionForItem(item);
+    if ((saved?.subtitleIndex ?? -1) >= 0 &&
+        (saved?.subtitleUri?.isEmpty ?? true)) {
+      final options = await _ensureSubtitleOptions();
+      if (!mounted) {
+        return;
+      }
+      PlaybackStream? stream;
+      for (final candidate in options) {
+        if (candidate.index == saved?.subtitleIndex) {
+          stream = candidate;
+          break;
+        }
+      }
+      final subtitleUri = stream == null
+          ? null
+          : await _buildSubtitleVttUrl(item, stream);
+      if (!mounted) {
+        return;
+      }
+      udp.setTrackSelectionForItem(
+        item,
+        audioIndex: saved?.audioIndex,
+        subtitleIndex: saved?.subtitleIndex,
+        audioTitle: saved?.audioTitle,
+        subtitleTitle: stream?.title ?? saved?.subtitleTitle,
+        subtitleLanguage: stream?.language ?? saved?.subtitleLanguage,
+        subtitleUri: subtitleUri,
+      );
+    }
+    widget.onPlayPressed?.call(selectedEpisode);
   }
 
   bool _supportsPlaybackInfo(MediaItem item) {
@@ -866,35 +1088,110 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   }
 }
 
-class _SubtitlePickerButton extends StatelessWidget {
-  const _SubtitlePickerButton({
+class _PlaybackConfigSection extends StatelessWidget {
+  const _PlaybackConfigSection({
+    required this.audioLabel,
+    required this.subtitleLabel,
     required this.loading,
-    required this.label,
+    required this.onAudioTap,
+    required this.onSubtitleTap,
+  });
+
+  final String audioLabel;
+  final String subtitleLabel;
+  final bool loading;
+  final VoidCallback onAudioTap;
+  final VoidCallback onSubtitleTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppSurfaceCard(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Column(
+        children: [
+          _PlaybackConfigTile(
+            icon: Icons.graphic_eq_rounded,
+            title: '音频',
+            value: audioLabel,
+            loading: loading,
+            onTap: onAudioTap,
+          ),
+          Divider(height: 1, color: Colors.white.withValues(alpha: 0.08)),
+          _PlaybackConfigTile(
+            icon: Icons.closed_caption_outlined,
+            title: '字幕',
+            value: subtitleLabel,
+            loading: loading,
+            onTap: onSubtitleTap,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlaybackConfigTile extends StatelessWidget {
+  const _PlaybackConfigTile({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.loading,
     required this.onTap,
   });
 
+  final IconData icon;
+  final String title;
+  final String value;
   final bool loading;
-  final String label;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return OutlinedButton(
-      onPressed: loading ? null : onTap,
-      style: OutlinedButton.styleFrom(
-        minimumSize: const Size.fromHeight(32),
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        side: const BorderSide(color: Colors.white24),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        foregroundColor: Colors.white,
+    final valueStyle = Theme.of(context).textTheme.bodyMedium?.copyWith(
+      color: Colors.white.withValues(alpha: 0.82),
+      fontWeight: FontWeight.w600,
+    );
+    final titleStyle = Theme.of(context).textTheme.titleMedium?.copyWith(
+      color: Colors.white,
+      fontWeight: FontWeight.w700,
+    );
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: loading ? null : onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
+          child: Row(
+            children: [
+              Icon(icon, color: AppTheme.accentColor, size: 20),
+              const SizedBox(width: 12),
+              Expanded(child: Text(title, style: titleStyle)),
+              const SizedBox(width: 12),
+              Flexible(
+                child: loading
+                    ? const SizedBox(
+                        height: 16,
+                        width: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(
+                        value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: valueStyle,
+                      ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white.withValues(alpha: 0.36),
+              ),
+            ],
+          ),
+        ),
       ),
-      child: loading
-          ? const SizedBox(
-              height: 16,
-              width: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
     );
   }
 }
@@ -942,10 +1239,9 @@ class _PosterHeader extends StatelessWidget {
 }
 
 class _MetaChipRow extends StatelessWidget {
-  const _MetaChipRow({required this.mediaItem, this.trailing});
+  const _MetaChipRow({required this.mediaItem});
 
   final MediaItem mediaItem;
-  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -979,10 +1275,6 @@ class _MetaChipRow extends StatelessWidget {
             ],
           ),
         ),
-        if (trailing != null) ...[
-          const SizedBox(width: 18),
-          Align(alignment: Alignment.topRight, child: trailing!),
-        ],
       ],
     );
   }

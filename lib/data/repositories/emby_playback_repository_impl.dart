@@ -298,6 +298,7 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     final base = isAbsolute ? rawUrl : '${_apiClient.serverUrl}$rawUrl';
     final uri = Uri.parse(base);
     final queryParameters = Map<String, String>.from(uri.queryParameters);
+    queryParameters['SubtitleMethod'] = 'External';
     if (startPosition > Duration.zero) {
       queryParameters['StartTimeTicks'] =
           '${durationToEmbyTicks(startPosition)}';

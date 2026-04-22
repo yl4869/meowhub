@@ -58,6 +58,9 @@ class _PlayerViewState extends State<PlayerView> {
   Duration? _resumePositionOverride;
   int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
+  String? _selectedSubtitleUri;
+  String? _selectedSubtitleTitle;
+  String? _selectedSubtitleLanguage;
   PlayerResolutionOption _selectedResolution = _resolutionOptions.first;
   bool _openSelectorPending = false;
   int _serverSeekRequestToken = 0;
@@ -91,19 +94,24 @@ class _PlayerViewState extends State<PlayerView> {
 
   bool get _shouldDisablePlayerSubtitleTrack {
     final subtitleIndex = _selectedSubtitleIndex;
-    if (subtitleIndex != null) {
-      if (subtitleIndex < 0) {
-        return true;
-      }
-      final stream = _selectedSubtitleStream;
-      if (stream != null && !_isTextSubtitle(stream)) {
-        return true;
-      }
+    if (subtitleIndex != null && subtitleIndex < 0) {
+      return true;
+    }
+    if ((_selectedSubtitleUri ?? '').trim().isNotEmpty) {
+      return false;
+    }
+    final stream = _selectedSubtitleStream;
+    if (stream != null && !_isTextSubtitle(stream)) {
+      return true;
     }
     return false;
   }
 
   String? get _selectedExternalSubtitleUri {
+    final savedUri = _selectedSubtitleUri?.trim();
+    if (savedUri != null && savedUri.isNotEmpty) {
+      return savedUri;
+    }
     final stream = _selectedSubtitleStream;
     if (stream == null || !_isTextSubtitle(stream)) {
       return null;
@@ -180,16 +188,16 @@ class _PlayerViewState extends State<PlayerView> {
       final saved = context.read<UserDataProvider>().trackSelectionForItem(
         widget.mediaItem,
       );
-      final plan = await _fetchPlaybackPlan(
-        audioIndex: saved?.audioIndex,
-        subtitleIndex: saved?.subtitleIndex,
-      );
+      final plan = await _fetchPlaybackPlan(audioIndex: saved?.audioIndex);
       _assertStrictPlan(plan);
       if (!mounted) return;
       setState(() {
         _plan = plan;
         _selectedAudioIndex = saved?.audioIndex;
         _selectedSubtitleIndex = saved?.subtitleIndex;
+        _selectedSubtitleUri = saved?.subtitleUri;
+        _selectedSubtitleTitle = saved?.subtitleTitle;
+        _selectedSubtitleLanguage = saved?.subtitleLanguage;
         _currentUrl = plan.url;
         _isPreparingPlan = false;
         _planErrorMessage = null;
@@ -237,7 +245,6 @@ class _PlayerViewState extends State<PlayerView> {
           maxStreamingBitrate ?? _selectedResolution.maxStreamingBitrate,
       requireAvc: true,
       audioStreamIndex: audioIndex,
-      subtitleStreamIndex: subtitleIndex,
       playSessionId: playSessionIdOverride ?? _plan?.playSessionId,
       startPosition:
           startPositionOverride ?? _resumePositionOverride ?? _initialPosition,
@@ -449,8 +456,10 @@ class _PlayerViewState extends State<PlayerView> {
           selectedResolution: _selectedResolution,
           onResolutionSelected: _applyResolutionSelection,
           subtitleUri: _selectedExternalSubtitleUri,
-          subtitleTitle: _selectedSubtitleStream?.title,
-          subtitleLanguage: _selectedSubtitleStream?.language,
+          subtitleTitle:
+              _selectedSubtitleTitle ?? _selectedSubtitleStream?.title,
+          subtitleLanguage:
+              _selectedSubtitleLanguage ?? _selectedSubtitleStream?.language,
           disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
           playSessionId: _plan!.playSessionId,
           mediaSourceId: _plan!.mediaSourceId,
@@ -469,8 +478,10 @@ class _PlayerViewState extends State<PlayerView> {
           playUrlOverride: _currentUrl ?? _plan!.url,
           onShowTrackSelector: null,
           subtitleUri: _selectedExternalSubtitleUri,
-          subtitleTitle: _selectedSubtitleStream?.title,
-          subtitleLanguage: _selectedSubtitleStream?.language,
+          subtitleTitle:
+              _selectedSubtitleTitle ?? _selectedSubtitleStream?.title,
+          subtitleLanguage:
+              _selectedSubtitleLanguage ?? _selectedSubtitleStream?.language,
           disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
           playSessionId: _plan!.playSessionId,
           mediaSourceId: _plan!.mediaSourceId,
@@ -495,10 +506,7 @@ class _StrictPlaybackLoadingView extends StatelessWidget {
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 16),
-            Text(
-              '正在建立播放会话...',
-              style: TextStyle(color: Colors.white70),
-            ),
+            Text('正在建立播放会话...', style: TextStyle(color: Colors.white70)),
           ],
         ),
       ),

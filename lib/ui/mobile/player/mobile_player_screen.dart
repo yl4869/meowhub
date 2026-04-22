@@ -693,12 +693,11 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
           position: target,
           duration: duration,
         );
-        _udp.updatePlaybackProgressForItem(
+        _udp.registerOptimisticSeekForItem(
           widget.mediaItem,
           position: target,
           duration: duration,
           notify: true,
-          allowPositionRegression: true,
         );
         if (mounted) {
           setState(() {});
@@ -715,6 +714,16 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     if (p == null) {
       return;
     }
+    _lastStablePlaybackProgress = MediaPlaybackProgress(
+      position: target,
+      duration: duration,
+    );
+    _udp.registerOptimisticSeekForItem(
+      widget.mediaItem,
+      position: target,
+      duration: duration,
+      notify: true,
+    );
     try {
       await p.seek(target);
     } catch (_) {}
