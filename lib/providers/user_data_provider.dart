@@ -23,6 +23,12 @@ class UserDataProvider extends ChangeNotifier {
   );
   static const Duration _optimisticSeekForwardTolerance = Duration(seconds: 4);
 
+  //心跳同步：进度同步到服务器的实现
+  // 记录每个 UniqueKey 对应的最后一次服务器同步时间
+  final Map<String, DateTime> _lastServerSyncTimes = {};
+  // 定义全局同步频率（例如 15 秒同步一次服务器）
+  static const Duration _serverSyncThrottleInterval = Duration(seconds: 15);
+
   // 核心存储：从 List 变为 Map
   // Key 建议使用 "${sourceType.name}:$id"
   final Map<String, WatchHistoryItem> _historyMap = {};
@@ -460,6 +466,7 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   /// 播放过程中的心跳同步：明确走 Progress 通道。
+  /// 智能同步：支持频率限制（Throttling）与强制上报（Forced Sync）
   Future<void> syncProgressToServerForItem(
     MediaItem mediaItem, {
     required Duration position,
@@ -468,33 +475,45 @@ class UserDataProvider extends ChangeNotifier {
     String? mediaSourceId,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
+    bool force = false, // 新增：是否强制立即同步
   }) async {
-    final latest = _buildWatchHistoryItemFromMediaItem(
+    final historyItem = _buildWatchHistoryItemFromMediaItem(
       mediaItem,
       position: position,
       duration: duration,
     );
 
-    _upsertWatchHistory(latest, notify: false);
-    debugPrint(
-      '[Resume][Playback][Progress] item=${mediaItem.dataSourceId} '
-      'position=${latest.position.inMilliseconds}ms '
-      'duration=${latest.duration.inMilliseconds}ms',
-    );
-    notifyListeners();
+    // 1. 内存更新：无论是否同步服务器，内存数据必须秒级更新
+    // 注意：这里 notify 设置为 false，UI 的进度刷新由 updatePlaybackProgressForItem 负责
+    _upsertWatchHistory(historyItem, notify: false);
+
+    // 2. 节流判定
+    final now = DateTime.now();
+    final lastSync = _lastServerSyncTimes[historyItem.uniqueKey];
+    
+    // 如果不是强制同步，且距离上次同步不足 15s，则拦截网络请求
+    if (!force && 
+        lastSync != null && 
+        now.difference(lastSync) < _serverSyncThrottleInterval) {
+      return; 
+    }
+
+    // 3. 执行真正的网络同步
+    _lastServerSyncTimes[historyItem.uniqueKey] = now; // 更新最后同步时间
+    
     try {
+      debugPrint('[Resume][Network] 🚀 Syncing to server: ${historyItem.title} @ ${position.inSeconds}s (force: $force)');
       await _watchHistoryRepository.updateProgress(
-        latest,
+        historyItem,
         playSessionId: playSessionId,
         mediaSourceId: mediaSourceId,
         audioStreamIndex: audioStreamIndex,
         subtitleStreamIndex: subtitleStreamIndex,
       );
     } catch (e) {
-      debugPrint(
-        '[Resume][Playback][Progress][Error] '
-        'item=${mediaItem.dataSourceId} error=$e',
-      );
+      debugPrint('[Resume][Network][Error] Sync failed: $e');
+      // 失败后可以考虑重置时间，让下一次心跳能尽快重试
+      _lastServerSyncTimes.remove(historyItem.uniqueKey);
     }
   }
 

@@ -24,6 +24,19 @@ class MediaServerInfo {
   final String region;
   final MediaServiceConfig? config;
 
+  /// 语义化：是否为“占位”状态
+  bool get isPlaceholder => id == 'empty-source' || baseUrl.isEmpty;
+
+  /// 语义化：转换为持久化模型
+  PersistedFileSource? get toPersistedSource {
+    if (isPlaceholder || config == null) return null;
+    return PersistedFileSource(
+      id: id,
+      name: name,
+      config: config!,
+    );
+  }
+
   factory MediaServerInfo.fromConfig({
     required MediaServiceConfig config,
     String? name,
@@ -68,28 +81,36 @@ class AppProvider extends ChangeNotifier {
     required List<MediaServerInfo> initialServers,
     required String? initialSelectedServerId,
   }) : _mediaServiceManager = mediaServiceManager,
-       _fileSourceStore = fileSourceStore,
-       _availableServers = List<MediaServerInfo>.from(
-         initialServers.isEmpty
-             ? _buildInitialServers(mediaServiceManager)
-             : initialServers,
-       ),
-       _selectedServer = _resolveInitialSelectedServer(
-         initialServers.isEmpty
-             ? _buildInitialServers(mediaServiceManager)
-             : initialServers,
-         initialSelectedServerId,
-       );
+
+       _fileSourceStore = fileSourceStore{
+    
+    // 1. 确定初始列表（只计算一次）
+    final servers = initialServers.isEmpty
+        ? _buildInitialServers(mediaServiceManager)
+        : initialServers;
+
+    // 2. 填充 Map
+    for (final s in servers) {
+      _serverMap[s.id] = s;
+    }
+
+    // 3. 确定选中的 ID
+    _selectedServerId = _resolveInitialId(initialSelectedServerId);
+    
+    // 4. (可选) 如果有配置，立即同步给底层 manager
+    if (selectedServer.config != null) {
+      unawaited(_mediaServiceManager.setConfig(selectedServer.config!));
+    }
+  }
+
+  final MediaServiceManager _mediaServiceManager;
+  final FileSourceStore _fileSourceStore;
 
   // 核心存储：Map 是唯一的真理 (Single Source of Truth)
   final Map<String, MediaServerInfo> _serverMap = {};
   
   // 状态追踪：只记 ID，不记对象
   String _selectedServerId = '';
-  final MediaServiceManager _mediaServiceManager;
-  final FileSourceStore _fileSourceStore;
-  final List<MediaServerInfo> _availableServers;
-  MediaServerInfo _selectedServer;
 
   static List<MediaServerInfo> _buildInitialServers(
     MediaServiceManager manager,
@@ -160,13 +181,16 @@ class AppProvider extends ChangeNotifier {
 
   // Actions
   void selectServer(MediaServerInfo server) {
-    if (_selectedServer.id == server.id) {
+    if (_selectedServerId == server.id) {
       return;
     }
 
-    _selectedServer = server;
+    // 更新 ID 即可，Getter 会自动处理对象获取
+    _selectedServerId = server.id;
     notifyListeners();
-    unawaited(_persistAndActivateSelectedServer(server));
+    
+    // 这里的持久化方法我们也建议同步简化（见下文）
+    unawaited(_persistState());
   }
 
   void addConfiguredServer({
@@ -177,43 +201,39 @@ class AppProvider extends ChangeNotifier {
       config: config,
       name: customName,
     );
-    final existingIndex = _availableServers.indexWhere(
-      (server) => server.id == newServer.id,
-    );
 
-    if (existingIndex >= 0) {
-      _availableServers[existingIndex] = newServer;
-    } else {
-      _availableServers.removeWhere((server) => server.baseUrl.isEmpty);
-      _availableServers.add(newServer);
+    // 1. 如果当前是占位符，添加真实服务器前先清空
+    if (_serverMap.containsKey('empty-source')) {
+      _serverMap.clear();
     }
 
-    _selectedServer = newServer;
+    // 2. 利用 Map 自动去重的特性，直接赋值
+    // 如果 ID 存在则覆盖（更新），不存在则新增
+    _serverMap[newServer.id] = newServer;
+    _selectedServerId = newServer.id;
+
     notifyListeners();
-    unawaited(_persistAndActivateSelectedServer(newServer));
+    unawaited(_persistState());
   }
 
-  Future<void> _persistAndActivateSelectedServer(MediaServerInfo server) async {
-    final config = server.config;
-    if (config != null) {
-      await _mediaServiceManager.setConfig(config);
+  Future<void> _persistState() async {
+    final current = selectedServer;
+
+    // 1. 激活配置到 Manager
+    if (current.config != null) {
+      await _mediaServiceManager.setConfig(current.config!);
     }
 
-    final persistedSources = _availableServers
-        .where((item) => item.config != null && item.baseUrl.isNotEmpty)
-        .map(
-          (item) => PersistedFileSource(
-            id: item.id,
-            name: item.name,
-            config: item.config!,
-          ),
-        )
-        .toList(growable: false);
+    // 2. 提取所有有效的服务器进行持久化
+    final persistedSources = _serverMap.values
+        .map((s) => s.toPersistedSource)
+        .whereType<PersistedFileSource>() // 自动过滤掉 null (占位符)
+        .toList();
 
     await _fileSourceStore.save(
       PersistedFileSourceState(
         sources: persistedSources,
-        selectedSourceId: server.baseUrl.isEmpty ? null : server.id,
+        selectedSourceId: current.isPlaceholder ? null : _selectedServerId,
       ),
     );
   }

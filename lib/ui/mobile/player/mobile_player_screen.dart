@@ -247,25 +247,33 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
 
   void _applyValidStatusUpdate(
     MeowVideoPlaybackStatus status, {
-    required bool allowPositionRegression,
+    required bool allowPositionRegression, // 为 true 时通常意味着用户手动 Seek 了
   }) {
     _latestStatus = status;
     if (status.isInitialized) {
-      _lastStablePlaybackProgress = MediaPlaybackProgress(
-        position: status.position,
-        duration: status.duration,
-      );
-      _refreshUi(status);
-      _logPlaybackProgress(status);
+      // 1. 更新内存和本地 UI
       _udp.updatePlaybackProgressForItem(
         widget.mediaItem,
         position: status.position,
         duration: status.duration,
         allowPositionRegression: allowPositionRegression,
+        notify: true, 
       );
-      _maybeSyncProgressInBackground(status);
+
+      // 2. 如果是 Seek 操作，强制立即同步服务器
+      if (allowPositionRegression) {
+        _udp.syncProgressToServerForItem(
+          widget.mediaItem,
+          position: status.position,
+          duration: status.duration,
+          force: true, // 关键：Seek 后立即上报
+          // ... 其他参数
+        );
+      } else {
+        // 普通播放心跳，走节流逻辑
+        _maybeSyncProgressInBackground(status);
+      }
     }
-    widget.onPlaybackStatusChanged(status);
   }
 
   bool _shouldShieldInitialProgress(MeowVideoPlaybackStatus status) {
@@ -392,15 +400,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
       return;
     }
 
-    final now = DateTime.now();
-    final lastSyncAt = _lastBackgroundSyncAt;
-    if (lastSyncAt != null &&
-        now.difference(lastSyncAt) < _backgroundSyncInterval) {
-      return;
-    }
-
-    _lastBackgroundSyncAt = now;
-    // ignore: discarded_futures
+    // 直接调用，由 Provider 内部的 _serverSyncThrottleInterval 决定是否真的发请求
     _udp.syncProgressToServerForItem(
       widget.mediaItem,
       position: status.position,
@@ -409,6 +409,7 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
       mediaSourceId: widget.mediaSourceId,
       audioStreamIndex: widget.audioStreamIndex,
       subtitleStreamIndex: widget.subtitleStreamIndex,
+      force: false, // 普通心跳
     );
   }
 

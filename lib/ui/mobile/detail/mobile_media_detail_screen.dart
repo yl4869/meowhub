@@ -167,6 +167,41 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       episodesLength: episodes.length,
     );
 
+   /// 1. 声道数转中文描述词
+  String _translateChannels(int? channels) {
+    if (channels == null) return '';
+    return switch (channels) {
+      1 => '单声道',
+      2 => '立体声',
+      6 => '5.1 环绕声',
+      8 => '7.1 环绕声',
+      _ => '$channels 声道',
+    };
+  }
+
+  /// 2. 缝合 Emby 原始信息：网页端全量格式
+  /// 格式：CHI AAC stereo (粤语) · 立体声 @192kbps
+  String _buildEmbyAudioLabel(PlaybackStream stream) {
+    final lang = (stream.language ?? 'CHI').toUpperCase();
+    final codec = (stream.codec ?? 'AAC').toUpperCase();
+    final channelShort = stream.channels == 2 ? 'stereo' : (stream.channels != null ? '${stream.channels}ch' : '');
+    
+    // 信任 Emby 传回的标题 (里面通常带有国语、粤语、评论音轨等字样)
+    final remoteTitle = stream.title;
+    
+    // 中文描述部分
+    final channelCN = _translateChannels(stream.channels);
+    final bitrate = stream.bitrate != null ? '${(stream.bitrate! / 1000).round()}kbps' : '';
+
+    // 拼接逻辑
+    return [
+      '$lang $codec $channelShort',
+      if (remoteTitle.isNotEmpty) '($remoteTitle)',
+      if (channelCN.isNotEmpty) '· $channelCN',
+      if (bitrate.isNotEmpty) '@$bitrate',
+    ].join(' ').trim();
+  }
+
     return Scaffold(
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
@@ -873,6 +908,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       showDragHandle: true,
       builder: (context) {
         return SafeArea(
+          
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: Column(
