@@ -11,6 +11,13 @@ import '../models/emby_auth_response.dart';
 import '../network/emby_auth_interceptor.dart';
 import '../models/emby/emby_playback_info_dto.dart';
 
+/// 定义播放行为的类型
+enum PlaybackAction { 
+  start,    // 对应开始播放
+  progress, // 对应进度更新
+  stop      // 对应停止播放
+}
+
 const String _embyBaseItemFields =
     'Overview,OriginalTitle,RunTimeTicks,ProductionYear,CommunityRating,'
     'PremiereDate,DateCreated,People,ImageTags,BackdropImageTags,'
@@ -277,88 +284,46 @@ class EmbyApiClient {
         maxStreamingBitrate ?? 1000 * 1000 * 1000;
     final startTimeTicks = durationToEmbyTicks(startPosition);
 
-    final playbackInfoQuery = <String, dynamic>{
+    // 1. 【极致精简】Query 只保留 UserId
+    // 其余标识符已经在 Dio 的拦截器或 Header 中处理了
+    final playbackInfoQuery = {
       'UserId': userId,
-      'StartTimeTicks': startTimeTicks.toString(),
-      'IsPlayback': 'true',
-      'AutoOpenLiveStream': 'true',
-      'MaxStreamingBitrate': '$effectiveMaxStreamingBitrate',
-      'SubtitleMethod': 'External',
-      'X-Emby-Client': 'Emby Web', // 即使不改构造函数，这里建议也先填 Web 以绕过服务端限制
-      'X-Emby-Device-Name': 'MeowHub Player',
-      'X-Emby-Device-Id': _resolvedDeviceId,
-      'X-Emby-Client-Version': '4.8.10.0', // 对齐一个标准的稳定版号
       'reqformat': 'json',
     };
-    final optionalBody = <String, dynamic>{};
-    void putIfPresent(String key, Object? value) {
-      if (value != null) {
-        optionalBody[key] = value;
-      }
-    }
-
-    optionalBody['MaxStreamingBitrate'] = effectiveMaxStreamingBitrate;
-    optionalBody['SubtitleMethod'] = 'External';
-    putIfPresent('RequireAvc', requireAvc);
-    putIfPresent('AudioStreamIndex', audioStreamIndex);
-    putIfPresent('SubtitleStreamIndex', subtitleStreamIndex);
-    putIfPresent('MediaSourceId', mediaSourceId);
-    putIfPresent('PlaySessionId', playSessionId);
-    if (requireAvc != null) {
-      playbackInfoQuery['RequireAvc'] = requireAvc.toString();
-    }
-    if (audioStreamIndex != null) {
-      playbackInfoQuery['AudioStreamIndex'] = '$audioStreamIndex';
-    }
-    if (subtitleStreamIndex != null) {
-      playbackInfoQuery['SubtitleStreamIndex'] = '$subtitleStreamIndex';
-    }
-    if (mediaSourceId != null && mediaSourceId.isNotEmpty) {
-      playbackInfoQuery['MediaSourceId'] = mediaSourceId;
-    }
-    if (playSessionId != null && playSessionId.isNotEmpty) {
-      playbackInfoQuery['PlaySessionId'] = playSessionId;
-    }
-    if (startPosition > Duration.zero) {
-      final startTimeTicks = durationToEmbyTicks(startPosition);
-      optionalBody['StartTimeTicks'] = startTimeTicks;
-      playbackInfoQuery['StartTimeTicks'] = '$startTimeTicks';
-    }
+    
+    // 2. 【统一管控】所有参数全部放入 Body
     final body = <String, dynamic>{
       'UserId': userId,
       'DeviceId': _resolvedDeviceId,
-      'StartTimeTicks': startTimeTicks, // 确保 Body 里的 Ticks 也是正确的 int
+      'ItemId': itemId,
+      'StartTimeTicks': startTimeTicks,
+      'MaxStreamingBitrate': effectiveMaxStreamingBitrate,
+      'AudioStreamIndex': audioStreamIndex,
+      'SubtitleStreamIndex': subtitleStreamIndex,
+      'MediaSourceId': mediaSourceId,
+      'PlaySessionId': playSessionId,
+      'RequireAvc': requireAvc ?? true,
+      // 这里的布尔值开关，统一在这里声明，清晰明了
       'EnableDirectPlay': true,
       'EnableDirectStream': true,
       'EnableTranscoding': true,
       'EnablePlaybackRemuxing': true,
-      'EnableSubtitlesInManifest': true,
-      'AutoOpenLiveStream': true,
-      'AllowInterlacedVideoStreamCopy': true,
       'AllowVideoStreamCopy': true,
       'AllowAudioStreamCopy': true,
-      'MaxAudioChannels': 8,
-      'TranscodingMaxAudioChannels': 8,
-      'IsPlayback': true,
-      ...optionalBody,
+      'SubtitleMethod': 'External', // 强制外挂，避开烧录
       'DeviceProfile': _buildMediaKitDeviceProfile(
         deviceId: _resolvedDeviceId,
         maxStreamingBitrate: effectiveMaxStreamingBitrate,
       ),
     };
+
     final resp = await post<Map<String, dynamic>>(
       '/emby/Items/$itemId/PlaybackInfo',
       data: body,
       queryParameters: playbackInfoQuery,
-      headers: {
-        'X-Emby-Device-Id': _resolvedDeviceId,
-        // 关键：在请求头里也补全授权信息
-        'X-Emby-Authorization':
-            'MediaBrowser Client="Emby Web", Device="MeowHub Player", DeviceId="$_resolvedDeviceId", Version="4.8.10.0"',
-      },
     );
-    final data = resp.data ?? <String, dynamic>{};
-    return EmbyPlaybackInfoDto.fromJson(data);
+
+    return EmbyPlaybackInfoDto.fromJson(resp.data ?? {});
   }
 
   Future<String?> buildSubtitleVttUrl({
@@ -485,146 +450,65 @@ class EmbyApiClient {
     return items.whereType<Map<String, dynamic>>().toList(growable: false);
   }
 
-  Future<void> reportPlaybackProgress({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  }) async {
-    final userId = await _requireUserId();
-    final body = _buildPlaybackStateBody(
-      userId: userId,
-      itemId: itemId,
-      position: position,
-      duration: duration,
-      isPaused: false,
-      playSessionId: playSessionId,
-      mediaSourceId: mediaSourceId,
-      audioStreamIndex: audioStreamIndex,
-      subtitleStreamIndex: subtitleStreamIndex,
-    );
-    try {
-      await post<void>('/emby/Sessions/Playing/Progress', data: body);
-    } on DioException catch (e) {
-      if (!_isUnsupportedPlaybackEndpoint(e)) {
-        rethrow;
-      }
-      debugPrint(
-        '[Resume][Emby][Progress] fallback=legacy-user-endpoint '
-        'status=${e.response?.statusCode}',
-      );
-      await post<void>(
-        '/emby/Users/$userId/PlayingItems/$itemId',
-        queryParameters: _buildLegacyPlaybackStateQuery(
-          position: position,
-          duration: duration,
-          isPaused: false,
-          playSessionId: playSessionId,
-          mediaSourceId: mediaSourceId,
-          audioStreamIndex: audioStreamIndex,
-          subtitleStreamIndex: subtitleStreamIndex,
-        ),
-        data: body,
-      );
-    }
-  }
+  Future<void> reportPlaybackAction({
+  required PlaybackAction action,
+  required String itemId,
+  required Duration position,
+  Duration duration = Duration.zero,
+  String? playSessionId,
+  String? mediaSourceId,
+  int? audioStreamIndex,
+  int? subtitleStreamIndex,
+}) async {
+  final userId = await _requireUserId();
+  final isStopped = action == PlaybackAction.stop;
+  
+  // 1. 构造统一的 Body
+  final body = _buildPlaybackStateBody(
+    userId: userId,
+    itemId: itemId,
+    position: position,
+    duration: duration,
+    isPaused: isStopped, // 只有停止时设为 true
+    playSessionId: playSessionId,
+    mediaSourceId: mediaSourceId,
+    audioStreamIndex: audioStreamIndex,
+    subtitleStreamIndex: subtitleStreamIndex,
+  );
 
-  Future<void> reportPlaybackStopped({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  }) async {
-    final userId = await _requireUserId();
-    final body = _buildPlaybackStateBody(
-      userId: userId,
-      itemId: itemId,
-      position: position,
-      duration: duration,
-      isPaused: true,
-      playSessionId: playSessionId,
-      mediaSourceId: mediaSourceId,
-      audioStreamIndex: audioStreamIndex,
-      subtitleStreamIndex: subtitleStreamIndex,
-    );
-    try {
-      await post<void>('/emby/Sessions/Playing/Stopped', data: body);
-    } on DioException catch (e) {
-      if (!_isUnsupportedPlaybackEndpoint(e)) {
-        rethrow;
-      }
-      debugPrint(
-        '[Resume][Emby][Stopped] fallback=legacy-user-endpoint '
-        'status=${e.response?.statusCode}',
-      );
-      await post<void>(
-        '/emby/Users/$userId/PlayingItems/$itemId',
-        queryParameters: _buildLegacyPlaybackStateQuery(
-          position: position,
-          duration: duration,
-          isPaused: true,
-          playSessionId: playSessionId,
-          mediaSourceId: mediaSourceId,
-          audioStreamIndex: audioStreamIndex,
-          subtitleStreamIndex: subtitleStreamIndex,
-        ),
-        data: body,
-      );
-    }
-  }
+  // 2. 根据动作确定 URL 路径
+  // start -> /emby/Sessions/Playing
+  // progress -> /emby/Sessions/Playing/Progress
+  // stop -> /emby/Sessions/Playing/Stopped
+  final String subPath = switch (action) {
+    PlaybackAction.start => '',
+    PlaybackAction.progress => '/Progress',
+    PlaybackAction.stop => '/Stopped',
+  };
+  final primaryPath = '/emby/Sessions/Playing$subPath';
 
-  Future<void> reportPlaybackStarted({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  }) async {
-    final userId = await _requireUserId();
-    final body = _buildPlaybackStateBody(
-      userId: userId,
-      itemId: itemId,
-      position: position,
-      duration: duration,
-      isPaused: false,
-      playSessionId: playSessionId,
-      mediaSourceId: mediaSourceId,
-      audioStreamIndex: audioStreamIndex,
-      subtitleStreamIndex: subtitleStreamIndex,
+  try {
+    await post<void>(primaryPath, data: body);
+  } on DioException catch (e) {
+    if (!_isUnsupportedPlaybackEndpoint(e)) rethrow;
+    
+    // 3. 统一的降级处理（针对旧版 Emby/Jellyfin）
+    debugPrint('[Playback] Fallback to legacy endpoint for $action');
+    await post<void>(
+      '/emby/Users/$userId/PlayingItems/$itemId',
+      queryParameters: _buildLegacyPlaybackStateQuery(
+        position: position,
+        duration: duration,
+        isPaused: isStopped,
+        playSessionId: playSessionId,
+        mediaSourceId: mediaSourceId,
+        audioStreamIndex: audioStreamIndex,
+        subtitleStreamIndex: subtitleStreamIndex,
+      ),
+      data: body,
     );
-    try {
-      await post<void>('/emby/Sessions/Playing', data: body);
-    } on DioException catch (e) {
-      if (!_isUnsupportedPlaybackEndpoint(e)) {
-        rethrow;
-      }
-      debugPrint(
-        '[Resume][Emby][Start] fallback=legacy-user-endpoint '
-        'status=${e.response?.statusCode}',
-      );
-      await post<void>(
-        '/emby/Users/$userId/PlayingItems/$itemId',
-        queryParameters: _buildLegacyPlaybackStateQuery(
-          position: position,
-          duration: duration,
-          isPaused: false,
-          playSessionId: playSessionId,
-          mediaSourceId: mediaSourceId,
-          audioStreamIndex: audioStreamIndex,
-          subtitleStreamIndex: subtitleStreamIndex,
-        ),
-        data: body,
-      );
-    }
   }
+}
 
   Map<String, dynamic> _buildPlaybackStateBody({
     required String userId,
@@ -878,23 +762,17 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
     ],
     'SubtitleProfiles': [
       {'Format': 'subrip', 'Method': 'External'},
-      {'Format': 'subrip', 'Method': 'Embed'},
       {'Format': 'srt', 'Method': 'External'},
-      {'Format': 'srt', 'Method': 'Embed'},
       {'Format': 'ass', 'Method': 'External'},
-      {'Format': 'ass', 'Method': 'Embed'},
       {'Format': 'ssa', 'Method': 'External'},
-      {'Format': 'ssa', 'Method': 'Embed'},
       {'Format': 'vtt', 'Method': 'External'},
-      {'Format': 'vtt', 'Method': 'Hls'},
       {'Format': 'webvtt', 'Method': 'External'},
-      {'Format': 'webvtt', 'Method': 'Hls'},
-      {'Format': 'pgs', 'Method': 'Embed'},
-      {'Format': 'pgssub', 'Method': 'Embed'},
-      {'Format': 'sup', 'Method': 'Embed'},
-      {'Format': 'dvdsub', 'Method': 'Embed'},
-      {'Format': 'sub', 'Method': 'Embed'},
-      {'Format': 'idx', 'Method': 'Embed'},
+      {'Format': 'pgs', 'Method': 'External'},
+      {'Format': 'pgssub', 'Method': 'External'},
+      {'Format': 'sup', 'Method': 'External'},
+      {'Format': 'dvdsub', 'Method': 'External'},
+      {'Format': 'sub', 'Method': 'External'},
+      {'Format': 'idx', 'Method': 'External'},
     ],
     'SupportedSubtitles': subtitleFormats,
   };

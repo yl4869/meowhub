@@ -81,6 +81,11 @@ class AppProvider extends ChangeNotifier {
          initialSelectedServerId,
        );
 
+  // 核心存储：Map 是唯一的真理 (Single Source of Truth)
+  final Map<String, MediaServerInfo> _serverMap = {};
+  
+  // 状态追踪：只记 ID，不记对象
+  String _selectedServerId = '';
   final MediaServiceManager _mediaServiceManager;
   final FileSourceStore _fileSourceStore;
   final List<MediaServerInfo> _availableServers;
@@ -110,6 +115,15 @@ class AppProvider extends ChangeNotifier {
     ];
   }
 
+  /// 内部辅助：解析初始选中的 ID
+  String _resolveInitialId(String? initialId) {
+    if (initialId != null && _serverMap.containsKey(initialId)) {
+      return initialId;
+    }
+  // 默认选中第一个服务器（即便它是“未添加源”的占位符）
+    return _serverMap.keys.isNotEmpty ? _serverMap.keys.first : '';
+  }
+
   static String _defaultServerName(MediaServiceConfig config) {
     final host = Uri.tryParse(config.normalizedServerUrl)?.host.trim() ?? '';
     if (host.isNotEmpty) {
@@ -135,11 +149,13 @@ class AppProvider extends ChangeNotifier {
   }
 
   // Getters
-  UnmodifiableListView<MediaServerInfo> get availableServers {
-    return UnmodifiableListView(_availableServers);
-  }
+  /// 实时获取选中对象：这样 Map 更新，UI 会立即看到新名字
+  MediaServerInfo get selectedServer => 
+      _serverMap[_selectedServerId] ?? _serverMap.values.first;
 
-  MediaServerInfo get selectedServer => _selectedServer;
+  /// 提供给 UI 的列表：由 Map 动态生成
+  List<MediaServerInfo> get availableServers => _serverMap.values.toList();
+
   MediaServiceManager get mediaServiceManager => _mediaServiceManager;
 
   // Actions

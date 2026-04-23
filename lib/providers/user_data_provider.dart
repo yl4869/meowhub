@@ -23,6 +23,10 @@ class UserDataProvider extends ChangeNotifier {
   );
   static const Duration _optimisticSeekForwardTolerance = Duration(seconds: 4);
 
+  // 核心存储：从 List 变为 Map
+  // Key 建议使用 "${sourceType.name}:$id"
+  final Map<String, WatchHistoryItem> _historyMap = {};
+
   UserDataProvider({
     required MediaServiceManager mediaServiceManager,
     WatchHistoryRepository? watchHistoryRepository,
@@ -45,7 +49,7 @@ class UserDataProvider extends ChangeNotifier {
   final Map<int, MediaItem> _favoriteItems = {};
   final Map<String, int> _recentEpisodeIndices = {};
   final Map<String, String> _recentPlayableItemIds = {};
-  List<WatchHistoryItem> _watchHistory = const [];
+  // List<WatchHistoryItem> _watchHistory = const [];
   bool _isLoading = false; // 防并发加载锁
   final Set<String> _activePlaybackKeys = <String>{};
   Timer? _serverWatchHistorySyncTimer;
@@ -57,20 +61,21 @@ class UserDataProvider extends ChangeNotifier {
   List<MediaItem> get favoriteItems => _favoriteItems.values.toList();
   int get favoriteCount => _favoriteItems.length;
 
-  List<WatchHistoryItem> get watchHistory => _watchHistory;
-  int get inProgressCount {
-    return _watchHistory.where((item) => item.position > Duration.zero).length;
-  }
+  List<WatchHistoryItem> get watchHistory => _historyMap.values.toList()
+  ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
-  List<int> get recentPlaybackMediaIds {
-    return _watchHistory
-        .map((item) => int.tryParse(item.id))
-        .whereType<int>()
-        .toList(growable: false);
-  }
+  // 统计逻辑也变简单了
+  int get inProgressCount => _historyMap.values
+    .where((item) => item.position > Duration.zero)
+    .length;
+
+  List<int> get recentPlaybackMediaIds => watchHistory
+    .map((item) => int.tryParse(item.id))
+    .whereType<int>()
+    .toList(growable: false);
 
   List<String> get recentPlaybackMediaKeys {
-    return _watchHistory
+    return watchHistory // 使用公共 getter 替代 _watchHistory
         .map((item) {
           final targetId = item.seriesId ?? item.id;
           return '${item.sourceType.name}:$targetId';
@@ -79,21 +84,18 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   int? get latestRecentMediaId {
-    if (_watchHistory.isEmpty) {
+    final history = watchHistory; // 获取转换后的有序列表
+    if (history.isEmpty) {
       return null;
     }
-    return int.tryParse(_watchHistory.first.id);
+    return int.tryParse(history.first.id);
   }
 
   String? get latestRecentMediaKey {
-    if (_watchHistory.isEmpty) {
-      return null;
-    }
-
-    final latest = _watchHistory.first;
-    final targetId = latest.seriesId ?? latest.id;
-    return '${latest.sourceType.name}:$targetId';
-  }
+  if (_historyMap.isEmpty) return null;
+  final latest = watchHistory.first; // 获取排序后的第一条
+  return '${latest.sourceType.name}:${latest.seriesId ?? latest.id}';
+}
 
   // Query methods
   bool isFavorite(int mediaId) => _favoriteItems.containsKey(mediaId);
@@ -199,6 +201,7 @@ class UserDataProvider extends ChangeNotifier {
     await _loadWatchHistory();
   }
 
+  
   Future<void> updateProgress(
     WatchHistoryItem item, {
     int? episodeIndex,
@@ -548,7 +551,7 @@ class UserDataProvider extends ChangeNotifier {
     _activeConfigNamespace = nextNamespace;
     _watchHistoryRepository = _buildWatchHistoryRepository();
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
-    _watchHistory = const [];
+    _historyMap.clear(); // 替换 _watchHistory = const [];
     _isLoading = false;
     _activePlaybackKeys.clear();
     _optimisticSeekStates.clear();
@@ -559,34 +562,23 @@ class UserDataProvider extends ChangeNotifier {
     _loadWatchHistory();
   }
 
-  void clearPlaybackProgress(int mediaId) {
-    final targetId = mediaId.toString();
-    final previousLength = _watchHistory.length;
-    _watchHistory = _watchHistory
-        .where((item) => item.id != targetId)
-        .toList(growable: false);
+  // --- 找到并替换 clearPlaybackProgress ---
+void clearPlaybackProgress(int mediaId) {
+  // 这里直接从 Map 移除
+  final key = 'emby:${mediaId.toString()}'; // 假设默认是 emby
+  if (_historyMap.remove(key) != null) {
     _rebuildDerivedProgressState();
-
-    if (previousLength != _watchHistory.length) {
-      notifyListeners();
-    }
+    notifyListeners();
   }
+}
 
   void clearPlaybackProgressForItem(MediaItem mediaItem) {
-    final targetId = mediaItem.dataSourceId;
-    final previousLength = _watchHistory.length;
-    _watchHistory = _watchHistory
-        .where(
-          (item) =>
-              !(item.id == targetId && item.sourceType == mediaItem.sourceType),
-        )
-        .toList(growable: false);
+  final key = '${mediaItem.sourceType.name}:${mediaItem.dataSourceId}';
+  if (_historyMap.remove(key) != null) {
     _rebuildDerivedProgressState();
-
-    if (previousLength != _watchHistory.length) {
-      notifyListeners();
-    }
+    notifyListeners();
   }
+}
 
   // Private methods
   Future<void> _loadWatchHistory({bool rethrowOnError = true}) async {
@@ -602,9 +594,10 @@ class UserDataProvider extends ChangeNotifier {
         remoteHistory,
         notify: false,
       );
-      final firstItem = _watchHistory.isEmpty ? null : _watchHistory.first;
+      final history = watchHistory; // 获取当前有序历史
+      final firstItem = history.isEmpty ? null : history.first;
       debugPrint(
-        '[Resume][Provider][Load] source=emby count=${_watchHistory.length} '
+        '[Resume][Provider][Load] source=emby count=${history.length} '
         'firstId=${firstItem?.id ?? ''} '
         'firstTitle=${firstItem?.title ?? ''} '
         'firstPosition=${firstItem?.position.inMilliseconds ?? 0}ms',
@@ -671,38 +664,31 @@ class UserDataProvider extends ChangeNotifier {
     );
   }
 
-  WatchHistoryItem? _watchHistoryItemFor(
-    String id, {
-    WatchSourceType? sourceType,
-  }) {
-    for (final item in _watchHistory) {
-      if (item.id == id &&
-          (sourceType == null || item.sourceType == sourceType)) {
-        return item;
-      }
-    }
-    return null;
-  }
+  // --- 找到并替换 _watchHistoryItemFor ---
+WatchHistoryItem? _watchHistoryItemFor(
+  String id, {
+  WatchSourceType? sourceType,
+}) {
+  // 直接通过 Key 从 Map 中获取，不再需要循环！
+  final key = '${sourceType?.name ?? "emby"}:$id';
+  return _historyMap[key];
+}
 
-  WatchHistoryItem? _watchHistoryItemForSeries(MediaItem mediaItem) {
-    if (mediaItem.type != MediaType.series) {
-      return null;
-    }
+  // --- 找到并替换 _watchHistoryItemForSeries ---
+WatchHistoryItem? _watchHistoryItemForSeries(MediaItem mediaItem) {
+  if (mediaItem.type != MediaType.series) return null;
 
-    WatchHistoryItem? matched;
-    for (final item in _watchHistory) {
-      if (item.sourceType != mediaItem.sourceType) {
-        continue;
-      }
-      if (item.seriesId != mediaItem.dataSourceId) {
-        continue;
-      }
-      if (matched == null || item.updatedAt.isAfter(matched.updatedAt)) {
-        matched = item;
-      }
+  // 剧集查找稍微特殊，需要遍历一次 values
+  WatchHistoryItem? matched;
+  for (final item in _historyMap.values) {
+    if (item.sourceType != mediaItem.sourceType) continue;
+    if (item.seriesId != mediaItem.dataSourceId) continue;
+    if (matched == null || item.updatedAt.isAfter(matched.updatedAt)) {
+      matched = item;
     }
-    return matched;
   }
+  return matched;
+}
 
   WatchHistoryItem _buildWatchHistoryItemFromMediaItem(
     MediaItem mediaItem, {
@@ -771,31 +757,22 @@ class UserDataProvider extends ChangeNotifier {
     Iterable<WatchHistoryItem> items, {
     bool notify = true,
   }) {
-    final merged = <String, WatchHistoryItem>{
-      for (final item in _watchHistory) item.uniqueKey: item,
-    };
     var changed = false;
 
     for (final item in items) {
-      final existing = merged[item.uniqueKey];
+      final existing = _historyMap[item.uniqueKey];
       final preferred = _selectPreferredProgressItem(existing, item);
+      
       if (existing == null || !_isSameWatchHistoryItem(existing, preferred)) {
-        merged[item.uniqueKey] = preferred;
+        _historyMap[item.uniqueKey] = preferred;
         changed = true;
       }
     }
 
-    if (!changed) {
-      return;
-    }
+    if (!changed) return;
 
-    _watchHistory = merged.values.toList(growable: false)
-      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
     _rebuildDerivedProgressState();
-
-    if (notify) {
-      notifyListeners();
-    }
+    if (notify) notifyListeners();
   }
 
   void _replaceWatchHistoryItemsForSource(
@@ -803,37 +780,16 @@ class UserDataProvider extends ChangeNotifier {
     Iterable<WatchHistoryItem> items, {
     bool notify = true,
   }) {
-    final replacements = items
-        .where((item) => item.sourceType == sourceType)
-        .toList(growable: false);
-    final retained = _watchHistory
-        .where((item) => item.sourceType != sourceType)
-        .toList(growable: false);
-    final nextHistory = [...retained, ...replacements]
-      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    // 1. 先从 Map 中移除该源的所有旧数据
+    _historyMap.removeWhere((key, item) => item.sourceType == sourceType);
 
-    if (_watchHistory.length == nextHistory.length) {
-      var changed = false;
-      for (var index = 0; index < nextHistory.length; index++) {
-        if (!_isSameWatchHistoryItem(
-          _watchHistory[index],
-          nextHistory[index],
-        )) {
-          changed = true;
-          break;
-        }
-      }
-      if (!changed) {
-        return;
-      }
+    // 2. 填入新数据
+    for (final item in items) {
+      _historyMap[item.uniqueKey] = item;
     }
 
-    _watchHistory = nextHistory;
     _rebuildDerivedProgressState();
-
-    if (notify) {
-      notifyListeners();
-    }
+    if (notify) notifyListeners();
   }
 
   WatchHistoryItem _selectPreferredProgressItem(
@@ -889,39 +845,34 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   void _upsertWatchHistory(
-    WatchHistoryItem item, {
-    int? episodeIndex,
-    bool notify = true,
-    bool allowPositionRegression = false,
-  }) {
-    final existing = _watchHistoryItemFor(item.id, sourceType: item.sourceType);
-    final resolved = _selectPreferredProgressItem(
-      existing,
-      item,
-      allowPositionRegression: allowPositionRegression,
-    );
+  WatchHistoryItem item, {
+  int? episodeIndex,
+  bool notify = true,
+  bool allowPositionRegression = false,
+}) {
+  // 1. 获取旧值（O(1) 速度）
+  final existing = _historyMap[item.uniqueKey];
 
-    if (existing != null && _isSameWatchHistoryItem(existing, resolved)) {
-      _registerRecentProgress(resolved, explicitEpisodeIndex: episodeIndex);
-      if (notify) {
-        notifyListeners();
-      }
-      return;
-    }
+  // 2. 调用判定逻辑（即你现有的 _selectPreferredProgressItem）
+  final resolved = _selectPreferredProgressItem(
+    existing,
+    item,
+    allowPositionRegression: allowPositionRegression,
+  );
 
-    _watchHistory = <WatchHistoryItem>[
-      resolved,
-      ..._watchHistory.where(
-        (historyItem) => historyItem.uniqueKey != resolved.uniqueKey,
-      ),
-    ]..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
-
-    _registerRecentProgress(resolved, explicitEpisodeIndex: episodeIndex);
-
-    if (notify) {
-      notifyListeners();
-    }
+  // 3. 如果没变化，直接跳过，节省性能
+  if (existing != null && _isSameWatchHistoryItem(existing, resolved)) {
+    return;
   }
+
+  // 4. 直接更新 Map，由于 Key 唯一，它会自动覆盖旧数据
+  _historyMap[item.uniqueKey] = resolved;
+
+  // 5. 更新派生状态（如最近剧集索引）
+  _registerRecentProgress(resolved, explicitEpisodeIndex: episodeIndex);
+
+  if (notify) notifyListeners();
+}
 
   bool _isMeaningfulProgressRollback(
     WatchHistoryItem existing,
@@ -985,12 +936,13 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   void _rebuildDerivedProgressState() {
-    _recentEpisodeIndices.clear();
-    _recentPlayableItemIds.clear();
-    for (final item in _watchHistory) {
-      _registerRecentProgress(item);
-    }
+  _recentEpisodeIndices.clear();
+  _recentPlayableItemIds.clear();
+  // 改为遍历 _historyMap.values
+  for (final item in _historyMap.values) {
+    _registerRecentProgress(item);
   }
+}
 
   void _registerRecentProgress(
     WatchHistoryItem item, {
