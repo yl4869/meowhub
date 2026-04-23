@@ -2,10 +2,10 @@ import 'dart:collection';
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-
+// ✅ 统一只使用接口
+import '../domain/repositories/i_media_service_manager.dart';
 import '../core/persistence/file_source_store.dart';
 import '../domain/entities/media_service_config.dart';
-import '../domain/repositories/media_service_manager.dart';
 
 class MediaServerInfo {
   const MediaServerInfo({
@@ -76,7 +76,7 @@ class MediaServerInfo {
 /// 管理应用级别的配置：服务器选择、观看源选择等
 class AppProvider extends ChangeNotifier {
   AppProvider({
-    required MediaServiceManager mediaServiceManager,
+    required IMediaServiceManager mediaServiceManager, // ✅ 改为接口
     required FileSourceStore fileSourceStore,
     required List<MediaServerInfo> initialServers,
     required String? initialSelectedServerId,
@@ -103,7 +103,7 @@ class AppProvider extends ChangeNotifier {
     }
   }
 
-  final MediaServiceManager _mediaServiceManager;
+  final IMediaServiceManager _mediaServiceManager; // ✅ 改为接口
   final FileSourceStore _fileSourceStore;
 
   // 核心存储：Map 是唯一的真理 (Single Source of Truth)
@@ -113,7 +113,7 @@ class AppProvider extends ChangeNotifier {
   String _selectedServerId = '';
 
   static List<MediaServerInfo> _buildInitialServers(
-    MediaServiceManager manager,
+    IMediaServiceManager manager,
   ) {
     final savedConfig = manager.getSavedConfig();
     if (savedConfig != null) {
@@ -177,7 +177,7 @@ class AppProvider extends ChangeNotifier {
   /// 提供给 UI 的列表：由 Map 动态生成
   List<MediaServerInfo> get availableServers => _serverMap.values.toList();
 
-  MediaServiceManager get mediaServiceManager => _mediaServiceManager;
+  IMediaServiceManager get mediaServiceManager => _mediaServiceManager;
 
   // Actions
   void selectServer(MediaServerInfo server) {

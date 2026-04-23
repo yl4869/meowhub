@@ -7,8 +7,8 @@ import '../../providers/app_provider.dart';
 import '../../providers/user_data_provider.dart';
 import '../../domain/entities/playback_plan.dart';
 import '../../domain/usecases/get_playback_plan.dart';
-import '../../data/datasources/emby_api_client.dart';
-import '../../data/repositories/emby_playback_repository_impl.dart';
+// ✅ 确保导入了 Repository 接口
+import '../../domain/repositories/playback_repository.dart';
 import '../../domain/repositories/media_service_manager.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../atoms/meow_video_player.dart';
@@ -132,23 +132,6 @@ class _PlayerViewState extends State<PlayerView> {
         const ['srt', 'subrip', 'ass', 'ssa', 'webvtt', 'vtt'].contains(codec);
   }
 
-  EmbyPlaybackRepositoryImpl _buildPlaybackRepository() {
-    final manager = context.read<MediaServiceManager>();
-    final config = manager.getSavedConfig();
-    if (config == null || config.type != MediaServiceType.emby) {
-      throw StateError('Emby playback config is unavailable');
-    }
-    final api = EmbyApiClient(
-      config: config,
-      securityService: manager.securityService,
-      sessionExpiredNotifier: manager.sessionExpiredNotifier,
-    );
-    return EmbyPlaybackRepositoryImpl(
-      apiClient: api,
-      securityService: manager.securityService,
-    );
-  }
-
   @override
   void initState() {
     super.initState();
@@ -188,7 +171,11 @@ class _PlayerViewState extends State<PlayerView> {
       final saved = context.read<UserDataProvider>().trackSelectionForItem(
         widget.mediaItem,
       );
-      final plan = await _fetchPlaybackPlan(audioIndex: saved?.audioIndex);
+      // 在 _preparePlaybackPlan 中
+final plan = await _fetchPlaybackPlan(
+  audioIndex: saved?.audioIndex,
+  subtitleIndex: saved?.subtitleIndex, // 👈 确保这个也传进去了
+);
       _assertStrictPlan(plan);
       if (!mounted) return;
       setState(() {
@@ -237,7 +224,9 @@ class _PlayerViewState extends State<PlayerView> {
     String? playSessionIdOverride,
     Duration? startPositionOverride,
   }) async {
-    final repo = _buildPlaybackRepository();
+    // ✅ 关键：直接从 context 读取注入好的抽象接口
+    // 这将自动获取 main.dart 中配置的 EmbyPlaybackRepositoryImpl
+    final repo = context.read<PlaybackRepository>();
     final usecase = GetPlaybackPlanUseCase(repo);
     return usecase(
       widget.mediaItem,
@@ -245,6 +234,7 @@ class _PlayerViewState extends State<PlayerView> {
           maxStreamingBitrate ?? _selectedResolution.maxStreamingBitrate,
       requireAvc: true,
       audioStreamIndex: audioIndex,
+      subtitleStreamIndex: subtitleIndex, // 记得补上这个参数
       playSessionId: playSessionIdOverride ?? _plan?.playSessionId,
       startPosition:
           startPositionOverride ?? _resumePositionOverride ?? _initialPosition,

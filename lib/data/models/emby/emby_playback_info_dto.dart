@@ -33,6 +33,8 @@ class EmbyMediaSourceDto {
     this.defaultAudioStreamIndex,
     this.defaultSubtitleStreamIndex,
     this.mediaStreams = const [],
+    this.chapters, // 🚀 新增字段
+    this.markers,  // 🚀 新增字段
   });
 
   final String id;
@@ -40,16 +42,29 @@ class EmbyMediaSourceDto {
   final String? container;
   final bool supportsDirectPlay;
   final bool supportsTranscoding;
-  final String? transcodingUrl; // relative path
+  final String? transcodingUrl;
   final int? defaultAudioStreamIndex;
   final int? defaultSubtitleStreamIndex;
   final List<EmbyMediaStreamDto> mediaStreams;
+  final List<EmbyChapterDto>? chapters; // 章节
+  final List<EmbyMarkerDto>? markers;   // 标记 (Intro/Outro)
 
   factory EmbyMediaSourceDto.fromJson(Map<String, dynamic> json) {
     final streams = (json['MediaStreams'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(EmbyMediaStreamDto.fromJson)
         .toList(growable: false);
+
+    // 解析章节
+    final chaptersJson = json['Chapters'] as List<dynamic>?;
+    final chapters = chaptersJson?.whereType<Map<String, dynamic>>()
+        .map(EmbyChapterDto.fromJson).toList();
+
+    // 解析标记
+    final markersJson = json['Markers'] as List<dynamic>?;
+    final markers = markersJson?.whereType<Map<String, dynamic>>()
+        .map(EmbyMarkerDto.fromJson).toList();
+
     return EmbyMediaSourceDto(
       id: json['Id']?.toString() ?? '',
       protocol: json['Protocol'] as String?,
@@ -57,11 +72,11 @@ class EmbyMediaSourceDto {
       supportsDirectPlay: json['SupportsDirectPlay'] as bool? ?? false,
       supportsTranscoding: json['SupportsTranscoding'] as bool? ?? false,
       transcodingUrl: json['TranscodingUrl'] as String?,
-      defaultAudioStreamIndex: (json['DefaultAudioStreamIndex'] as num?)
-          ?.toInt(),
-      defaultSubtitleStreamIndex: (json['DefaultSubtitleStreamIndex'] as num?)
-          ?.toInt(),
+      defaultAudioStreamIndex: (json['DefaultAudioStreamIndex'] as num?)?.toInt(),
+      defaultSubtitleStreamIndex: (json['DefaultSubtitleStreamIndex'] as num?)?.toInt(),
       mediaStreams: streams,
+      chapters: chapters,
+      markers: markers,
     );
   }
 }
@@ -74,6 +89,7 @@ class EmbyMediaStreamDto {
     this.displayTitle,
     this.codec,
     this.channels,
+    this.bitrate, // 🚀 关键：新增码率字段
     this.isDefault = false,
     this.isExternal = false,
     this.deliveryUrl,
@@ -81,11 +97,12 @@ class EmbyMediaStreamDto {
   });
 
   final int index;
-  final String type; // Audio / Video / Subtitle
+  final String type;
   final String? language;
   final String? displayTitle;
   final String? codec;
   final int? channels;
+  final int? bitrate; // 码率 (bps)
   final bool isDefault;
   final bool isExternal;
   final String? deliveryUrl;
@@ -99,10 +116,40 @@ class EmbyMediaStreamDto {
       displayTitle: json['DisplayTitle'] as String?,
       codec: json['Codec'] as String?,
       channels: (json['Channels'] as num?)?.toInt(),
+      bitrate: (json['Bitrate'] as num?)?.toInt(), // 映射 Emby 的 "Bitrate" 键
       isDefault: json['IsDefault'] as bool? ?? false,
       isExternal: json['IsExternal'] as bool? ?? false,
       deliveryUrl: json['DeliveryUrl'] as String?,
       isTextSubtitleStream: json['IsTextSubtitleStream'] as bool? ?? false,
+    );
+  }
+}
+// 🚀 新增：章节 DTO
+class EmbyChapterDto {
+  const EmbyChapterDto({this.name, required this.startTicks});
+  final String? name;
+  final int startTicks;
+
+  factory EmbyChapterDto.fromJson(Map<String, dynamic> json) {
+    return EmbyChapterDto(
+      name: json['Name'] as String?,
+      startTicks: (json['StartPositionTicks'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+// 🚀 新增：标记 DTO (用于 Intro/Outro)
+class EmbyMarkerDto {
+  const EmbyMarkerDto({this.type, required this.startTicks, required this.endTicks});
+  final String? type;
+  final int startTicks;
+  final int endTicks;
+
+  factory EmbyMarkerDto.fromJson(Map<String, dynamic> json) {
+    return EmbyMarkerDto(
+      type: json['MarkerType'] as String?,
+      startTicks: (json['StartPositionTicks'] as num?)?.toInt() ?? 0,
+      endTicks: (json['EndPositionTicks'] as num?)?.toInt() ?? 0,
     );
   }
 }

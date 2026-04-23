@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:meowhub/data/models/emby/emby_resume_item_dto.dart';
 
 import '../../core/services/security_service.dart';
 import '../../core/session/session_expired_notifier.dart';
@@ -27,8 +28,11 @@ const String _embyBaseItemFields =
 /// Emby API 客户端封装。
 /// 统一负责认证、基础 GET/POST、媒体库与影片列表接口访问。
 class EmbyApiClient {
+  // ✅ 将 config 改为 public (或者提供一个 public getter)
+  final MediaServiceConfig config; 
+
   EmbyApiClient({
-    required MediaServiceConfig config,
+    required this.config, // ✅ 使用 this.config 直接赋值
     required SecurityService securityService,
     required SessionExpiredNotifier sessionExpiredNotifier,
     Dio? dio,
@@ -433,6 +437,31 @@ class EmbyApiClient {
       rethrow;
     }
   }
+
+  /// ✅ 统一后的版本：符合 DataSource 契约，且返回强类型数据
+Future<List<EmbyResumeItemDto>> getRecentWatching() async {
+  final userId = await _requireUserId();
+  
+  // 建议使用 Resume 接口，因为它最符合“继续观看”的直觉
+  final response = await get<Map<String, dynamic>>(
+    '/emby/Users/$userId/Items/Resume',
+    queryParameters: {
+      'Recursive': true,
+      'Fields': _embyBaseItemFields, // 使用你定义的通用字段
+      'Limit': 12,
+    },
+  );
+
+  final data = response.data ?? {};
+  final items = data['Items'] as List<dynamic>? ?? [];
+  
+  // 🚀 在这里完成“零件”到“模型”的转换
+  return items
+      .whereType<Map<String, dynamic>>()
+      .map((json) => EmbyResumeItemDto.fromJson(json))
+      .toList();
+}
+  
 
   Future<List<Map<String, dynamic>>> _fetchRecentlyWatchedItems({
     required String userId,

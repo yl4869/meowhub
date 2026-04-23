@@ -1,197 +1,136 @@
-import '../../core/utils/emby_ticks.dart';
-import 'package:flutter/foundation.dart';
-
-import '../../domain/entities/media_service_config.dart';
-import '../../core/services/security_service.dart';
-import '../../core/session/session_expired_notifier.dart';
 import '../models/emby/emby_resume_item_dto.dart';
 import 'emby_api_client.dart';
 
-/// 通用的远程数据源适配器
-/// 直接通过 Emby API 拉取与回写观看历史，避免额外的 service 包装层。
-class EmbyWatchHistoryRemoteDataSourceImpl
-    implements EmbyWatchHistoryRemoteDataSource {
-  EmbyWatchHistoryRemoteDataSourceImpl({
-    required MediaServiceConfig config,
-    required SecurityService securityService,
-    required SessionExpiredNotifier sessionExpiredNotifier,
-  }) : _apiClient = EmbyApiClient(
-         config: config,
-         securityService: securityService,
-         sessionExpiredNotifier: sessionExpiredNotifier,
-       );
+/// ✅ 1. 契约层 (Interface)
+/// 定义了所有 Emby 远程数据源必须具备的“超能力”
+abstract class EmbyWatchHistoryRemoteDataSource {
+  /// 获取 Emby 侧的“继续观看”列表
+  Future<List<EmbyResumeItemDto>> getHistory();
 
+  /// 通知服务器播放开始
+  Future<void> startPlayback({
+    required String itemId,
+    required Duration position,
+    required Duration duration,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  });
+
+  /// 周期性上报播放进度
+  Future<void> updateProgress({
+    required String itemId,
+    required Duration position,
+    required Duration duration,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  });
+
+  /// 通知服务器播放停止
+  Future<void> stopPlayback({
+    required String itemId,
+    required Duration position,
+    required Duration duration,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  });
+}
+
+/// ✅ 2. 正式实现类 (Implementation)
+/// 专门负责拿着共享的 ApiClient 去跟 Emby 服务器通信
+class EmbyWatchHistoryRemoteDataSourceImpl implements EmbyWatchHistoryRemoteDataSource {
   final EmbyApiClient _apiClient;
+
+  EmbyWatchHistoryRemoteDataSourceImpl({
+    required EmbyApiClient apiClient,
+  }) : _apiClient = apiClient;
 
   @override
   Future<List<EmbyResumeItemDto>> getHistory() async {
-    final items = await _apiClient.getRecentlyWatchedItems();
-    final parsed = items.map(_parseResumeItem).toList(growable: false);
-    final firstItem = parsed.isEmpty ? null : parsed.first;
-    debugPrint(
-      '[Recent][Emby][Parsed] count=${parsed.length} '
-      'firstId=${firstItem?.id ?? ''} '
-      'firstTitle=${firstItem?.name ?? ''} '
-      'firstPosition=${firstItem?.playbackPositionTicks ?? 0}',
-    );
-    return parsed;
+    return await _apiClient.getRecentWatching();
   }
 
   @override
   Future<void> startPlayback({
     required String itemId,
     required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  }) => _report(PlaybackAction.start, itemId, position, duration, playSessionId, mediaSourceId, audioStreamIndex, subtitleStreamIndex);
-
-  @override
-  Future<void> updateProgress({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  }) => _report(PlaybackAction.progress, itemId, position, duration, playSessionId, mediaSourceId, audioStreamIndex, subtitleStreamIndex);
-
-  @override
-  Future<void> stopPlayback({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  }) => _report(PlaybackAction.progress, itemId, position, duration, playSessionId, mediaSourceId, audioStreamIndex, subtitleStreamIndex);
-
-  /// 私有辅助方法，统一调用重构后的 ApiClient
-  Future<void> _report(
-    PlaybackAction action,
-    String itemId,
-    Duration position,
-    Duration duration,
-    String? sessionId,
-    String? sourceId,
-    int? audioIdx,
-    int? subIdx,
-  ) {
-    return _apiClient.reportPlaybackAction(
-      action: action,
-      itemId: itemId,
-      position: position,
-      duration: duration,
-      playSessionId: sessionId,
-      mediaSourceId: sourceId,
-      audioStreamIndex: audioIdx,
-      subtitleStreamIndex: subIdx,
-    );
-  }
-
-  // --- 解析逻辑精简 ---
-
-  EmbyResumeItemDto _parseResumeItem(Map<String, dynamic> item) {
-    final userData = item['UserData'] as Map<String, dynamic>? ?? {};
-
-    return EmbyResumeItemDto(
-      id: item['Id'] ?? '',
-      name: item['Name'] ?? 'Unknown',
-      primaryImageUrl: _buildImageUrl(item),
-      playbackPositionTicks: userData['PlaybackPositionTicks'] ?? 0,
-      runTimeTicks: item['RunTimeTicks'] ?? 0,
-      lastPlayedDate: userData['LastPlayedDate'],
-      seriesId: item['SeriesId'],
-      parentIndexNumber: (item['ParentIndexNumber'] as num?)?.toInt(),
-      indexNumber: (item['IndexNumber'] as num?)?.toInt(),
-    );
-  }
-
-  String _buildImageUrl(Map<String, dynamic> item) {
-    final itemId = item['Id'];
-    final imageTag = (item['ImageTags'] as Map?)?['Primary'];
-    
-    if (itemId == null || imageTag == null) return '';
-
-    return '${_apiClient.serverUrl}/emby/Items/$itemId/Images/Primary?tag=$imageTag&maxHeight=300';
-  }
-}
-
-abstract class EmbyWatchHistoryRemoteDataSource {
-  Future<void> startPlayback({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  });
-
-  Future<void> updateProgress({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  });
-
-  Future<void> stopPlayback({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
-    String? playSessionId,
-    String? mediaSourceId,
-    int? audioStreamIndex,
-    int? subtitleStreamIndex,
-  });
-
-  Future<List<EmbyResumeItemDto>> getHistory();
-}
-
-/// Mock实现同步瘦身
-class MockEmbyWatchHistoryRemoteDataSource implements EmbyWatchHistoryRemoteDataSource {
-  MockEmbyWatchHistoryRemoteDataSource({
-    List<EmbyResumeItemDto> initialHistory = const [],
-  }) : _historyById = {for (final item in initialHistory) item.id: item};
-
-  final Map<String, EmbyResumeItemDto> _historyById;
-
-  @override
-  Future<List<EmbyResumeItemDto>> getHistory() async => _historyById.values.toList(growable: false);
-
-  @override
-  Future<void> startPlayback({required String itemId, required Duration position, Duration duration = Duration.zero, String? playSessionId, String? mediaSourceId, int? audioStreamIndex, int? subtitleStreamIndex}) 
-    => updateProgress(itemId: itemId, position: position, duration: duration);
-
-  @override
-  Future<void> stopPlayback({required String itemId, required Duration position, Duration duration = Duration.zero, String? playSessionId, String? mediaSourceId, int? audioStreamIndex, int? subtitleStreamIndex}) 
-    => updateProgress(itemId: itemId, position: position, duration: duration);
-
-  @override
-  Future<void> updateProgress({
-    required String itemId,
-    required Duration position,
-    Duration duration = Duration.zero,
+    required Duration duration,
     String? playSessionId,
     String? mediaSourceId,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
   }) async {
-    final prev = _historyById[itemId];
-    _historyById[itemId] = EmbyResumeItemDto(
-      id: itemId,
-      name: prev?.name ?? 'Unknown',
-      primaryImageUrl: prev?.primaryImageUrl,
-      playbackPositionTicks: durationToEmbyTicks(position),
-      runTimeTicks: duration > Duration.zero ? durationToEmbyTicks(duration) : (prev?.runTimeTicks ?? 0),
-      lastPlayedDate: DateTime.now().toIso8601String(),
+    await _apiClient.reportPlaybackAction(
+      action: PlaybackAction.start,
+      itemId: itemId,
+      position: position,
+      playSessionId: playSessionId,
     );
   }
+
+  @override
+  Future<void> updateProgress({
+    required String itemId,
+    required Duration position,
+    required Duration duration,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await _apiClient.reportPlaybackAction(
+      action: PlaybackAction.progress,
+      itemId: itemId,
+      position: position,
+      playSessionId: playSessionId,
+    );
+  }
+
+  @override
+  Future<void> stopPlayback({
+    required String itemId,
+    required Duration position,
+    required Duration duration,
+    String? playSessionId,
+    String? mediaSourceId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) async {
+    await _apiClient.reportPlaybackAction(
+      action: PlaybackAction.stop,
+      itemId: itemId,
+      position: position,
+      playSessionId: playSessionId,
+    );
+  }
+}
+
+/// ✅ 3. 模拟实现类 (Mock)
+/// 用于离线调试或尚未登录时，保证程序不会因为找不到方法而崩溃
+class MockEmbyWatchHistoryRemoteDataSource implements EmbyWatchHistoryRemoteDataSource {
+  @override
+  Future<List<EmbyResumeItemDto>> getHistory() async => const [];
+
+  @override
+  Future<void> startPlayback({
+    required String itemId, required Duration position, required Duration duration,
+    String? playSessionId, String? mediaSourceId, int? audioStreamIndex, int? subtitleStreamIndex,
+  }) async {}
+
+  @override
+  Future<void> updateProgress({
+    required String itemId, required Duration position, required Duration duration,
+    String? playSessionId, String? mediaSourceId, int? audioStreamIndex, int? subtitleStreamIndex,
+  }) async {}
+
+  @override
+  Future<void> stopPlayback({
+    required String itemId, required Duration position, required Duration duration,
+    String? playSessionId, String? mediaSourceId, int? audioStreamIndex, int? subtitleStreamIndex,
+  }) async {}
 }

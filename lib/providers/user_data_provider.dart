@@ -1,14 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:meowhub/domain/repositories/i_media_service_manager.dart';
 
-import '../data/datasources/emby_watch_history_remote_data_source.dart';
-import '../data/datasources/local_watch_history_data_source.dart';
-import '../data/repositories/watch_history_repository_impl.dart';
-import '../domain/entities/watch_history_item.dart';
-import '../domain/entities/media_service_config.dart';
 import '../domain/repositories/watch_history_repository.dart';
 import '../domain/repositories/media_service_manager.dart';
+import '../domain/entities/watch_history_item.dart';
+import '../domain/entities/media_service_config.dart';
 import '../domain/usecases/update_watch_progress.dart';
 import '../domain/entities/media_item.dart';
 
@@ -34,21 +32,18 @@ class UserDataProvider extends ChangeNotifier {
   final Map<String, WatchHistoryItem> _historyMap = {};
 
   UserDataProvider({
-    required MediaServiceManager mediaServiceManager,
-    WatchHistoryRepository? watchHistoryRepository,
-  }) : _mediaServiceManager = mediaServiceManager {
-    _activeConfigNamespace = mediaServiceManager
-        .getSavedConfig()
-        ?.credentialNamespace;
-    _watchHistoryRepository =
-        watchHistoryRepository ?? _buildWatchHistoryRepository();
+    required IMediaServiceManager mediaServiceManager, // ✅ 改为接口
+    required WatchHistoryRepository watchHistoryRepository, // 👈 变为必填
+  }) : _mediaServiceManager = mediaServiceManager,
+       _watchHistoryRepository = watchHistoryRepository {
+    _activeConfigNamespace = mediaServiceManager.getSavedConfig()?.credentialNamespace;
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
     _restartServerWatchHistorySync();
     _loadWatchHistory();
   }
 
-  MediaServiceManager _mediaServiceManager;
-  late WatchHistoryRepository _watchHistoryRepository;
+  IMediaServiceManager _mediaServiceManager; // ✅ 改为接口
+  WatchHistoryRepository _watchHistoryRepository;
   late UpdateWatchProgressUseCase _updateWatchProgress;
   String? _activeConfigNamespace;
 
@@ -559,23 +554,34 @@ class UserDataProvider extends ChangeNotifier {
     }
   }
 
-  void updateMediaServiceManager(MediaServiceManager manager) {
+  void updateDependencies({
+    required IMediaServiceManager manager, // ✅ 改为接口
+    required WatchHistoryRepository watchHistoryRepository,
+  }) {
     final nextNamespace = manager.getSavedConfig()?.credentialNamespace;
+    
+    // 检查依赖是否有实质性变化
     if (identical(_mediaServiceManager, manager) &&
+        identical(_watchHistoryRepository, watchHistoryRepository) &&
         _activeConfigNamespace == nextNamespace) {
       return;
     }
 
     _mediaServiceManager = manager;
+    _watchHistoryRepository = watchHistoryRepository; // 👈 接受外部传入的新仓库
     _activeConfigNamespace = nextNamespace;
-    _watchHistoryRepository = _buildWatchHistoryRepository();
+    
+    // 重新包装 UseCase
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
-    _historyMap.clear(); // 替换 _watchHistory = const [];
+    
+    // 重置状态
+    _historyMap.clear();
     _isLoading = false;
     _activePlaybackKeys.clear();
     _optimisticSeekStates.clear();
     _recentEpisodeIndices.clear();
     _recentPlayableItemIds.clear();
+    
     _restartServerWatchHistorySync();
     notifyListeners();
     _loadWatchHistory();
@@ -662,25 +668,6 @@ void clearPlaybackProgress(int mediaId) {
     }
     _activePlaybackKeys.remove(key);
     _optimisticSeekStates.remove(key);
-  }
-
-  WatchHistoryRepository _buildWatchHistoryRepository() {
-    final savedConfig = _mediaServiceManager.getSavedConfig();
-    if (savedConfig != null && savedConfig.type == MediaServiceType.emby) {
-      return WatchHistoryRepositoryImpl(
-        embyRemoteDataSource: EmbyWatchHistoryRemoteDataSourceImpl(
-          config: savedConfig,
-          securityService: _mediaServiceManager.securityService,
-          sessionExpiredNotifier: _mediaServiceManager.sessionExpiredNotifier,
-        ),
-        localDataSource: InMemoryLocalWatchHistoryDataSource(),
-      );
-    }
-
-    return WatchHistoryRepositoryImpl(
-      embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(),
-      localDataSource: InMemoryLocalWatchHistoryDataSource(),
-    );
   }
 
   // --- 找到并替换 _watchHistoryItemFor ---

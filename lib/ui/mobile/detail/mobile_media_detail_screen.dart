@@ -3,19 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/entities/media_item.dart';
+import '../../../domain/entities/playback_plan.dart';
 import '../../../providers/app_provider.dart';
-import '../../../domain/entities/media_service_config.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/cast_list_section.dart';
 import '../../atoms/expandable_overview_section.dart';
 import '../../atoms/info_chip.dart';
 import '../../atoms/info_row.dart';
-import '../../../domain/entities/playback_plan.dart';
-import '../../../domain/repositories/media_service_manager.dart';
-import '../../../data/datasources/emby_api_client.dart';
-import '../../../data/repositories/emby_playback_repository_impl.dart';
-import '../../../domain/usecases/get_playback_plan.dart';
 import '../../../providers/media_detail_provider.dart';
 import '../../../providers/media_with_user_data_provider.dart';
 import '../../../providers/user_data_provider.dart';
@@ -46,18 +41,13 @@ class MobileMediaDetailScreen extends StatefulWidget {
 }
 
 class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
-  static const int _playbackPlanBitrate = 1000 * 1000 * 1000;
   static const double _episodeListHorizontalPadding = 18;
   static const double _episodeChipHorizontalPadding = 18;
   static const double _episodeChipGap = 10;
 
-  final Map<String, List<PlaybackStream>> _audioOptionsByItem = {};
-  final Map<String, String?> _mediaSourceIdByItem = {};
-  final Map<String, List<PlaybackStream>> _subtitleOptionsByItem = {};
   final Map<int, GlobalKey> _episodeItemKeys = {};
   final GlobalKey _episodeListViewportKey = GlobalKey();
   final ScrollController _episodeScrollController = ScrollController();
-  bool _loadingTrackOptions = false;
   int? _selectedAudioIndex;
   int? _selectedSubtitleIndex;
   String? _lastCenteredEpisodeSignature;
@@ -87,9 +77,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       widget.playableItems,
     );
     if (playableItemsChanged) {
-      _audioOptionsByItem.clear();
-      _mediaSourceIdByItem.clear();
-      _subtitleOptionsByItem.clear();
       _episodeItemKeys.clear();
       _lastCenteredEpisodeSignature = null;
     }
@@ -167,41 +154,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       episodesLength: episodes.length,
     );
 
-   /// 1. 声道数转中文描述词
-  String _translateChannels(int? channels) {
-    if (channels == null) return '';
-    return switch (channels) {
-      1 => '单声道',
-      2 => '立体声',
-      6 => '5.1 环绕声',
-      8 => '7.1 环绕声',
-      _ => '$channels 声道',
-    };
-  }
-
-  /// 2. 缝合 Emby 原始信息：网页端全量格式
-  /// 格式：CHI AAC stereo (粤语) · 立体声 @192kbps
-  String _buildEmbyAudioLabel(PlaybackStream stream) {
-    final lang = (stream.language ?? 'CHI').toUpperCase();
-    final codec = (stream.codec ?? 'AAC').toUpperCase();
-    final channelShort = stream.channels == 2 ? 'stereo' : (stream.channels != null ? '${stream.channels}ch' : '');
-    
-    // 信任 Emby 传回的标题 (里面通常带有国语、粤语、评论音轨等字样)
-    final remoteTitle = stream.title;
-    
-    // 中文描述部分
-    final channelCN = _translateChannels(stream.channels);
-    final bitrate = stream.bitrate != null ? '${(stream.bitrate! / 1000).round()}kbps' : '';
-
-    // 拼接逻辑
-    return [
-      '$lang $codec $channelShort',
-      if (remoteTitle.isNotEmpty) '($remoteTitle)',
-      if (channelCN.isNotEmpty) '· $channelCN',
-      if (bitrate.isNotEmpty) '@$bitrate',
-    ].join(' ').trim();
-  }
-
     return Scaffold(
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
@@ -232,7 +184,7 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
                     _PlaybackConfigSection(
                       audioLabel: _audioButtonLabel,
                       subtitleLabel: _subtitleButtonLabel,
-                      loading: _loadingTrackOptions,
+                      loading: detailProvider.isLoadingPlaybackConfig,
                       onAudioTap: _openAudioSelector,
                       onSubtitleTap: _openSubtitleSelector,
                     ),
@@ -760,17 +712,17 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   }
 
   String get _audioButtonLabel {
-    if (_loadingTrackOptions) {
+    final detailProvider = context.read<MediaDetailProvider>();
+    if (detailProvider.isLoadingPlaybackConfig) {
       return '加载中';
     }
     final selectedIndex = _selectedAudioIndex;
     if (selectedIndex == null) {
       return '默认音轨';
     }
-    final options = _audioOptionsByItem[_currentPlayableItem.mediaKey];
-    final matched = options?.where((stream) => stream.index == selectedIndex);
-    final title = matched?.isNotEmpty == true
-        ? matched!.first.title
+    final matched = detailProvider.selectedAudioStreamByIndex(selectedIndex);
+    final title = matched != null
+        ? matched.title
         : context
               .read<UserDataProvider>()
               .trackSelectionForItem(_currentPlayableItem)
@@ -779,17 +731,17 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
   }
 
   String get _subtitleButtonLabel {
-    if (_loadingTrackOptions) {
+    final detailProvider = context.read<MediaDetailProvider>();
+    if (detailProvider.isLoadingPlaybackConfig) {
       return '加载中';
     }
     final selectedIndex = _selectedSubtitleIndex ?? -1;
     if (selectedIndex < 0) {
       return '无字幕';
     }
-    final options = _subtitleOptionsByItem[_currentPlayableItem.mediaKey];
-    final matched = options?.where((stream) => stream.index == selectedIndex);
-    final title = matched?.isNotEmpty == true
-        ? matched!.first.title
+    final matched = detailProvider.selectedSubtitleStreamByIndex(selectedIndex);
+    final title = matched != null
+        ? matched.title
         : context
               .read<UserDataProvider>()
               .trackSelectionForItem(_currentPlayableItem)
@@ -816,84 +768,43 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
 
   Future<void> _ensureTrackOptionsLoaded() async {
     final item = _currentPlayableItem;
-    final manager = context.read<MediaServiceManager>();
+    final detailProvider = context.read<MediaDetailProvider>();
     final udp = context.read<UserDataProvider>();
-    if (!_supportsPlaybackInfo(item)) {
-      if (mounted) {
-        setState(() {
-          _selectedAudioIndex = udp.trackSelectionForItem(item)?.audioIndex;
-          _selectedSubtitleIndex =
-              udp.trackSelectionForItem(item)?.subtitleIndex ?? -1;
-        });
-      }
+    final saved = udp.trackSelectionForItem(item);
+    await detailProvider.ensurePlaybackInfoForSelectedEpisode();
+    if (!mounted) {
       return;
     }
-
-    final cachedAudio = _audioOptionsByItem[item.mediaKey];
-    final cachedSubtitle = _subtitleOptionsByItem[item.mediaKey];
-    if (cachedAudio != null && cachedSubtitle != null) {
-      final saved = udp.trackSelectionForItem(item);
-      if (mounted) {
-        setState(() {
-          _selectedAudioIndex = saved?.audioIndex;
-          _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
-        });
-      }
-      return;
-    }
-
-    final config = manager.getSavedConfig();
-    if (config == null || config.type != MediaServiceType.emby) {
-      if (mounted) {
-        setState(() {
-          _selectedAudioIndex = udp.trackSelectionForItem(item)?.audioIndex;
-          _selectedSubtitleIndex =
-              udp.trackSelectionForItem(item)?.subtitleIndex ?? -1;
-        });
-      }
-      return;
-    }
-
-    setState(() => _loadingTrackOptions = true);
-    try {
-      final saved = udp.trackSelectionForItem(item);
-      final api = EmbyApiClient(
-        config: config,
-        securityService: manager.securityService,
-        sessionExpiredNotifier: manager.sessionExpiredNotifier,
-      );
-      final repo = EmbyPlaybackRepositoryImpl(
-        apiClient: api,
-        securityService: manager.securityService,
-      );
-      final plan = await GetPlaybackPlanUseCase(repo).call(
-        item,
-        maxStreamingBitrate: _playbackPlanBitrate,
-        requireAvc: true,
-        audioStreamIndex: saved?.audioIndex,
-      );
-      _audioOptionsByItem[item.mediaKey] = plan.audioStreams;
-      _mediaSourceIdByItem[item.mediaKey] = plan.mediaSourceId;
-      _subtitleOptionsByItem[item.mediaKey] = plan.subtitleStreams;
-      if (mounted) {
-        setState(() {
-          _selectedAudioIndex = saved?.audioIndex;
-          _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
-        });
-      }
-    } finally {
-      if (mounted) setState(() => _loadingTrackOptions = false);
-    }
+    setState(() {
+      _selectedAudioIndex = saved?.audioIndex;
+      _selectedSubtitleIndex = saved?.subtitleIndex ?? -1;
+    });
   }
 
   Future<List<PlaybackStream>> _ensureAudioOptions() async {
+    final item = _currentPlayableItem;
     await _ensureTrackOptionsLoaded();
-    return _audioOptionsByItem[_currentPlayableItem.mediaKey] ?? const [];
+    if (!mounted) {
+      return const [];
+    }
+    final detailProvider = context.read<MediaDetailProvider>();
+    if (detailProvider.selectedPlaybackItemKey != item.mediaKey) {
+      return const [];
+    }
+    return detailProvider.selectedAudioStreams;
   }
 
   Future<List<PlaybackStream>> _ensureSubtitleOptions() async {
+    final item = _currentPlayableItem;
     await _ensureTrackOptionsLoaded();
-    return _subtitleOptionsByItem[_currentPlayableItem.mediaKey] ?? const [];
+    if (!mounted) {
+      return const [];
+    }
+    final detailProvider = context.read<MediaDetailProvider>();
+    if (detailProvider.selectedPlaybackItemKey != item.mediaKey) {
+      return const [];
+    }
+    return detailProvider.selectedSubtitleStreams;
   }
 
   Future<void> _openAudioSelector() async {
@@ -908,7 +819,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       showDragHandle: true,
       builder: (context) {
         return SafeArea(
-          
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: Column(
@@ -969,6 +879,8 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       subtitleLanguage: previous?.subtitleLanguage,
       subtitleUri: previous?.subtitleUri,
     );
+    // ignore: discarded_futures
+    context.read<MediaDetailProvider>().ensurePlaybackInfoForSelectedEpisode();
     setState(() {
       _selectedAudioIndex = selected;
     });
@@ -1035,12 +947,6 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
         }
       }
     }
-    final subtitleUri = selectedStream == null
-        ? null
-        : await _buildSubtitleVttUrl(item, selectedStream);
-    if (!mounted) {
-      return;
-    }
     final udp = context.read<UserDataProvider>();
     final previous = udp.trackSelectionForItem(item);
     udp.setTrackSelectionForItem(
@@ -1050,58 +956,29 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
       audioTitle: previous?.audioTitle,
       subtitleTitle: selectedStream?.title,
       subtitleLanguage: selectedStream?.language,
-      subtitleUri: subtitleUri,
+      subtitleUri: selectedStream?.deliveryUrl,
     );
+    // ignore: discarded_futures
+    context.read<MediaDetailProvider>().ensurePlaybackInfoForSelectedEpisode();
     setState(() {
       _selectedSubtitleIndex = selected;
     });
   }
 
-  Future<String?> _buildSubtitleVttUrl(
-    MediaItem item,
-    PlaybackStream stream,
-  ) async {
-    final manager = context.read<MediaServiceManager>();
-    final config = manager.getSavedConfig();
-    if (config == null || config.type != MediaServiceType.emby) {
-      return null;
-    }
-    final api = EmbyApiClient(
-      config: config,
-      securityService: manager.securityService,
-      sessionExpiredNotifier: manager.sessionExpiredNotifier,
-    );
-    return api.buildSubtitleVttUrl(
-      itemId: item.dataSourceId,
-      streamIndex: stream.index,
-      mediaSourceId: _mediaSourceIdByItem[item.mediaKey],
-      deliveryUrl: stream.deliveryUrl,
-    );
-  }
-
   Future<void> _handlePlayPressed(int selectedEpisode) async {
     final item = _currentPlayableItem;
+    final detailProvider = context.read<MediaDetailProvider>();
     final udp = context.read<UserDataProvider>();
     final saved = udp.trackSelectionForItem(item);
     if ((saved?.subtitleIndex ?? -1) >= 0 &&
         (saved?.subtitleUri?.isEmpty ?? true)) {
-      final options = await _ensureSubtitleOptions();
+      await detailProvider.ensurePlaybackInfoForSelectedEpisode();
       if (!mounted) {
         return;
       }
-      PlaybackStream? stream;
-      for (final candidate in options) {
-        if (candidate.index == saved?.subtitleIndex) {
-          stream = candidate;
-          break;
-        }
-      }
-      final subtitleUri = stream == null
-          ? null
-          : await _buildSubtitleVttUrl(item, stream);
-      if (!mounted) {
-        return;
-      }
+      final stream = detailProvider.selectedSubtitleStreamByIndex(
+        saved?.subtitleIndex,
+      );
       udp.setTrackSelectionForItem(
         item,
         audioIndex: saved?.audioIndex,
@@ -1109,18 +986,10 @@ class _MobileMediaDetailScreenState extends State<MobileMediaDetailScreen> {
         audioTitle: saved?.audioTitle,
         subtitleTitle: stream?.title ?? saved?.subtitleTitle,
         subtitleLanguage: stream?.language ?? saved?.subtitleLanguage,
-        subtitleUri: subtitleUri,
+        subtitleUri: stream?.deliveryUrl,
       );
     }
     widget.onPlayPressed?.call(selectedEpisode);
-  }
-
-  bool _supportsPlaybackInfo(MediaItem item) {
-    if (item.type == MediaType.movie) {
-      return true;
-    }
-
-    return item.parentTitle != null || item.indexNumber != null;
   }
 }
 
