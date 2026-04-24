@@ -8,8 +8,8 @@ import '../../providers/user_data_provider.dart';
 import '../../domain/entities/playback_plan.dart';
 import '../../domain/usecases/get_playback_plan.dart';
 // ✅ 确保导入了 Repository 接口
+import '../../domain/repositories/i_media_service_manager.dart';
 import '../../domain/repositories/playback_repository.dart';
-import '../../domain/repositories/media_service_manager.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../atoms/meow_video_player.dart';
 // subtitles selection removed on player page
@@ -155,7 +155,7 @@ class _PlayerViewState extends State<PlayerView> {
         _planErrorMessage = null;
       });
     }
-    final manager = context.read<MediaServiceManager>();
+    final manager = context.read<IMediaServiceManager>();
     final config = manager.getSavedConfig();
     if (config == null || config.type != MediaServiceType.emby) {
       if (!mounted) return;

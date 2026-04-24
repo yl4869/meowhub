@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/watch_history_item.dart';
 import '../../domain/repositories/i_media_repository.dart';
@@ -12,37 +14,30 @@ class MockMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<List<MediaItem>> getMovies() async {
+    if (kDebugMode) {
+      debugPrint('[Diag][MockMediaRepository] getMovies');
+    }
     await Future.delayed(_networkDelay);
     return _movieFixtures;
   }
 
   @override
   Future<List<MediaItem>> getSeries() async {
+    if (kDebugMode) {
+      debugPrint('[Diag][MockMediaRepository] getSeries');
+    }
     await Future.delayed(_networkDelay);
     return _seriesFixtures;
   }
 
   @override
-  Future<List<MediaItem>> getRecentWatching() async {
-    await Future.delayed(_networkDelay);
-    return [
-      _movieFixtures[1].copyWith(
-        playbackProgress: const MediaPlaybackProgress(
-          position: Duration(minutes: 42),
-          duration: Duration(minutes: 118),
-        ),
-      ),
-      _seriesFixtures[0].copyWith(
-        playbackProgress: const MediaPlaybackProgress(
-          position: Duration(minutes: 18),
-          duration: Duration(minutes: 46),
-        ),
-      ),
-    ];
-  }
-
-  @override
   Future<MediaItem> getMediaDetail(MediaItem item) async {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MockMediaRepository] getMediaDetail | '
+        'itemId=${item.dataSourceId}',
+      );
+    }
     await Future.delayed(_networkDelay);
 
     final detail = [
@@ -90,6 +85,12 @@ class MockMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<List<MediaItem>> getPlayableItems(MediaItem item) async {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MockMediaRepository] getPlayableItems | '
+        'itemId=${item.dataSourceId}',
+      );
+    }
     final detail = await getMediaDetail(item);
     return detail.playableItems.isEmpty ? [detail] : detail.playableItems;
   }

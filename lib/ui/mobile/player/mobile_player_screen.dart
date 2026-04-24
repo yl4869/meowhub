@@ -70,7 +70,6 @@ class MobilePlayerScreen extends StatefulWidget {
 }
 
 class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
-  static const Duration _backgroundSyncInterval = Duration(seconds: 15);
   static const Duration _exitSyncTimeout = Duration(seconds: 8);
   static const Duration _initialSeekStabilityTolerance = Duration(seconds: 2);
   static const Duration _playbackStartStabilityThreshold = Duration(seconds: 1);
@@ -100,9 +99,6 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   double _currentSpeed = 1.0;
   double? _scrubValue;
   String? _centerToastText;
-  DateTime? _lastBackgroundSyncAt;
-  int _lastUiProgressSecond = -1;
-  int _lastLoggedPlaybackSecond = -1;
   Timer? _controlsHideTimer;
   Timer? _centerToastTimer;
 
@@ -369,30 +365,6 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
 
   Duration _durationDistance(Duration left, Duration right) {
     return left >= right ? left - right : right - left;
-  }
-
-  void _refreshUi(MeowVideoPlaybackStatus status) {
-    final nextSecond = status.position.inSeconds;
-    if (_lastUiProgressSecond == nextSecond || !mounted) {
-      return;
-    }
-    _lastUiProgressSecond = nextSecond;
-    setState(() {});
-  }
-
-  void _logPlaybackProgress(MeowVideoPlaybackStatus status) {
-    final currentSecond = status.position.inSeconds;
-    if (currentSecond <= 0 ||
-        currentSecond == _lastLoggedPlaybackSecond ||
-        currentSecond % 10 != 0) {
-      return;
-    }
-    _lastLoggedPlaybackSecond = currentSecond;
-    debugPrint(
-      '[Resume][Mobile][Playing] item=${widget.mediaItem.dataSourceId} '
-      'position=${status.position.inMilliseconds}ms '
-      'duration=${status.duration.inMilliseconds}ms',
-    );
   }
 
   void _maybeSyncProgressInBackground(MeowVideoPlaybackStatus status) {

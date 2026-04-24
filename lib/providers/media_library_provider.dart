@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../core/utils/app_diagnostics.dart';
 import '../domain/entities/media_item.dart';
 import '../domain/repositories/i_media_repository.dart';
 
@@ -50,11 +51,42 @@ class MediaLibraryProvider extends ChangeNotifier {
 
   MediaLibraryState get state => _state;
 
+  Map<String, Object?> debugSnapshot() {
+    return <String, Object?>{
+      'repository': _mediaRepository.runtimeType.toString(),
+      'movies': _state.movies.length,
+      'series': _state.series.length,
+      'recentWatching': _state.recentWatching.length,
+      'isLoading': _state.isLoading,
+      'errorMessage': _state.errorMessage,
+    };
+  }
+
+  void debugPrintSnapshot([String reason = 'manual']) {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MediaLibraryProvider] snapshot:$reason | ${debugSnapshot()}',
+      );
+    }
+  }
+
   void updateRepository(IMediaRepository mediaRepository) {
     if (identical(_mediaRepository, mediaRepository)) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MediaLibraryProvider] updateRepository:noop | '
+          'repository=${mediaRepository.runtimeType}',
+        );
+      }
       return;
     }
 
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MediaLibraryProvider] updateRepository | '
+        'from=${_mediaRepository.runtimeType}, to=${mediaRepository.runtimeType}',
+      );
+    }
     _mediaRepository = mediaRepository;
     _state = const MediaLibraryState();
     notifyListeners();
@@ -63,7 +95,19 @@ class MediaLibraryProvider extends ChangeNotifier {
 
   Future<void> loadInitialMovies() async {
     if (_state.isLoading) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MediaLibraryProvider] loadInitialMovies:skip_loading | '
+          '${debugSnapshot()}',
+        );
+      }
       return;
+    }
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MediaLibraryProvider] loadInitialMovies:start | '
+        '${debugSnapshot()}',
+      );
     }
     await fetchMovies(showLoading: true);
   }
@@ -73,6 +117,15 @@ class MediaLibraryProvider extends ChangeNotifier {
   }
 
   Future<void> fetchMovies({bool showLoading = false}) async {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MediaLibraryProvider] fetchMovies:start | '
+        '${{
+          ...debugSnapshot(),
+          'showLoading': showLoading,
+        }}',
+      );
+    }
     _state = _state.copyWith(isLoading: true, errorMessage: null);
     notifyListeners();
 
@@ -89,11 +142,26 @@ class MediaLibraryProvider extends ChangeNotifier {
         isLoading: false,
         errorMessage: null,
       );
-    } catch (_) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MediaLibraryProvider] fetchMovies:success | '
+          '${debugSnapshot()}',
+        );
+      }
+    } catch (error, stackTrace) {
       _state = _state.copyWith(
         isLoading: false,
         errorMessage: '影片加载失败了，下拉刷新试试。',
       );
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MediaLibraryProvider] fetchMovies:failed | '
+          'repository=${_mediaRepository.runtimeType}, '
+          'showLoading=$showLoading, '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
     }
 
     notifyListeners();

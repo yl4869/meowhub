@@ -1,8 +1,8 @@
-import 'dart:collection';
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 // ✅ 统一只使用接口
+import '../core/utils/app_diagnostics.dart';
 import '../domain/repositories/i_media_service_manager.dart';
 import '../core/persistence/file_source_store.dart';
 import '../domain/entities/media_service_config.dart';
@@ -75,6 +75,9 @@ class MediaServerInfo {
 /// 全局应用状态 Provider
 /// 管理应用级别的配置：服务器选择、观看源选择等
 class AppProvider extends ChangeNotifier {
+  // 1. 定义订阅变量，用于后续销毁
+  StreamSubscription<MediaServiceConfig?>? _configSubscription;
+
   AppProvider({
     required IMediaServiceManager mediaServiceManager, // ✅ 改为接口
     required FileSourceStore fileSourceStore,
@@ -83,6 +86,16 @@ class AppProvider extends ChangeNotifier {
   }) : _mediaServiceManager = mediaServiceManager,
 
        _fileSourceStore = fileSourceStore{
+    
+    // --- 🚀 新增：放置监听逻辑的位置 ---
+    _configSubscription = _mediaServiceManager.configStream.listen((config) {
+      if (kDebugMode) {
+        debugPrint('[Diag][AppProvider] 收到底层流配置变化通知');
+      }
+      // 只要底层 Manager 的配置变了（无论是因为重连、过期更新还是切换）
+      // 都会触发此处的 UI 通知
+      notifyListeners(); 
+    });
     
     // 1. 确定初始列表（只计算一次）
     final servers = initialServers.isEmpty
@@ -100,6 +113,10 @@ class AppProvider extends ChangeNotifier {
     // 4. (可选) 如果有配置，立即同步给底层 manager
     if (selectedServer.config != null) {
       unawaited(_mediaServiceManager.setConfig(selectedServer.config!));
+    }
+
+    if (kDebugMode) {
+      debugPrint('[Diag][AppProvider] init | ${debugSnapshot()}');
     }
   }
 
@@ -154,21 +171,6 @@ class AppProvider extends ChangeNotifier {
     return '${config.type.displayName} 默认源';
   }
 
-  static MediaServerInfo _resolveInitialSelectedServer(
-    List<MediaServerInfo> servers,
-    String? selectedServerId,
-  ) {
-    if (selectedServerId != null) {
-      for (final server in servers) {
-        if (server.id == selectedServerId) {
-          return server;
-        }
-      }
-    }
-
-    return servers.first;
-  }
-
   // Getters
   /// 实时获取选中对象：这样 Map 更新，UI 会立即看到新名字
   MediaServerInfo get selectedServer => 
@@ -179,24 +181,54 @@ class AppProvider extends ChangeNotifier {
 
   IMediaServiceManager get mediaServiceManager => _mediaServiceManager;
 
+  Map<String, Object?> debugSnapshot() {
+    return <String, Object?>{
+      'selectedServerId': _selectedServerId,
+      'selectedServerName': _serverMap[_selectedServerId]?.name,
+      'serverCount': _serverMap.length,
+      'serverIds': _serverMap.keys.toList(growable: false),
+      'managerConfig': AppDiagnostics.configSummary(
+        _mediaServiceManager.getSavedConfig(),
+      ),
+    };
+  }
+
+  void debugPrintSnapshot([String reason = 'manual']) {
+    if (kDebugMode) {
+      debugPrint('[Diag][AppProvider] snapshot:$reason | ${debugSnapshot()}');
+    }
+  }
+
   // Actions
   void selectServer(MediaServerInfo server) {
     if (_selectedServerId == server.id) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][AppProvider] selectServer:noop | '
+          'serverId=${server.id}, name=${server.name}',
+        );
+      }
       return;
     }
 
     // 更新 ID 即可，Getter 会自动处理对象获取
     _selectedServerId = server.id;
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][AppProvider] selectServer | '
+        'serverId=${server.id}, name=${server.name}, baseUrl=${server.baseUrl}',
+      );
+    }
     notifyListeners();
     
     // 这里的持久化方法我们也建议同步简化（见下文）
     unawaited(_persistState());
   }
 
-  void addConfiguredServer({
+  Future<void> addConfiguredServer({
     required String? customName,
     required MediaServiceConfig config,
-  }) {
+  }) async {
     final newServer = MediaServerInfo.fromConfig(
       config: config,
       name: customName,
@@ -212,12 +244,29 @@ class AppProvider extends ChangeNotifier {
     _serverMap[newServer.id] = newServer;
     _selectedServerId = newServer.id;
 
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][AppProvider] addConfiguredServer | '
+        'serverId=${newServer.id}, name=${newServer.name}, '
+        'baseUrl=${newServer.baseUrl}, serverCount=${_serverMap.length}',
+      );
+    }
+
+    await _persistState();
+
     notifyListeners();
-    unawaited(_persistState());
   }
 
   Future<void> _persistState() async {
     final current = selectedServer;
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][AppProvider] persistState:start | '
+        'selectedServerId=${current.id}, '
+        'selectedServerName=${current.name}, '
+        'isPlaceholder=${current.isPlaceholder}',
+      );
+    }
 
     // 1. 激活配置到 Manager
     if (current.config != null) {
@@ -236,6 +285,20 @@ class AppProvider extends ChangeNotifier {
         selectedSourceId: current.isPlaceholder ? null : _selectedServerId,
       ),
     );
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][AppProvider] persistState:done | '
+        'persistedSourceCount=${persistedSources.length}, '
+        'selectedSourceId=${current.isPlaceholder ? null : _selectedServerId}',
+      );
+    }
+  }
+  @override
+  void dispose() {
+    // 当 AppProvider 被销毁时（例如应用彻底关闭或切换用户）
+    // 必须取消流订阅，防止内存泄漏
+    _configSubscription?.cancel();
+    super.dispose();
   }
 }
 

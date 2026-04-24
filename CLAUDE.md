@@ -69,7 +69,8 @@ MeowHub uses a **pluggable media service architecture** to support multiple medi
 
 - `lib/domain/entities/media_service_config.dart` — Configuration for media services
 - `lib/domain/repositories/media_service.dart` — Abstract `MediaService` interface and `MediaServiceFactory`
-- `lib/domain/repositories/media_service_manager.dart` — Manages service lifecycle and persistence
+- `lib/domain/repositories/i_media_service_manager.dart` — Abstract service configuration contract
+- `lib/data/repositories/media_service_manager_impl.dart` — Manages service persistence
 - `lib/data/datasources/emby_api_client.dart` — Emby API implementation
 - `lib/data/datasources/emby_watch_history_remote_data_source.dart` — Adapter for backward compatibility
 - `lib/ui/screens/media_service_config_screen.dart` — Configuration UI
@@ -77,7 +78,7 @@ MeowHub uses a **pluggable media service architecture** to support multiple medi
 **Key Design Principles:**
 - All services implement the `MediaService` interface
 - `MediaServiceFactory` creates service instances based on config
-- `MediaServiceManager` handles persistence and initialization
+- `IMediaServiceManager` defines the configuration contract and `MediaServiceManagerImpl` handles persistence
 - `RemoteWatchHistoryDataSourceAdapter` bridges new services to existing repository layer
 - Easy to add new providers: implement `MediaService`, update factory, add UI option
 
@@ -89,4 +90,3 @@ See `MEDIA_SERVICE_ARCHITECTURE.md` for detailed documentation and extension gui
 - ✅ Mock data sources available for development
 - ⏳ Plex/Jellyfin support (extension points ready)
 - Device preview enabled by default on desktop/web for development
-

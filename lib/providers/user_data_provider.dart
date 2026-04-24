@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:meowhub/domain/repositories/i_media_service_manager.dart';
 
+import '../core/utils/app_diagnostics.dart';
 import '../domain/repositories/watch_history_repository.dart';
-import '../domain/repositories/media_service_manager.dart';
 import '../domain/entities/watch_history_item.dart';
 import '../domain/entities/media_service_config.dart';
 import '../domain/usecases/update_watch_progress.dart';
@@ -38,6 +38,9 @@ class UserDataProvider extends ChangeNotifier {
        _watchHistoryRepository = watchHistoryRepository {
     _activeConfigNamespace = mediaServiceManager.getSavedConfig()?.credentialNamespace;
     _updateWatchProgress = UpdateWatchProgressUseCase(_watchHistoryRepository);
+    if (kDebugMode) {
+      debugPrint('[Diag][UserDataProvider] init | ${debugSnapshot()}');
+    }
     _restartServerWatchHistorySync();
     _loadWatchHistory();
   }
@@ -97,6 +100,28 @@ class UserDataProvider extends ChangeNotifier {
   final latest = watchHistory.first; // 获取排序后的第一条
   return '${latest.sourceType.name}:${latest.seriesId ?? latest.id}';
 }
+
+  Map<String, Object?> debugSnapshot() {
+    return <String, Object?>{
+      'historyCount': _historyMap.length,
+      'favoriteCount': _favoriteItems.length,
+      'activePlaybackCount': _activePlaybackKeys.length,
+      'isLoading': _isLoading,
+      'trackSelectionCount': _trackSelections.length,
+      'activeConfigNamespace': _activeConfigNamespace,
+      'managerConfig': AppDiagnostics.configSummary(
+        _mediaServiceManager.getSavedConfig(),
+      ),
+    };
+  }
+
+  void debugPrintSnapshot([String reason = 'manual']) {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][UserDataProvider] snapshot:$reason | ${debugSnapshot()}',
+      );
+    }
+  }
 
   // Query methods
   bool isFavorite(int mediaId) => _favoriteItems.containsKey(mediaId);
@@ -607,9 +632,26 @@ void clearPlaybackProgress(int mediaId) {
 
   // Private methods
   Future<void> _loadWatchHistory({bool rethrowOnError = true}) async {
-    if (_isLoading) return;
+    if (_isLoading) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][UserDataProvider] loadWatchHistory:skip_loading | '
+          '${debugSnapshot()}',
+        );
+      }
+      return;
+    }
     _isLoading = true;
     try {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][UserDataProvider] loadWatchHistory:start | '
+          '${{
+            ...debugSnapshot(),
+            'rethrowOnError': rethrowOnError,
+          }}',
+        );
+      }
       debugPrint('[Resume][Provider][Load] source=emby start');
       final remoteHistory = await _watchHistoryRepository.getHistoryBySource(
         WatchSourceType.emby,
@@ -627,9 +669,28 @@ void clearPlaybackProgress(int mediaId) {
         'firstTitle=${firstItem?.title ?? ''} '
         'firstPosition=${firstItem?.position.inMilliseconds ?? 0}ms',
       );
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][UserDataProvider] loadWatchHistory:success | '
+          '${{
+            ...debugSnapshot(),
+            'firstItemId': firstItem?.id,
+            'firstItemTitle': firstItem?.title,
+          }}',
+        );
+      }
       notifyListeners();
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('[Resume][Provider][Load][Error] source=emby error=$e');
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][UserDataProvider] loadWatchHistory:failed | '
+          'state=${debugSnapshot()}, '
+          'rethrowOnError=$rethrowOnError, '
+          'error=${AppDiagnostics.summarizeError(e)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
       if (rethrowOnError) {
         rethrow;
       }
@@ -642,9 +703,24 @@ void clearPlaybackProgress(int mediaId) {
     _serverWatchHistorySyncTimer?.cancel();
     final savedConfig = _mediaServiceManager.getSavedConfig();
     if (savedConfig == null || savedConfig.type != MediaServiceType.emby) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][UserDataProvider] watchSync:disabled | '
+          '${AppDiagnostics.configSummary(savedConfig)}',
+        );
+      }
       return;
     }
 
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][UserDataProvider] watchSync:enabled | '
+        '${{
+          ...AppDiagnostics.configSummary(savedConfig),
+          'intervalSeconds': _serverWatchHistorySyncInterval.inSeconds,
+        }}',
+      );
+    }
     _serverWatchHistorySyncTimer = Timer.periodic(
       _serverWatchHistorySyncInterval,
       (_) => _syncWatchHistoryFromServerInBackground(),
@@ -653,6 +729,12 @@ void clearPlaybackProgress(int mediaId) {
 
   void _syncWatchHistoryFromServerInBackground() {
     if (_activePlaybackKeys.isNotEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][UserDataProvider] watchSync:skip_active_playback | '
+          'activePlaybackCount=${_activePlaybackKeys.length}',
+        );
+      }
       return;
     }
 

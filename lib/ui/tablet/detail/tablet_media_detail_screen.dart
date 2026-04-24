@@ -12,9 +12,8 @@ import '../../atoms/expandable_overview_section.dart';
 import '../../atoms/info_chip.dart';
 import '../../atoms/info_row.dart';
 import '../../../domain/entities/playback_plan.dart';
-import '../../../domain/repositories/media_service_manager.dart';
-import '../../../data/datasources/emby_api_client.dart';
-import '../../../data/repositories/emby_playback_repository_impl.dart';
+import '../../../domain/repositories/i_media_service_manager.dart';
+import '../../../domain/repositories/playback_repository.dart';
 import '../../../domain/usecases/get_playback_plan.dart';
 import '../../../providers/media_with_user_data_provider.dart';
 import '../../../providers/user_data_provider.dart';
@@ -53,7 +52,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
 
   late int _selectedEpisode;
   final Map<String, List<PlaybackStream>> _audioOptionsByItem = {};
-  final Map<String, String?> _mediaSourceIdByItem = {};
   final Map<String, List<PlaybackStream>> _subtitleOptionsByItem = {};
   bool _loadingTrackOptions = false;
   int? _selectedAudioIndex;
@@ -82,7 +80,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
     );
     if (playableItemsChanged) {
       _audioOptionsByItem.clear();
-      _mediaSourceIdByItem.clear();
       _subtitleOptionsByItem.clear();
     }
 
@@ -620,7 +617,8 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
 
   Future<void> _ensureTrackOptionsLoaded() async {
     final item = _currentPlayableItem;
-    final manager = context.read<MediaServiceManager>();
+    final manager = context.read<IMediaServiceManager>();
+    final playbackRepository = context.read<PlaybackRepository>();
     final udp = context.read<UserDataProvider>();
     if (!_supportsPlaybackInfo(item)) {
       if (mounted) {
@@ -660,23 +658,14 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
     setState(() => _loadingTrackOptions = true);
     try {
       final saved = udp.trackSelectionForItem(item);
-      final api = EmbyApiClient(
-        config: config,
-        securityService: manager.securityService,
-        sessionExpiredNotifier: manager.sessionExpiredNotifier,
-      );
-      final repo = EmbyPlaybackRepositoryImpl(
-        apiClient: api,
-        securityService: manager.securityService,
-      );
-      final plan = await GetPlaybackPlanUseCase(repo).call(
+      final plan = await GetPlaybackPlanUseCase(playbackRepository).call(
         item,
         maxStreamingBitrate: _playbackPlanBitrate,
         requireAvc: true,
         audioStreamIndex: saved?.audioIndex,
+        subtitleStreamIndex: saved?.subtitleIndex,
       );
       _audioOptionsByItem[item.mediaKey] = plan.audioStreams;
-      _mediaSourceIdByItem[item.mediaKey] = plan.mediaSourceId;
       _subtitleOptionsByItem[item.mediaKey] = plan.subtitleStreams;
       if (mounted) {
         setState(() {
@@ -750,12 +739,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
         }
       }
     }
-    final subtitleUri = selectedStream == null
-        ? null
-        : await _buildSubtitleVttUrl(item, selectedStream);
-    if (!mounted) {
-      return;
-    }
     final udp = context.read<UserDataProvider>();
     final previous = udp.trackSelectionForItem(item);
     udp.setTrackSelectionForItem(
@@ -765,7 +748,7 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
       audioTitle: previous?.audioTitle,
       subtitleTitle: selectedStream?.title,
       subtitleLanguage: selectedStream?.language,
-      subtitleUri: subtitleUri,
+      subtitleUri: selectedStream?.deliveryUrl,
     );
     setState(() {
       _selectedSubtitleIndex = selected;
@@ -859,28 +842,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
     });
   }
 
-  Future<String?> _buildSubtitleVttUrl(
-    MediaItem item,
-    PlaybackStream stream,
-  ) async {
-    final manager = context.read<MediaServiceManager>();
-    final config = manager.getSavedConfig();
-    if (config == null || config.type != MediaServiceType.emby) {
-      return null;
-    }
-    final api = EmbyApiClient(
-      config: config,
-      securityService: manager.securityService,
-      sessionExpiredNotifier: manager.sessionExpiredNotifier,
-    );
-    return api.buildSubtitleVttUrl(
-      itemId: item.dataSourceId,
-      streamIndex: stream.index,
-      mediaSourceId: _mediaSourceIdByItem[item.mediaKey],
-      deliveryUrl: stream.deliveryUrl,
-    );
-  }
-
   Future<void> _handlePlayPressed(int episodeIndex) async {
     final item = _currentPlayableItem;
     final udp = context.read<UserDataProvider>();
@@ -898,12 +859,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
           break;
         }
       }
-      final subtitleUri = stream == null
-          ? null
-          : await _buildSubtitleVttUrl(item, stream);
-      if (!mounted) {
-        return;
-      }
       udp.setTrackSelectionForItem(
         item,
         audioIndex: saved?.audioIndex,
@@ -911,7 +866,7 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
         audioTitle: saved?.audioTitle,
         subtitleTitle: stream?.title ?? saved?.subtitleTitle,
         subtitleLanguage: stream?.language ?? saved?.subtitleLanguage,
-        subtitleUri: subtitleUri,
+        subtitleUri: stream?.deliveryUrl,
       );
     }
     widget.onPlayPressed?.call(episodeIndex);

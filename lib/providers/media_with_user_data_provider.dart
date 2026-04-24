@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../domain/entities/media_item.dart';
+import '../domain/entities/watch_history_item.dart';
 import 'media_library_provider.dart';
 import 'user_data_provider.dart';
 
@@ -79,27 +80,24 @@ class MediaWithUserDataProvider extends ChangeNotifier {
 
   /// 核心优化：统一的缓存更新逻辑
   void _updateCache() {
-    // 1. 批量处理电影和剧集
     _cachedMovies = _enrichMediaItems(_mediaLibraryProvider.state.movies);
     _cachedSeries = _enrichMediaItems(_mediaLibraryProvider.state.series);
 
-    // 2. 优化最近播放查询
     final itemLookup = {
       for (final item in [..._cachedMovies, ..._cachedSeries]) 
         item.mediaKey: item
     };
     
     final resolvedRecent = <MediaItem>[];
-    final seenMediaKeys = <String>{};
+    final seenHistoryKeys = <String>{};
 
     for (final history in _userDataProvider.watchHistory) {
-      final targetKey = history.seriesId != null 
-          ? '${history.sourceType.name}:${history.seriesId}' 
-          : history.uniqueKey;
-
-      final matched = itemLookup[targetKey];
-      if (matched != null && seenMediaKeys.add(matched.mediaKey)) {
-        resolvedRecent.add(matched);
+      final resolvedItem = _buildRecentItem(
+        history: history,
+        itemLookup: itemLookup,
+      );
+      if (resolvedItem != null && seenHistoryKeys.add(history.uniqueKey)) {
+        resolvedRecent.add(resolvedItem);
       }
     }
     _cachedRecent = resolvedRecent;
@@ -114,6 +112,70 @@ class MediaWithUserDataProvider extends ChangeNotifier {
         playbackProgress: _userDataProvider.playbackProgressForItem(item),
       );
     }).toList(growable: false);
+  }
+
+  MediaItem? _buildRecentItem({
+    required WatchHistoryItem history,
+    required Map<String, MediaItem> itemLookup,
+  }) {
+    final directMatch = itemLookup[history.uniqueKey];
+    if (directMatch != null) {
+      return _applyHistoryToMediaItem(
+        base: directMatch,
+        history: history,
+      );
+    }
+
+    final seriesId = history.seriesId;
+    if (seriesId == null || seriesId.isEmpty) {
+      return null;
+    }
+
+    final seriesMatch = itemLookup['${history.sourceType.name}:$seriesId'];
+    if (seriesMatch == null) {
+      return null;
+    }
+
+    return _applyHistoryToMediaItem(
+      base: seriesMatch,
+      history: history,
+    );
+  }
+
+  MediaItem _applyHistoryToMediaItem({
+    required MediaItem base,
+    required WatchHistoryItem history,
+  }) {
+    final progress = _userDataProvider.playbackProgressForItem(base);
+    final seriesTitle = history.seriesId == null || history.seriesId!.isEmpty
+        ? base.parentTitle
+        : base.title;
+
+    return base.copyWith(
+      sourceId: history.id,
+      title: history.title.isNotEmpty ? history.title : base.title,
+      originalTitle: history.title.isNotEmpty
+          ? history.title
+          : base.originalTitle,
+      playbackProgress: MediaPlaybackProgress(
+        position: history.position,
+        duration: history.duration,
+      ),
+      parentTitle: seriesTitle,
+      seriesId: history.seriesId ?? base.seriesId,
+      indexNumber: history.indexNumber ?? base.indexNumber,
+      parentIndexNumber:
+          history.parentIndexNumber ?? base.parentIndexNumber,
+      lastPlayedAt: history.updatedAt,
+      posterUrl: history.poster.isNotEmpty ? history.poster : base.posterUrl,
+      backdropUrl: base.backdropUrl,
+    ).copyWith(
+      playbackProgress: progress ??
+          MediaPlaybackProgress(
+            position: history.position,
+            duration: history.duration,
+          ),
+    );
   }
 
   @override

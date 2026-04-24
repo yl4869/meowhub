@@ -1,14 +1,78 @@
-/// ✅ 模拟实现：没网或者测试时用，不发真实请求
-class MockEmbyWatchHistoryRemoteDataSource implements EmbyWatchHistoryRemoteDataSource {
-  @override
-  Future<List<EmbyResumeItemDto>> getHistory() async => [];
+import '../../domain/entities/watch_history_item.dart';
+import '../models/playback_record.dart';
+
+abstract class LocalWatchHistoryDataSource {
+  Future<void> updateProgress(PlaybackRecord record);
+
+  Future<List<PlaybackRecord>> getHistory();
+
+  Future<void> replaceHistoryForSource(
+    WatchSourceType sourceType,
+    List<PlaybackRecord> records,
+  );
+}
+
+class InMemoryLocalWatchHistoryDataSource
+    implements LocalWatchHistoryDataSource {
+  final Map<String, PlaybackRecord> _records = <String, PlaybackRecord>{};
 
   @override
-  Future<void> startPlayback({ ... }) async {} // 空操作
+  Future<void> updateProgress(PlaybackRecord record) async {
+    final key = _keyFor(record.sourceType, record.id);
+    final existing = _records[key];
+    _records[key] = _mergeRecord(existing, record);
+  }
 
   @override
-  Future<void> updateProgress({ ... }) async {} // 空操作
+  Future<List<PlaybackRecord>> getHistory() async {
+    final history = _records.values.toList(growable: false)
+      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    return history;
+  }
 
   @override
-  Future<void> stopPlayback({ ... }) async {} // 空操作
+  Future<void> replaceHistoryForSource(
+    WatchSourceType sourceType,
+    List<PlaybackRecord> records,
+  ) async {
+    _records.removeWhere((key, record) => record.sourceType == sourceType);
+    for (final record in records) {
+      final key = _keyFor(record.sourceType, record.id);
+      _records[key] = record;
+    }
+  }
+
+  PlaybackRecord _mergeRecord(
+    PlaybackRecord? existing,
+    PlaybackRecord incoming,
+  ) {
+    if (existing == null) {
+      return incoming;
+    }
+
+    return existing.copyWith(
+      title: incoming.title.isNotEmpty ? incoming.title : existing.title,
+      poster: incoming.poster.isNotEmpty ? incoming.poster : existing.poster,
+      position: _maxDuration(existing.position, incoming.position),
+      duration: _maxDuration(existing.duration, incoming.duration),
+      updatedAt: incoming.updatedAt.isAfter(existing.updatedAt)
+          ? incoming.updatedAt
+          : existing.updatedAt,
+      episodeIndex: incoming.episodeIndex != 0
+          ? incoming.episodeIndex
+          : existing.episodeIndex,
+      seriesId: incoming.seriesId ?? existing.seriesId,
+      parentIndexNumber:
+          incoming.parentIndexNumber ?? existing.parentIndexNumber,
+      indexNumber: incoming.indexNumber ?? existing.indexNumber,
+    );
+  }
+
+  String _keyFor(WatchSourceType sourceType, String id) {
+    return '${sourceType.name}:$id';
+  }
+
+  Duration _maxDuration(Duration left, Duration right) {
+    return left >= right ? left : right;
+  }
 }

@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../../core/utils/emby_ticks.dart';
 import '../../domain/entities/watch_history_item.dart';
 import '../../domain/repositories/watch_history_repository.dart';
@@ -18,14 +20,22 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
 
   @override
   Future<List<WatchHistoryItem>> getUnifiedHistory() async {
-    final embyHistory = await _fetchAndCacheEmbyHistory();
-    final localHistory = (await _localDataSource.getHistory())
-        .map((record) => record.toWatchHistoryItem())
-        .where((item) => item.sourceType == WatchSourceType.local)
-        .toList(growable: false);
+    if (kDebugMode) {
+      debugPrint('[Diag][WatchHistoryRepository] getUnifiedHistory:start');
+    }
+    final embyHistory = await getHistoryBySource(WatchSourceType.emby);
+    final localHistory = await _loadLocalHistoryForSource(WatchSourceType.local);
 
     final unifiedHistory = [...embyHistory, ...localHistory]
       ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][WatchHistoryRepository] getUnifiedHistory:success | '
+        'embyCount=${embyHistory.length}, '
+        'localCount=${localHistory.length}, '
+        'unifiedCount=${unifiedHistory.length}',
+      );
+    }
     return unifiedHistory;
   }
 
@@ -33,16 +43,24 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   Future<List<WatchHistoryItem>> getHistoryBySource(
     WatchSourceType sourceType,
   ) async {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][WatchHistoryRepository] getHistoryBySource:start | '
+        'sourceType=${sourceType.name}',
+      );
+    }
     final history = switch (sourceType) {
-      WatchSourceType.emby => await _fetchAndCacheEmbyHistory(),
-      WatchSourceType.local =>
-        (await _localDataSource.getHistory())
-            .map((record) => record.toWatchHistoryItem())
-            .where((item) => item.sourceType == sourceType)
-            .toList(growable: false),
+      WatchSourceType.emby => await _fetchAndCacheEmbyHistoryWithFallback(),
+      WatchSourceType.local => await _loadLocalHistoryForSource(sourceType),
     };
 
     history.sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][WatchHistoryRepository] getHistoryBySource:success | '
+        'sourceType=${sourceType.name}, count=${history.length}',
+      );
+    }
     return history;
   }
 
@@ -137,6 +155,11 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
   }
 
   Future<List<WatchHistoryItem>> _fetchAndCacheEmbyHistory() async {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][WatchHistoryRepository] fetchAndCacheEmbyHistory:start',
+      );
+    }
     final embyHistory = (await _embyRemoteDataSource.getHistory())
         .map(_mapEmbyDtoToEntity)
         .toList(growable: false);
@@ -146,6 +169,44 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
           .map(PlaybackRecord.fromWatchHistoryItem)
           .toList(growable: false),
     );
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][WatchHistoryRepository] fetchAndCacheEmbyHistory:success | '
+        'count=${embyHistory.length}',
+      );
+    }
     return embyHistory;
+  }
+
+  Future<List<WatchHistoryItem>> _fetchAndCacheEmbyHistoryWithFallback() async {
+    try {
+      return await _fetchAndCacheEmbyHistory();
+    } catch (error, stackTrace) {
+      final fallback = await _loadLocalHistoryForSource(WatchSourceType.emby);
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][WatchHistoryRepository] fetchAndCacheEmbyHistory:fallback_local | '
+          'count=${fallback.length}, error=$error',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      return fallback;
+    }
+  }
+
+  Future<List<WatchHistoryItem>> _loadLocalHistoryForSource(
+    WatchSourceType sourceType,
+  ) async {
+    final history = (await _localDataSource.getHistory())
+        .map((record) => record.toWatchHistoryItem())
+        .where((item) => item.sourceType == sourceType)
+        .toList(growable: false);
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][WatchHistoryRepository] loadLocalHistoryForSource | '
+        'sourceType=${sourceType.name}, count=${history.length}',
+      );
+    }
+    return history;
   }
 }

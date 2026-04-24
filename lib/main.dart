@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'core/persistence/file_source_store.dart';
 import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
+import 'core/utils/app_diagnostics.dart';
 import 'data/datasources/emby_api_client.dart';
 import 'data/datasources/emby_watch_history_remote_data_source.dart';
 import 'data/datasources/local_watch_history_data_source.dart';
@@ -48,10 +49,13 @@ const bool _useMockRepository = bool.fromEnvironment('USE_MOCK_REPOSITORY');
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (kDebugMode) {
+    debugPrint('[Diag][Main] startup:begin');
+  }
   
   // 1. 基础基础设施初始化
   final preferences = await SharedPreferences.getInstance();
-  final securityService = SecurityService();
+  final securityService = SecurityService(preferences: preferences);
   final sessionExpiredNotifier = SessionExpiredNotifier();
   final fileSourceStore = FileSourceStore();
 
@@ -60,12 +64,26 @@ void main() async {
 
   final mediaServiceManager = MediaServiceManagerImpl(preferences: preferences);
   await mediaServiceManager.initialize();
+  if (kDebugMode) {
+    debugPrint(
+      '[Diag][Main] startup:manager_initialized | '
+      '${AppDiagnostics.configSummary(mediaServiceManager.getSavedConfig())}',
+    );
+  }
 
   // 3. 文件源引导逻辑（传入接口类型）
   final fileSourceBootstrap = await _loadFileSourceBootstrap(
     fileSourceStore: fileSourceStore,
     mediaServiceManager: mediaServiceManager,
   );
+  if (kDebugMode) {
+    debugPrint(
+      '[Diag][Main] startup:file_source_bootstrap | '
+      'serverCount=${fileSourceBootstrap.servers.length}, '
+      'selectedServerId=${fileSourceBootstrap.selectedServer?.id}, '
+      'selectedServerName=${fileSourceBootstrap.selectedServer?.name}',
+    );
+  }
 
   // 4. 自动同步配置逻辑
   final selectedServer = fileSourceBootstrap.selectedServer;
@@ -74,7 +92,16 @@ void main() async {
     if (currentConfig?.credentialNamespace != selectedConfig.credentialNamespace) {
       try {
         await mediaServiceManager.setConfig(selectedConfig);
-      } catch (_) {}
+      } catch (error, stackTrace) {
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][Main] startup:selected_server_sync_failed | '
+            'config=${AppDiagnostics.configSummary(selectedConfig)}, '
+            'error=${AppDiagnostics.summarizeError(error)}',
+          );
+          debugPrint(stackTrace.toString());
+        }
+      }
     }
   }
 
@@ -205,21 +232,38 @@ class _MeowHubAppState extends State<MeowHubApp> {
           ),
         ),
         // ✅ 注入接口
+        // ✅ 修改点：Manager 变回普通的 Provider (因为它现在只负责存取，不负责喊话)
         Provider<IMediaServiceManager>.value(value: widget.mediaServiceManager),
+        Provider<MediaConfigValidator>.value(
+          value: _buildMediaConfigValidator(
+            securityService: widget.securityService,
+            sessionExpiredNotifier: widget.sessionExpiredNotifier,
+          ),
+        ),
         Provider<SecurityService>.value(value: widget.securityService),
         ChangeNotifierProvider<SessionExpiredNotifier>.value(value: widget.sessionExpiredNotifier),
 
         // 1. 核心单例：共享 ApiClient
-        ProxyProvider3<IMediaServiceManager, SecurityService, SessionExpiredNotifier, EmbyApiClient?>(
-          update: (context, manager, security, notifier, previous) {
-            final config = manager.getSavedConfig();
-            if (config == null || config.type != MediaServiceType.emby) return null;
-            // 只有当配置发生实质性变化时才重新构建
-            return previous?.config == config 
-                ? previous 
-                : EmbyApiClient(config: config, securityService: security, sessionExpiredNotifier: notifier);
-          },
-        ),
+        // 找到 EmbyApiClient 的 ProxyProvider
+ProxyProvider3<AppProvider, SecurityService, SessionExpiredNotifier, EmbyApiClient?>(
+  update: (context, appProvider, security, notifier, previous) {
+    // 💡 重点：现在我们直接从 appProvider 拿配置
+    // 只要 AppProvider 因为 Stream 变动而 notifyListeners，这里就会触发更新
+    final config = appProvider.selectedServer.config;
+    
+    if (config == null || config.type != MediaServiceType.emby) return null;
+    
+    // 只有配置真的变了才重刷，避免不必要的网络请求重启
+    if (previous?.config == config) return previous;
+
+    debugPrint('[Diag][Main] 🚀 检测到 AppProvider 信号，正在重构 ApiClient');
+    return EmbyApiClient(
+      config: config, 
+      securityService: security, 
+      sessionExpiredNotifier: notifier
+    );
+  },
+),
 
         // 2. 各种仓库，均使用共享 ApiClient
         ProxyProvider2<EmbyApiClient?, SecurityService, IMediaRepository>(
@@ -276,7 +320,6 @@ class _MeowHubAppState extends State<MeowHubApp> {
       child: MaterialApp.router(
         title: 'MeowHub',
         debugShowCheckedModeBanner: false,
-        useInheritedMediaQuery: true, // DevicePreview 兼容
         locale: DevicePreview.locale(context),
         supportedLocales: _supportedLocales,
         localizationsDelegates: GlobalMaterialLocalizations.delegates,
@@ -291,13 +334,40 @@ class _MeowHubAppState extends State<MeowHubApp> {
 // --- 工厂方法（保持纯净） ---
 
 IMediaRepository _buildMediaRepository({required EmbyApiClient? apiClient, required SecurityService securityService}) {
-  if (_useMockRepository) return const MockMediaRepositoryImpl();
-  if (apiClient == null) return const EmptyMediaRepositoryImpl();
+  if (_useMockRepository) {
+    if (kDebugMode) {
+      debugPrint('[Diag][Main] buildMediaRepository:mock');
+    }
+    return const MockMediaRepositoryImpl();
+  }
+  if (apiClient == null) {
+    if (kDebugMode) {
+      debugPrint('[Diag][Main] buildMediaRepository:empty_no_client');
+    }
+    return const EmptyMediaRepositoryImpl();
+  }
+  if (kDebugMode) {
+    debugPrint(
+      '[Diag][Main] buildMediaRepository:emby | '
+      '${AppDiagnostics.configSummary(apiClient.config)}',
+    );
+  }
   return EmbyMediaRepositoryImpl(apiClient: apiClient, securityService: securityService);
 }
 
 PlaybackRepository _buildPlaybackRepository({required EmbyApiClient? apiClient, required SecurityService securityService}) {
-  if (apiClient == null) return const _UnavailablePlaybackRepository();
+  if (apiClient == null) {
+    if (kDebugMode) {
+      debugPrint('[Diag][Main] buildPlaybackRepository:unavailable_no_client');
+    }
+    return const _UnavailablePlaybackRepository();
+  }
+  if (kDebugMode) {
+    debugPrint(
+      '[Diag][Main] buildPlaybackRepository:emby | '
+      '${AppDiagnostics.configSummary(apiClient.config)}',
+    );
+  }
   return EmbyPlaybackRepositoryImpl(apiClient: apiClient, securityService: securityService);
 }
 
@@ -307,18 +377,77 @@ WatchHistoryRepository _buildWatchHistoryRepository({
   required LocalWatchHistoryDataSource localDataSource, // 👈 接收外部传入的单例
   }) {
   if (apiClient == null) {
+    if (kDebugMode) {
+      debugPrint('[Diag][Main] buildWatchHistoryRepository:mock_no_client');
+    }
     return WatchHistoryRepositoryImpl(
       embyRemoteDataSource: MockEmbyWatchHistoryRemoteDataSource(), 
       localDataSource: localDataSource, // ✅ 使用同一个实例
     );
   }
 
+  if (kDebugMode) {
+    debugPrint(
+      '[Diag][Main] buildWatchHistoryRepository:emby | '
+      '${AppDiagnostics.configSummary(apiClient.config)}',
+    );
+  }
   return WatchHistoryRepositoryImpl(
     embyRemoteDataSource: EmbyWatchHistoryRemoteDataSourceImpl(
       apiClient: apiClient,
     ),
     localDataSource: localDataSource, // ✅ 使用同一个实例
   );
+}
+
+MediaConfigValidator _buildMediaConfigValidator({
+  required SecurityService securityService,
+  required SessionExpiredNotifier sessionExpiredNotifier,
+}) {
+  return (config) async {
+    if (config.type != MediaServiceType.emby) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Main] mediaConfigValidator:unsupported_type | '
+          '${AppDiagnostics.configSummary(config)}',
+        );
+      }
+      return false;
+    }
+
+    try {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Main] mediaConfigValidator:start | '
+          '${AppDiagnostics.configSummary(config)}',
+        );
+      }
+      final apiClient = EmbyApiClient(
+        config: config,
+        securityService: securityService,
+        sessionExpiredNotifier: sessionExpiredNotifier,
+      );
+      await apiClient.authenticate();
+      await apiClient.getSystemInfo();
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Main] mediaConfigValidator:success | '
+          '${AppDiagnostics.configSummary(config)}',
+        );
+      }
+      return true;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Main] mediaConfigValidator:failed | '
+          'config=${AppDiagnostics.configSummary(config)}, '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      return false;
+    }
+  };
 }
 
 // --- 引导辅助函数 ---
@@ -328,6 +457,13 @@ Future<_FileSourceBootstrap> _loadFileSourceBootstrap({
   required IMediaServiceManager mediaServiceManager,
 }) async {
   var state = await fileSourceStore.load();
+  if (kDebugMode) {
+    debugPrint(
+      '[Diag][Main] loadFileSourceBootstrap:loaded_store | '
+      'sourceCount=${state.sources.length}, '
+      'selectedSourceId=${state.selectedSourceId}',
+    );
+  }
   if (state.isEmpty) {
     final savedConfig = mediaServiceManager.getSavedConfig();
     if (savedConfig != null) {
@@ -337,6 +473,12 @@ Future<_FileSourceBootstrap> _loadFileSourceBootstrap({
         selectedSourceId: migratedServer.id,
       );
       await fileSourceStore.save(state);
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Main] loadFileSourceBootstrap:migrated_saved_config | '
+          '${AppDiagnostics.configSummary(savedConfig)}',
+        );
+      }
     }
   }
 

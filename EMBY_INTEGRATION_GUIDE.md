@@ -5,7 +5,7 @@
 ✅ **Emby API 客户端已完整实现**
 - `EmbyApiClient` — 完整的Emby API封装
 - `EmbyMediaService` — 实现了 `MediaService` 接口
-- `MediaServiceManager` — 管理媒体服务的生命周期和配置持久化
+- `IMediaServiceManager` / `MediaServiceManagerImpl` — 管理媒体服务配置的加载、校验和持久化
 
 ## 如何使用真实的Emby接口
 
@@ -38,7 +38,7 @@ Emby Server API
 ### 3. 关键改动
 
 #### AppProvider (`lib/providers/app_provider.dart`)
-- 现在接收 `MediaServiceManager` 参数
+- 现在接收 `IMediaServiceManager` 参数
 - `_buildDefaultWatchHistoryRepository()` 方法会：
   - 如果有配置的媒体服务，使用真实的Emby接口
   - 否则使用Mock数据（开发/测试用）
@@ -114,10 +114,10 @@ flutter run
 ## 常见问题
 
 **Q: 如何切换Emby服务器？**
-A: 在设置中重新配置，或调用 `MediaServiceManager.setConfig()`
+A: 在设置中重新配置，或调用 `IMediaServiceManager.setConfig()`
 
 **Q: 如何清除配置？**
-A: 调用 `MediaServiceManager.clearConfig()`
+A: 调用 `IMediaServiceManager.clearConfig()`
 
 **Q: 密码存储在哪里？**
 A: 使用平台特定的安全存储（iOS Keychain, Android Keystore）

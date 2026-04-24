@@ -34,8 +34,12 @@ abstract class MediaService {
 final service = MediaServiceFactory.create(config);
 ```
 
-#### 4. **MediaServiceManager** (`lib/domain/repositories/media_service_manager.dart`)
-管理器类，负责：
+#### 4. **IMediaServiceManager / MediaServiceManagerImpl**
+接口与实现分别位于：
+- `lib/domain/repositories/i_media_service_manager.dart`
+- `lib/data/repositories/media_service_manager_impl.dart`
+
+管理器负责：
 - 保存和加载配置（使用 SharedPreferences）
 - 初始化当前活跃的服务
 - 验证服务连接
@@ -71,7 +75,7 @@ Remote Server
 在 `main.dart` 中：
 
 ```dart
-final mediaServiceManager = MediaServiceManager(preferences: preferences);
+final mediaServiceManager = MediaServiceManagerImpl(preferences: preferences);
 await mediaServiceManager.initialize();
 ```
 
@@ -219,7 +223,8 @@ test('EmbyMediaService verifies connection', () async {
 
 - `lib/domain/entities/media_service_config.dart` - 配置类
 - `lib/domain/repositories/media_service.dart` - 服务接口和工厂
-- `lib/domain/repositories/media_service_manager.dart` - 服务管理器
+- `lib/domain/repositories/i_media_service_manager.dart` - 服务管理接口
+- `lib/data/repositories/media_service_manager_impl.dart` - 服务管理实现
 - `lib/data/datasources/emby_api_client.dart` - Emby API 客户端
 - `lib/data/datasources/emby_watch_history_remote_data_source.dart` - 适配器
 - `lib/ui/screens/media_service_config_screen.dart` - 配置 UI

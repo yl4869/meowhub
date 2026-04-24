@@ -6,7 +6,8 @@
 |------|------|
 | `lib/domain/entities/media_service_config.dart` | 服务配置类 |
 | `lib/domain/repositories/media_service.dart` | 服务接口和工厂 |
-| `lib/domain/repositories/media_service_manager.dart` | 服务管理器 |
+| `lib/domain/repositories/i_media_service_manager.dart` | 服务管理接口 |
+| `lib/data/repositories/media_service_manager_impl.dart` | 服务管理实现 |
 | `lib/data/datasources/emby_api_client.dart` | Emby API 客户端 |
 | `lib/data/datasources/emby_watch_history_remote_data_source.dart` | 适配器 |
 | `lib/ui/screens/media_service_config_screen.dart` | 配置 UI |
@@ -15,7 +16,7 @@
 
 ### 1. 初始化应用
 ```dart
-final manager = MediaServiceManager(preferences: preferences);
+final manager = MediaServiceManagerImpl(preferences: preferences);
 await manager.initialize();
 ```
 
@@ -61,7 +62,7 @@ ButtonSegment(value: MediaServiceType.plex, label: Text('Plex')),
 
 ### 验证连接
 ```dart
-final isValid = await manager.verifyConfig(config);
+final isValid = await manager.verifyConfig(config, validator: validator);
 ```
 
 ### 清除配置
@@ -77,7 +78,7 @@ final config = manager.getSavedConfig();
 ### 在 Provider 中使用
 ```dart
 class AppProvider extends ChangeNotifier {
-  final MediaServiceManager _manager;
+  final IMediaServiceManager _manager;
   
   Future<void> loadHistory() async {
     final service = _manager.currentService;

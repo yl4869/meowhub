@@ -149,12 +149,12 @@ Data 层由 `data/repositories`、`data/datasources`、`data/models` 构成。
 - `SecurityService`
 - `SessionExpiredNotifier`
 - `FileSourceStore`
-- `MediaServiceManager`
+- `IMediaServiceManager`
 
 对应位置：
 
 - [lib/main.dart:41](/Users/yunlang/meowhub/meowhub/lib/main.dart#L41)
-- [lib/domain/repositories/media_service_manager.dart](/Users/yunlang/meowhub/meowhub/lib/domain/repositories/media_service_manager.dart)
+- [lib/domain/repositories/i_media_service_manager.dart](/Users/yunlang/meowhub/meowhub/lib/domain/repositories/i_media_service_manager.dart)
 
 这些对象构成了全局运行环境：
 
@@ -162,7 +162,7 @@ Data 层由 `data/repositories`、`data/datasources`、`data/models` 构成。
 - `SecurityService` 保存密码、Token、UserId 等敏感信息。
 - `SessionExpiredNotifier` 作为登录状态失效通知器。
 - `FileSourceStore` 负责文件源持久化。
-- `MediaServiceManager` 负责当前媒体服务配置的加载、校验、切换。
+- `IMediaServiceManager` 负责当前媒体服务配置的加载、校验、切换。
 
 ### 3.2 MultiProvider 注入关系
 
@@ -176,7 +176,7 @@ graph TD
   B[SecurityService]
   C[SessionExpiredNotifier]
   D[FileSourceStore]
-  E[MediaServiceManager]
+  E[IMediaServiceManager]
 
   A --> E
   B --> E
@@ -200,13 +200,16 @@ graph TD
 对应代码：
 
 - `AppProvider`
-  - 依赖 `MediaServiceManager + FileSourceStore`
+  - 依赖 `IMediaServiceManager + FileSourceStore`
   - [lib/main.dart:183](/Users/yunlang/meowhub/meowhub/lib/main.dart#L183)
-- `MediaServiceManager`
+- `IMediaServiceManager`
   - 通过 `.value` 注入
   - [lib/main.dart:191](/Users/yunlang/meowhub/meowhub/lib/main.dart#L191)
+- `MediaConfigValidator`
+  - 通过 `.value` 注入，供配置页调用 `verifyConfig`
+  - [lib/main.dart:208](/Users/yunlang/meowhub/meowhub/lib/main.dart#L208)
 - `UserDataProvider`
-  - 通过 `ChangeNotifierProxyProvider<MediaServiceManager, UserDataProvider>` 注入
+  - 通过 `ChangeNotifierProxyProvider<IMediaServiceManager, WatchHistoryRepository, UserDataProvider>` 注入
   - [lib/main.dart:194](/Users/yunlang/meowhub/meowhub/lib/main.dart#L194)
 - `SecurityService`
   - 通过 `.value` 注入

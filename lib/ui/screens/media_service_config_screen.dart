@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/session/session_expired_notifier.dart';
 import '../../domain/entities/media_service_config.dart';
-import '../../domain/repositories/media_service_manager.dart';
+import '../../domain/repositories/i_media_service_manager.dart';
 import '../responsive/home_view.dart';
 
 /// 媒体服务配置屏幕
@@ -20,7 +20,8 @@ class MediaServiceConfigScreen extends StatefulWidget {
 }
 
 class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
-  late final MediaServiceManager _manager;
+  late final IMediaServiceManager _manager;
+  late final MediaConfigValidator _configValidator;
   late TextEditingController _serverUrlController;
   late TextEditingController _usernameController;
   late TextEditingController _passwordController;
@@ -34,7 +35,8 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
   @override
   void initState() {
     super.initState();
-    _manager = context.read<MediaServiceManager>();
+    _manager = context.read<IMediaServiceManager>();
+    _configValidator = context.read<MediaConfigValidator>();
 
     final savedConfig = _manager.getSavedConfig();
     _selectedType = savedConfig?.type ?? MediaServiceType.emby;
@@ -83,7 +85,10 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
             : _deviceIdController.text,
       );
 
-      final isValid = await _manager.verifyConfig(config);
+      final isValid = await _manager.verifyConfig(
+        config,
+        validator: _configValidator,
+      );
 
       setState(() {
         _verificationSuccess = isValid;

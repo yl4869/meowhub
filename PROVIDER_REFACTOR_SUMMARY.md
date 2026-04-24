@@ -7,7 +7,7 @@
 #### UserDataProvider (`lib/providers/user_data_provider.dart`)
 - 管理用户个人数据：收藏、观看历史、播放进度
 - 从 AppProvider 中提取的所有用户数据相关功能
-- 依赖 MediaServiceManager 来获取真实的Emby数据
+- 依赖 `IMediaServiceManager` 与 `WatchHistoryRepository` 获取当前服务环境和真实续播数据
 
 #### MediaWithUserDataProvider (`lib/providers/media_with_user_data_provider.dart`)
 - 组合 MediaLibraryProvider + UserDataProvider
@@ -68,7 +68,7 @@ UserDataProvider (用户个人数据)
 ├── favoriteItems
 ├── watchHistory
 ├── playbackProgress
-└── 依赖 MediaServiceManager
+└── 依赖 IMediaServiceManager + WatchHistoryRepository
 
 MediaLibraryProvider (媒体库)
 ├── movies

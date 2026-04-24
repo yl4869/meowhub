@@ -18,17 +18,16 @@
 
 ## 2. 启动与服务配置接口
 
-### 2.1 MediaServiceManager
+### 2.1 IMediaServiceManager
 
 文件：
 
-- `lib/domain/repositories/media_service_manager.dart`
+- `lib/domain/repositories/i_media_service_manager.dart`
 
 职责：
 
 - 加载和保存当前媒体服务配置
 - 校验配置有效性
-- 提供当前服务的安全上下文
 
 关键方法：
 
@@ -40,18 +39,13 @@
   - 设置并持久化当前服务配置
 - `Future<void> clearConfig()`
   - 清理当前配置与敏感信息
-- `Future<bool> verifyConfig(MediaServiceConfig config)`
-  - 验证配置是否可连接
-
-依赖：
-
-- `SharedPreferences`
-- `SecurityService`
-- `SessionExpiredNotifier`
+- `Future<bool> verifyConfig(MediaServiceConfig config, {required MediaConfigValidator validator})`
+  - 通过外部注入的验证器校验配置是否可连接
 
 说明：
 
 - 它不直接承载媒体业务数据，而是承载“当前服务环境”。
+- 具体持久化与校验实现由 Composition Root 注入。
 
 ### 2.2 AppProvider
 
@@ -91,7 +85,6 @@
 
 - `Future<List<MediaItem>> getMovies()`
 - `Future<List<MediaItem>> getSeries()`
-- `Future<List<MediaItem>> getRecentWatching()`
 - `Future<MediaItem> getMediaDetail(MediaItem item)`
 - `Future<List<MediaItem>> getPlayableItems(MediaItem item)`
 
@@ -542,7 +535,7 @@ WatchHistoryRepository
 
 如果是第一次进入这个项目，建议先看下面这组：
 
-- `MediaServiceManager`
+- `IMediaServiceManager`
   - 决定当前应用连接哪个媒体服务
 - `IMediaRepository`
   - 决定媒体内容如何被读取

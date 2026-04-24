@@ -4,6 +4,7 @@ import 'package:meowhub/data/models/emby/emby_resume_item_dto.dart';
 
 import '../../core/services/security_service.dart';
 import '../../core/session/session_expired_notifier.dart';
+import '../../core/utils/app_diagnostics.dart';
 import '../../core/utils/emby_ticks.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../models/emby/emby_media_item_dto.dart';
@@ -58,6 +59,11 @@ class EmbyApiClient {
                },
              ),
            ) {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] init | ${AppDiagnostics.configSummary(config)}',
+      );
+    }
     _dio.interceptors.add(
       EmbyAuthInterceptor(
         securityService: securityService,
@@ -80,11 +86,23 @@ class EmbyApiClient {
 
   Future<void> authenticate() async {
     if (await _hasUsableSession()) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:reuse_session | '
+          '${AppDiagnostics.configSummary(_config)}',
+        );
+      }
       return;
     }
 
     final existingAuth = _ongoingAuthentication;
     if (existingAuth != null) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:wait_existing | '
+          '${AppDiagnostics.configSummary(_config)}',
+        );
+      }
       return existingAuth;
     }
 
@@ -96,7 +114,19 @@ class EmbyApiClient {
     _ongoingAuthentication = authFuture;
 
     try {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:start | '
+          '${AppDiagnostics.configSummary(_config)}',
+        );
+      }
       await authFuture;
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:success | '
+          '${AppDiagnostics.configSummary(_config)}',
+        );
+      }
     } finally {
       if (identical(_ongoingAuthentication, authFuture)) {
         _ongoingAuthentication = null;
@@ -111,47 +141,88 @@ class EmbyApiClient {
   }
 
   Future<void> _performAuthentication() async {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] authenticate:prepare_credentials | '
+        '${AppDiagnostics.configSummary(_config)}',
+      );
+    }
     final username = _config.username?.trim();
     final password =
         (await _securityService.readPassword(
           namespace: _config.credentialNamespace,
         )) ??
         _config.password?.trim();
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] authenticate:credentials_ready | '
+        'hasUsername=${username?.isNotEmpty == true}, '
+        'passwordSource=${_config.password?.trim().isNotEmpty == true && password == _config.password?.trim() ? 'config' : 'storage_or_empty'}, '
+        'hasPassword=${password?.isNotEmpty == true}',
+      );
+    }
     if (username == null ||
         username.isEmpty ||
         password == null ||
         password.isEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:missing_credentials | '
+          '${AppDiagnostics.configSummary(_config)}',
+        );
+      }
       throw Exception('Emby 登录需要用户名和密码');
     }
-    final response = await post<Map<String, dynamic>>(
-      '/emby/Users/AuthenticateByName',
-      data: {'Username': username, 'Pw': password},
-      withToken: false,
-    );
+    try {
+      final response = await post<Map<String, dynamic>>(
+        '/emby/Users/AuthenticateByName',
+        data: {'Username': username, 'Pw': password},
+        withToken: false,
+      );
 
-    final data = response.data ?? <String, dynamic>{};
-    final authResponse = EmbyAuthResponse.fromJson(data);
-    final accessToken = authResponse.accessToken;
-    final userId = authResponse.user.id;
+      final data = response.data ?? <String, dynamic>{};
+      final authResponse = EmbyAuthResponse.fromJson(data);
+      final accessToken = authResponse.accessToken;
+      final userId = authResponse.user.id;
 
-    if (accessToken.isEmpty || userId.isEmpty) {
-      throw Exception('Emby 登录成功但未返回有效的 AccessToken 或 UserId');
+      if (accessToken.isEmpty || userId.isEmpty) {
+        throw Exception('Emby 登录成功但未返回有效的 AccessToken 或 UserId');
+      }
+
+      await Future.wait([
+        _securityService.writeAccessToken(
+          accessToken,
+          namespace: _config.credentialNamespace,
+        ),
+        _securityService.writeUserId(
+          userId,
+          namespace: _config.credentialNamespace,
+        ),
+        _securityService.writePassword(
+          password,
+          namespace: _config.credentialNamespace,
+        ),
+      ]);
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:token_stored | '
+          '${{
+            ...AppDiagnostics.configSummary(_config),
+            'userId': userId,
+          }}',
+        );
+      }
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] authenticate:failed | '
+          'config=${AppDiagnostics.configSummary(_config)}, '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
     }
-
-    await Future.wait([
-      _securityService.writeAccessToken(
-        accessToken,
-        namespace: _config.credentialNamespace,
-      ),
-      _securityService.writeUserId(
-        userId,
-        namespace: _config.credentialNamespace,
-      ),
-      _securityService.writePassword(
-        password,
-        namespace: _config.credentialNamespace,
-      ),
-    ]);
   }
 
   Future<Response<T>> get<T>(
@@ -163,7 +234,34 @@ class EmbyApiClient {
       await _ensureSession();
     }
 
-    return _dio.get<T>(path, queryParameters: queryParameters);
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] GET | '
+        'path=$path, withToken=$withToken, '
+        'query=${AppDiagnostics.sanitizeMap(queryParameters)}',
+      );
+    }
+    try {
+      final response = await _dio.get<T>(path, queryParameters: queryParameters);
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] GET:response | '
+          'path=$path, statusCode=${response.statusCode}, '
+          'dataType=${response.data.runtimeType}',
+        );
+      }
+      return response;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] GET:failed | '
+          'path=$path, query=${AppDiagnostics.sanitizeMap(queryParameters)}, '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
+    }
   }
 
   Future<Response<T>> post<T>(
@@ -176,16 +274,50 @@ class EmbyApiClient {
     if (withToken) {
       await _ensureSession();
     }
-    return _dio.post<T>(
-      path,
-      data: data,
-      queryParameters: queryParameters,
-      options: Options(headers: headers, extra: {'withToken': withToken}),
-    );
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] POST | '
+        'path=$path, withToken=$withToken, '
+        'query=${AppDiagnostics.sanitizeMap(queryParameters)}, '
+        'body=${data is Map<String, dynamic> ? AppDiagnostics.sanitizeMap(data) : {'type': data.runtimeType.toString()}}',
+      );
+    }
+    try {
+      final response = await _dio.post<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: Options(headers: headers, extra: {'withToken': withToken}),
+      );
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] POST:response | '
+          'path=$path, statusCode=${response.statusCode}, '
+          'dataType=${response.data.runtimeType}',
+        );
+      }
+      return response;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] POST:failed | '
+          'path=$path, query=${AppDiagnostics.sanitizeMap(queryParameters)}, '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> getSystemInfo() async {
     final response = await get<Map<String, dynamic>>('/emby/System/Info');
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] getSystemInfo:success | '
+        'keys=${response.data?.keys.take(8).toList(growable: false)}',
+      );
+    }
     return response.data ?? <String, dynamic>{};
   }
 
@@ -234,6 +366,13 @@ class EmbyApiClient {
     );
     final data = response.data ?? <String, dynamic>{};
     final items = data['Items'] as List<dynamic>? ?? const [];
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] getMediaItems:success | '
+        'includeItemTypes=$includeItemTypes, libraryId=$libraryId, '
+        'count=${items.length}',
+      );
+    }
     return items
         .whereType<Map<String, dynamic>>()
         .map(EmbyMediaItemDto.fromJson)
@@ -270,6 +409,12 @@ class EmbyApiClient {
       },
     );
     final data = response.data ?? <String, dynamic>{};
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] getMediaItemDetail:success | '
+        'itemId=$itemId, keys=${data.keys.take(8).toList(growable: false)}',
+      );
+    }
     return EmbyMediaItemDto.fromJson(data);
   }
 
@@ -327,6 +472,15 @@ class EmbyApiClient {
       queryParameters: playbackInfoQuery,
     );
 
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] getPlaybackInfo:success | '
+        'itemId=$itemId, audioStreamIndex=$audioStreamIndex, '
+        'subtitleStreamIndex=$subtitleStreamIndex, '
+        'playSessionId=$playSessionId, '
+        'startPositionMs=${startPosition.inMilliseconds}',
+      );
+    }
     return EmbyPlaybackInfoDto.fromJson(resp.data ?? {});
   }
 
@@ -392,91 +546,78 @@ class EmbyApiClient {
     );
     final data = response.data ?? <String, dynamic>{};
     final items = data['Items'] as List<dynamic>? ?? const [];
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] getEpisodes:success | '
+        'seriesId=$seriesId, count=${items.length}',
+      );
+    }
     return items
         .whereType<Map<String, dynamic>>()
         .map(EmbyMediaItemDto.fromJson)
         .toList(growable: false);
   }
 
-  Future<List<Map<String, dynamic>>> getRecentlyWatchedItems() async {
-    final userId = await _requireUserId();
-    debugPrint(
-      '[Recent][Emby][Request] userId=$userId path=/emby/Users/$userId/Items',
-    );
+  Future<List<EmbyResumeItemDto>> getRecentWatching() async {
+    if (kDebugMode) {
+      debugPrint('[Diag][EmbyApiClient] getRecentWatching:start');
+    }
     try {
-      return await _fetchRecentlyWatchedItems(
-        userId: userId,
-        queryParameters: <String, dynamic>{
-          'UserId': userId,
-          'Limit': '20',
-          'StartIndex': '0',
-          'Recursive': true,
-          'SortBy': 'DatePlayed',
-          'SortOrder': 'Descending',
-          'EnableImages': true,
-          'EnableImageTypes': 'Primary,Backdrop,Thumb',
-          'ImageTypeLimit': '1',
-          'EnableUserData': true,
-          'EnableTotalRecordCount': true,
-          'IncludeItemTypes': 'Movie,Episode',
-          'Fields': _embyBaseItemFields,
-        },
+      if (kDebugMode) {
+        debugPrint('[Diag][EmbyApiClient] getRecentWatching:require_user_id');
+      }
+      final userId = await _requireUserId();
+      final queryParameters = <String, dynamic>{
+        'UserId': userId,
+        'Limit': '5',
+        'StartIndex': '0',
+        'Recursive': true,
+        'SortBy': 'DatePlayed',
+        'SortOrder': 'Descending',
+        'EnableImages': true,
+        'EnableImageTypes': 'Primary,Backdrop,Thumb',
+        'ImageTypeLimit': '1',
+        'EnableUserData': true,
+        'EnableTotalRecordCount': true,
+        'IncludeItemTypes': 'Movie,Episode',
+        'Fields': _embyBaseItemFields,
+      };
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] getRecentWatching:request | '
+          'path=/emby/Users/$userId/Items, '
+          'query=${AppDiagnostics.sanitizeMap(queryParameters)}',
+        );
+      }
+
+      final response = await get<Map<String, dynamic>>(
+        '/emby/Users/$userId/Items',
+        queryParameters: queryParameters,
       );
-    } on DioException catch (e) {
-      debugPrint(
-        '[Recent][Emby][Error] userId=$userId '
-        'status=${e.response?.statusCode} '
-        'message=${e.message}',
-      );
-      debugPrint(
-        '[Recent][Emby][ErrorBody] userId=$userId body=${e.response?.data}',
-      );
-      rethrow;
-    } catch (e) {
-      debugPrint('[Recent][Emby][Error] userId=$userId error=$e');
+
+      final data = response.data ?? <String, dynamic>{};
+      final items = data['Items'] as List<dynamic>? ?? const [];
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] getRecentWatching:success | '
+          'userId=$userId, count=${items.length}',
+        );
+      }
+
+      return items
+          .whereType<Map<String, dynamic>>()
+          .map(EmbyResumeItemDto.fromJson)
+          .toList(growable: false);
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] getRecentWatching:failed | '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
       rethrow;
     }
-  }
-
-  /// ✅ 统一后的版本：符合 DataSource 契约，且返回强类型数据
-Future<List<EmbyResumeItemDto>> getRecentWatching() async {
-  final userId = await _requireUserId();
-  
-  // 建议使用 Resume 接口，因为它最符合“继续观看”的直觉
-  final response = await get<Map<String, dynamic>>(
-    '/emby/Users/$userId/Items/Resume',
-    queryParameters: {
-      'Recursive': true,
-      'Fields': _embyBaseItemFields, // 使用你定义的通用字段
-      'Limit': 12,
-    },
-  );
-
-  final data = response.data ?? {};
-  final items = data['Items'] as List<dynamic>? ?? [];
-  
-  // 🚀 在这里完成“零件”到“模型”的转换
-  return items
-      .whereType<Map<String, dynamic>>()
-      .map((json) => EmbyResumeItemDto.fromJson(json))
-      .toList();
-}
-  
-
-  Future<List<Map<String, dynamic>>> _fetchRecentlyWatchedItems({
-    required String userId,
-    required Map<String, dynamic> queryParameters,
-  }) async {
-    final response = await get<Map<String, dynamic>>(
-      '/emby/Users/$userId/Items',
-      queryParameters: queryParameters,
-    );
-    final data = response.data ?? <String, dynamic>{};
-    final items = data['Items'] as List<dynamic>? ?? const [];
-    debugPrint(
-      '[Recent][Emby][Response] userId=$userId count=${items.length} query=$queryParameters',
-    );
-    return items.whereType<Map<String, dynamic>>().toList(growable: false);
   }
 
   Future<void> reportPlaybackAction({
@@ -517,12 +658,26 @@ Future<List<EmbyResumeItemDto>> getRecentWatching() async {
   final primaryPath = '/emby/Sessions/Playing$subPath';
 
   try {
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] reportPlaybackAction:start | '
+        'action=${action.name}, itemId=$itemId, userId=$userId, '
+        'positionMs=${position.inMilliseconds}, '
+        'durationMs=${duration.inMilliseconds}',
+      );
+    }
     await post<void>(primaryPath, data: body);
   } on DioException catch (e) {
     if (!_isUnsupportedPlaybackEndpoint(e)) rethrow;
     
     // 3. 统一的降级处理（针对旧版 Emby/Jellyfin）
     debugPrint('[Playback] Fallback to legacy endpoint for $action');
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][EmbyApiClient] reportPlaybackAction:fallback_legacy | '
+        'action=${action.name}, itemId=$itemId, statusCode=${e.response?.statusCode}',
+      );
+    }
     await post<void>(
       '/emby/Users/$userId/PlayingItems/$itemId',
       queryParameters: _buildLegacyPlaybackStateQuery(
@@ -620,36 +775,104 @@ Future<List<EmbyResumeItemDto>> getRecentWatching() async {
   }
 
   Future<void> _ensureSession() async {
-    if (await _hasUsableSession()) {
-      return;
+    if (kDebugMode) {
+      debugPrint('[Diag][EmbyApiClient] ensureSession:start');
     }
+    try {
+      if (await _hasUsableSession()) {
+        if (kDebugMode) {
+          debugPrint('[Diag][EmbyApiClient] ensureSession:session_ok');
+        }
+        return;
+      }
 
-    await authenticate();
+      if (kDebugMode) {
+        debugPrint('[Diag][EmbyApiClient] ensureSession:authenticate_needed');
+      }
+      await authenticate();
+      if (kDebugMode) {
+        debugPrint('[Diag][EmbyApiClient] ensureSession:authenticate_done');
+      }
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] ensureSession:failed | '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
+    }
   }
 
   Future<String> _requireUserId() async {
-    await _ensureSession();
-    var userId = await _securityService.readUserId(
-      namespace: _config.credentialNamespace,
-    );
-    if (userId != null && userId.isNotEmpty) {
-      return userId;
+    if (kDebugMode) {
+      debugPrint('[Diag][EmbyApiClient] requireUserId:start');
     }
-    if (userId == null || userId.isEmpty) {
+    try {
+      await _ensureSession();
+      final userId = await _securityService.readUserId(
+        namespace: _config.credentialNamespace,
+      );
+      if (userId != null && userId.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][EmbyApiClient] requireUserId:success | userId=$userId',
+          );
+        }
+        return userId;
+      }
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] requireUserId:missing | '
+          '${AppDiagnostics.configSummary(_config)}',
+        );
+      }
       throw Exception('Emby 登录后未能获取到用户 ID');
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] requireUserId:failed | '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
     }
-
-    return userId;
   }
 
   Future<bool> _hasUsableSession() async {
-    final accessToken = await _securityService.readAccessToken(
-      namespace: _config.credentialNamespace,
-    );
-    final userId = await _securityService.readUserId(
-      namespace: _config.credentialNamespace,
-    );
-    return accessToken?.isNotEmpty == true && userId?.isNotEmpty == true;
+    if (kDebugMode) {
+      debugPrint('[Diag][EmbyApiClient] hasUsableSession:start');
+    }
+    try {
+      final accessToken = await _securityService.readAccessToken(
+        namespace: _config.credentialNamespace,
+      );
+      final userId = await _securityService.readUserId(
+        namespace: _config.credentialNamespace,
+      );
+      final result =
+          accessToken?.isNotEmpty == true && userId?.isNotEmpty == true;
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] hasUsableSession:result | '
+          'hasAccessToken=${accessToken?.isNotEmpty == true}, '
+          'hasUserId=${userId?.isNotEmpty == true}, '
+          'result=$result',
+        );
+      }
+      return result;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyApiClient] hasUsableSession:failed | '
+          'error=${AppDiagnostics.summarizeError(error)}',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
+    }
   }
 
   void dispose() {

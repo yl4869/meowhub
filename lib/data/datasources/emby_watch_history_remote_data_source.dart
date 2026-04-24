@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/emby/emby_resume_item_dto.dart';
 import 'emby_api_client.dart';
 
@@ -52,7 +54,26 @@ class EmbyWatchHistoryRemoteDataSourceImpl implements EmbyWatchHistoryRemoteData
 
   @override
   Future<List<EmbyResumeItemDto>> getHistory() async {
-    return await _apiClient.getRecentWatching();
+    if (kDebugMode) {
+      debugPrint('[Diag][EmbyWatchHistoryDS] getHistory:start');
+    }
+    try {
+      final items = await _apiClient.getRecentWatching();
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyWatchHistoryDS] getHistory:success | count=${items.length}',
+        );
+      }
+      return items;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][EmbyWatchHistoryDS] getHistory:failed | error=$error',
+        );
+        debugPrint(stackTrace.toString());
+      }
+      rethrow;
+    }
   }
 
   @override
