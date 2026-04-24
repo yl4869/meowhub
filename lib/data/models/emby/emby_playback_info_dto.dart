@@ -86,6 +86,8 @@ class EmbyMediaStreamDto {
     required this.index,
     required this.type,
     this.language,
+    this.displayLanguage,
+    this.title,
     this.displayTitle,
     this.codec,
     this.channels,
@@ -99,6 +101,8 @@ class EmbyMediaStreamDto {
   final int index;
   final String type;
   final String? language;
+  final String? displayLanguage;
+  final String? title;
   final String? displayTitle;
   final String? codec;
   final int? channels;
@@ -113,6 +117,8 @@ class EmbyMediaStreamDto {
       index: (json['Index'] as num?)?.toInt() ?? 0,
       type: json['Type']?.toString() ?? '',
       language: json['Language'] as String?,
+      displayLanguage: json['DisplayLanguage'] as String?,
+      title: json['Title'] as String?,
       displayTitle: json['DisplayTitle'] as String?,
       codec: json['Codec'] as String?,
       channels: (json['Channels'] as num?)?.toInt(),

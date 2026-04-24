@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../../../domain/entities/media_item.dart';
+import '../../../domain/entities/playback_plan.dart';
 import '../../../providers/app_provider.dart';
 import '../../../providers/user_data_provider.dart';
 import '../../atoms/duration_formatter.dart';
@@ -41,6 +42,7 @@ class MobilePlayerScreen extends StatefulWidget {
     this.mediaSourceId,
     this.audioStreamIndex,
     this.subtitleStreamIndex,
+    this.audioStreams = const [],
   });
 
   final MediaItem mediaItem;
@@ -64,6 +66,7 @@ class MobilePlayerScreen extends StatefulWidget {
   final String? mediaSourceId;
   final int? audioStreamIndex;
   final int? subtitleStreamIndex;
+  final List<PlaybackStream> audioStreams;
 
   @override
   State<MobilePlayerScreen> createState() => _MobilePlayerScreenState();
@@ -775,6 +778,8 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
         subtitleTitle: widget.subtitleTitle,
         subtitleLanguage: widget.subtitleLanguage,
         disableSubtitleTrack: widget.disableSubtitleTrack,
+        audioStreamIndex: widget.audioStreamIndex,
+        audioStreams: widget.audioStreams,
       ),
     );
   }

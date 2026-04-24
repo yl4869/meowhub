@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:media_kit/media_kit.dart' show Player;
 
 import '../../../domain/entities/media_item.dart';
+import '../../../domain/entities/playback_plan.dart';
 import '../../../providers/app_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../../providers/user_data_provider.dart';
@@ -30,6 +31,7 @@ class TabletPlayerScreen extends StatefulWidget {
     this.mediaSourceId,
     this.audioStreamIndex,
     this.subtitleStreamIndex,
+    this.audioStreams = const [],
   });
 
   final double maxWidth;
@@ -50,6 +52,7 @@ class TabletPlayerScreen extends StatefulWidget {
   final String? mediaSourceId;
   final int? audioStreamIndex;
   final int? subtitleStreamIndex;
+  final List<PlaybackStream> audioStreams;
 
   @override
   State<TabletPlayerScreen> createState() => _TabletPlayerScreenState();
@@ -353,6 +356,8 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
                           subtitleTitle: widget.subtitleTitle,
                           subtitleLanguage: widget.subtitleLanguage,
                           disableSubtitleTrack: widget.disableSubtitleTrack,
+                          audioStreamIndex: widget.audioStreamIndex,
+                          audioStreams: widget.audioStreams,
                         )
                       else
                         _UnavailablePlayerCard(title: widget.mediaItem.title),

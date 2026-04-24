@@ -248,6 +248,10 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                                 final isSelected = index == _selectedEpisode;
                                 return InkWell(
                                   onTap: () {
+                                    _inheritTrackSelectionIfNeeded(
+                                      fromItem: _currentPlayableItem,
+                                      toItem: episodes[index],
+                                    );
                                     setState(() {
                                       _selectedEpisode = index;
                                       _syncSelectedTrackSelectionsForCurrentItem(
@@ -392,6 +396,10 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                         child: InkWell(
                           borderRadius: BorderRadius.circular(18),
                           onTap: () {
+                            _inheritTrackSelectionIfNeeded(
+                              fromItem: _currentPlayableItem,
+                              toItem: episode,
+                            );
                             setState(() {
                               _selectedEpisode = index;
                               _syncSelectedTrackSelectionsForCurrentItem(
@@ -565,18 +573,45 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
       return '加载中';
     }
     final selectedIndex = _selectedAudioIndex;
-    if (selectedIndex == null) {
-      return '默认音轨';
-    }
     final options = _audioOptionsByItem[_currentPlayableItem.mediaKey];
-    final matched = options?.where((stream) => stream.index == selectedIndex);
+    final matched = selectedIndex == null
+        ? _firstAudioStream(options)
+        : options?.where((stream) => stream.index == selectedIndex);
     final title = matched?.isNotEmpty == true
         ? matched!.first.title
         : context
               .read<UserDataProvider>()
               .trackSelectionForItem(_currentPlayableItem)
               ?.audioTitle;
-    return title ?? '音轨';
+    return title ?? '默认音轨';
+  }
+
+  String? _audioStreamDetail(PlaybackStream stream) {
+    final segments = <String>[
+      if (stream.language?.isNotEmpty == true) stream.language!,
+      if (stream.codec?.isNotEmpty == true) stream.codec!.toUpperCase(),
+      if (stream.channels != null) '${stream.channels} 声道',
+      if (stream.bitrate != null) '${(stream.bitrate! / 1000).round()} kbps',
+      if (stream.isDefault) '默认',
+    ];
+    return segments.isEmpty ? null : segments.join(' · ');
+  }
+
+  String? _subtitleStreamDetail(PlaybackStream stream) {
+    final segments = <String>[
+      if (stream.language?.isNotEmpty == true) stream.language!,
+      if (stream.codec?.isNotEmpty == true) stream.codec!.toUpperCase(),
+      if (stream.isExternal) '外挂',
+      if (stream.isDefault) '默认',
+    ];
+    return segments.isEmpty ? null : segments.join(' · ');
+  }
+
+  Iterable<PlaybackStream>? _firstAudioStream(List<PlaybackStream>? streams) {
+    if (streams == null || streams.isEmpty) {
+      return null;
+    }
+    return [streams.first];
   }
 
   String get _subtitleButtonLabel {
@@ -596,6 +631,28 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
               .trackSelectionForItem(_currentPlayableItem)
               ?.subtitleTitle;
     return title ?? '字幕';
+  }
+
+  void _inheritTrackSelectionIfNeeded({
+    required MediaItem fromItem,
+    required MediaItem toItem,
+  }) {
+    if (fromItem.mediaKey == toItem.mediaKey) {
+      return;
+    }
+    final udp = context.read<UserDataProvider>();
+    if (udp.trackSelectionForItem(toItem) != null) {
+      return;
+    }
+    final current = udp.trackSelectionForItem(fromItem);
+    if (current == null) {
+      return;
+    }
+    udp.setTrackSelectionForItem(
+      toItem,
+      audioIndex: current.audioIndex,
+      subtitleIndex: current.subtitleIndex,
+    );
   }
 
   void _syncSelectedTrackSelectionsForCurrentItem({bool notify = true}) {
@@ -661,7 +718,6 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
       final plan = await GetPlaybackPlanUseCase(playbackRepository).call(
         item,
         maxStreamingBitrate: _playbackPlanBitrate,
-        requireAvc: true,
         audioStreamIndex: saved?.audioIndex,
         subtitleStreamIndex: saved?.subtitleIndex,
       );
@@ -709,15 +765,18 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
                 ),
                 ...options.map(
                   (stream) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    minLeadingWidth: 24,
+                    horizontalTitleGap: 12,
                     leading: Icon(
                       initialValue == stream.index
                           ? Icons.radio_button_checked
                           : Icons.radio_button_off,
                     ),
                     title: Text(stream.title),
-                    subtitle: stream.language == null
+                    subtitle: _subtitleStreamDetail(stream) == null
                         ? null
-                        : Text(stream.language!),
+                        : Text(_subtitleStreamDetail(stream)!),
                     onTap: () => Navigator.of(context).pop(stream.index),
                   ),
                 ),
@@ -768,10 +827,10 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
   Future<void> _openAudioSelector() async {
     final item = _currentPlayableItem;
     final options = await _ensureAudioOptions();
-    if (!mounted) {
+    if (!mounted || options.isEmpty) {
       return;
     }
-    final initialValue = _selectedAudioIndex;
+    final initialValue = _selectedAudioIndex ?? options.first.index;
     final selected = await showModalBottomSheet<int?>(
       context: context,
       showDragHandle: true,
@@ -785,26 +844,20 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
               children: [
                 Text('选择音轨', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 8),
-                ListTile(
-                  leading: Icon(
-                    initialValue == null
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_off,
-                  ),
-                  title: const Text('默认音轨'),
-                  onTap: () => Navigator.of(context).pop(),
-                ),
                 ...options.map(
                   (stream) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    minLeadingWidth: 24,
+                    horizontalTitleGap: 12,
                     leading: Icon(
                       initialValue == stream.index
                           ? Icons.radio_button_checked
                           : Icons.radio_button_off,
                     ),
                     title: Text(stream.title),
-                    subtitle: stream.language == null
+                    subtitle: _audioStreamDetail(stream) == null
                         ? null
-                        : Text(stream.language!),
+                        : Text(_audioStreamDetail(stream)!),
                     onTap: () => Navigator.of(context).pop(stream.index),
                   ),
                 ),
@@ -814,16 +867,14 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
         );
       },
     );
-    if (!mounted) {
+    if (selected == null || !mounted) {
       return;
     }
     PlaybackStream? selectedStream;
-    if (selected != null) {
-      for (final stream in options) {
-        if (stream.index == selected) {
-          selectedStream = stream;
-          break;
-        }
+    for (final stream in options) {
+      if (stream.index == selected) {
+        selectedStream = stream;
+        break;
       }
     }
     final udp = context.read<UserDataProvider>();

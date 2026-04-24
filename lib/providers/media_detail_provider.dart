@@ -72,10 +72,6 @@ class MediaDetailProvider extends ChangeNotifier {
     _selectedIndex = _resolveLastPlayedEpisodeIndex(playableItems);
     _loadedSeriesKey = series.mediaKey;
 
-    if (_episodes.isNotEmpty) {
-      await ensurePlaybackInfoForSelectedEpisode();
-    }
-
     _isLoading = false;
     notifyListeners();
   }
@@ -142,9 +138,8 @@ class MediaDetailProvider extends ChangeNotifier {
       _selectedIndex = nextIndex;
       _selectedPlaybackPlan = null;
       _selectedPlaybackItemKey = _episodes[_selectedIndex].mediaKey;
+      _isLoadingPlaybackConfig = false;
       notifyListeners();
-      // ignore: discarded_futures
-      ensurePlaybackInfoForSelectedEpisode();
     }
   }
 

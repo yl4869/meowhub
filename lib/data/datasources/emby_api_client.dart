@@ -451,8 +451,8 @@ class EmbyApiClient {
       'SubtitleStreamIndex': subtitleStreamIndex,
       'MediaSourceId': mediaSourceId,
       'PlaySessionId': playSessionId,
-      'RequireAvc': requireAvc ?? true,
       // 这里的布尔值开关，统一在这里声明，清晰明了
+      if (requireAvc != null) 'RequireAvc': requireAvc,
       'EnableDirectPlay': true,
       'EnableDirectStream': true,
       'EnableTranscoding': true,

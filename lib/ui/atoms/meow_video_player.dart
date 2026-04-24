@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shimmer/shimmer.dart';
+import '../../domain/entities/playback_plan.dart';
 
 // --- 保留你原有且优秀的架构定义 ---
 
@@ -74,6 +75,8 @@ class MeowVideoPlayer extends StatefulWidget {
     this.subtitleTitle,
     this.subtitleLanguage,
     this.disableSubtitleTrack = false,
+    this.audioStreamIndex,
+    this.audioStreams = const [],
   });
 
   final String url;
@@ -97,6 +100,8 @@ class MeowVideoPlayer extends StatefulWidget {
   final String? subtitleTitle;
   final String? subtitleLanguage;
   final bool disableSubtitleTrack;
+  final int? audioStreamIndex;
+  final List<PlaybackStream> audioStreams;
 
   @override
   State<MeowVideoPlayer> createState() => _MeowVideoPlayerState();
@@ -117,6 +122,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   bool _isPlaying = false;
   bool _isBuffering = false;
   bool _hasDispatchedPlaybackStarted = false;
+  List<AudioTrack> _availableAudioTracks = const [];
 
   bool get _usesFlutterRenderer =>
       widget.renderMode == MeowVideoRenderMode.flutter;
@@ -140,6 +146,11 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       // ignore: discarded_futures
       _reopenOnSamePlayer(url: widget.url);
       return;
+    }
+    if (oldWidget.audioStreamIndex != widget.audioStreamIndex ||
+        !_sameAudioStreams(oldWidget.audioStreams, widget.audioStreams)) {
+      // ignore: discarded_futures
+      _applyAudioSelection();
     }
     if (oldWidget.subtitleUri != widget.subtitleUri ||
         oldWidget.subtitleTitle != widget.subtitleTitle ||
@@ -208,6 +219,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         Media(widget.url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
       );
+      await _applyAudioSelection(player: player);
       await _applySubtitleSelection(player: player);
 
       await _seekWithCompensation(
@@ -260,6 +272,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         Media(url, httpHeaders: widget.httpHeaders),
         play: widget.autoPlay,
       );
+      await _applyAudioSelection(player: player);
       await _applySubtitleSelection(player: player);
       final pos =
           seekTo ??
@@ -349,6 +362,131 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     } catch (_) {}
   }
 
+  Future<void> _applyAudioSelection({Player? player}) async {
+    final target = player ?? _player;
+    if (target == null || !_usesFlutterRenderer) {
+      return;
+    }
+
+    final desiredIndex = widget.audioStreamIndex;
+    if (desiredIndex == null) {
+      try {
+        await target.setAudioTrack(AudioTrack.auto());
+      } catch (_) {}
+      return;
+    }
+
+    final desiredPosition = widget.audioStreams.indexWhere(
+      (stream) => stream.index == desiredIndex,
+    );
+    if (desiredPosition < 0) {
+      return;
+    }
+
+    final localTracks = await _waitForSelectableAudioTracks(target);
+    if (localTracks.isEmpty) {
+      return;
+    }
+
+    final matchedTrack = _matchLocalAudioTrack(
+      targetStream: widget.audioStreams[desiredPosition],
+      desiredPosition: desiredPosition,
+      localTracks: localTracks,
+    );
+    if (matchedTrack == null) {
+      return;
+    }
+
+    try {
+      await target.setAudioTrack(matchedTrack);
+    } catch (_) {}
+  }
+
+  Future<List<AudioTrack>> _waitForSelectableAudioTracks(Player player) async {
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final available = _extractSelectableAudioTracks(player.state.tracks.audio);
+      if (available.isNotEmpty) {
+        _availableAudioTracks = available;
+        return available;
+      }
+      if (_availableAudioTracks.isNotEmpty) {
+        return _availableAudioTracks;
+      }
+      await Future.delayed(const Duration(milliseconds: 120));
+    }
+    return _availableAudioTracks;
+  }
+
+  List<AudioTrack> _extractSelectableAudioTracks(List<AudioTrack> tracks) {
+    return tracks
+        .where((track) => track.id != 'auto' && track.id != 'no' && !track.uri)
+        .toList(growable: false);
+  }
+
+  AudioTrack? _matchLocalAudioTrack({
+    required PlaybackStream targetStream,
+    required int desiredPosition,
+    required List<AudioTrack> localTracks,
+  }) {
+    String normalize(String? value) => (value ?? '').trim().toLowerCase();
+
+    final targetTitle = normalize(targetStream.title);
+    final targetLanguage = normalize(targetStream.language);
+    final targetCodec = normalize(targetStream.codec);
+
+    for (final track in localTracks) {
+      if (targetTitle.isNotEmpty &&
+          normalize(track.title).isNotEmpty &&
+          normalize(track.title) == targetTitle) {
+        return track;
+      }
+    }
+
+    for (final track in localTracks) {
+      final languageMatches =
+          targetLanguage.isNotEmpty && normalize(track.language) == targetLanguage;
+      final codecMatches =
+          targetCodec.isNotEmpty && normalize(track.codec) == targetCodec;
+      final bitrateMatches = targetStream.bitrate != null &&
+          track.bitrate != null &&
+          (track.bitrate! - targetStream.bitrate!).abs() <= 32000;
+      if ((languageMatches && codecMatches) ||
+          (languageMatches && bitrateMatches) ||
+          (codecMatches && bitrateMatches)) {
+        return track;
+      }
+    }
+
+    if (desiredPosition >= 0 && desiredPosition < localTracks.length) {
+      return localTracks[desiredPosition];
+    }
+    return null;
+  }
+
+  bool _sameAudioStreams(
+    List<PlaybackStream> left,
+    List<PlaybackStream> right,
+  ) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      final l = left[index];
+      final r = right[index];
+      if (l.index != r.index ||
+          l.title != r.title ||
+          l.language != r.language ||
+          l.codec != r.codec ||
+          l.bitrate != r.bitrate) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void _bindStreams(Player player) {
     void emit() {
       final duration = _duration;
@@ -387,6 +525,9 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       player.stream.buffering.listen((b) {
         _isBuffering = b;
         emit();
+      }),
+      player.stream.tracks.listen((tracks) {
+        _availableAudioTracks = _extractSelectableAudioTracks(tracks.audio);
       }),
     ]);
   }
