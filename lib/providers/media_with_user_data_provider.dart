@@ -89,14 +89,14 @@ class MediaWithUserDataProvider extends ChangeNotifier {
     };
     
     final resolvedRecent = <MediaItem>[];
-    final seenHistoryKeys = <String>{};
+    final seenMediaKeys = <String>{};
 
     for (final history in _userDataProvider.watchHistory) {
       final resolvedItem = _buildRecentItem(
         history: history,
         itemLookup: itemLookup,
       );
-      if (resolvedItem != null && seenHistoryKeys.add(history.uniqueKey)) {
+      if (resolvedItem != null && seenMediaKeys.add(resolvedItem.mediaKey)) {
         resolvedRecent.add(resolvedItem);
       }
     }
@@ -118,26 +118,24 @@ class MediaWithUserDataProvider extends ChangeNotifier {
     required WatchHistoryItem history,
     required Map<String, MediaItem> itemLookup,
   }) {
-    final directMatch = itemLookup[history.uniqueKey];
-    if (directMatch != null) {
-      return _applyHistoryToMediaItem(
-        base: directMatch,
-        history: history,
-      );
-    }
-
     final seriesId = history.seriesId;
-    if (seriesId == null || seriesId.isEmpty) {
-      return null;
+    if (seriesId != null && seriesId.isNotEmpty) {
+      final seriesMatch = itemLookup['${history.sourceType.name}:$seriesId'];
+      if (seriesMatch != null) {
+        return _applyHistoryToMediaItem(
+          base: seriesMatch,
+          history: history,
+        );
+      }
     }
 
-    final seriesMatch = itemLookup['${history.sourceType.name}:$seriesId'];
-    if (seriesMatch == null) {
+    final directMatch = itemLookup[history.uniqueKey];
+    if (directMatch == null) {
       return null;
     }
 
     return _applyHistoryToMediaItem(
-      base: seriesMatch,
+      base: directMatch,
       history: history,
     );
   }
@@ -147,28 +145,19 @@ class MediaWithUserDataProvider extends ChangeNotifier {
     required WatchHistoryItem history,
   }) {
     final progress = _userDataProvider.playbackProgressForItem(base);
-    final seriesTitle = history.seriesId == null || history.seriesId!.isEmpty
-        ? base.parentTitle
-        : base.title;
 
     return base.copyWith(
-      sourceId: history.id,
-      title: history.title.isNotEmpty ? history.title : base.title,
-      originalTitle: history.title.isNotEmpty
-          ? history.title
-          : base.originalTitle,
       playbackProgress: MediaPlaybackProgress(
         position: history.position,
         duration: history.duration,
       ),
-      parentTitle: seriesTitle,
-      seriesId: history.seriesId ?? base.seriesId,
-      indexNumber: history.indexNumber ?? base.indexNumber,
-      parentIndexNumber:
-          history.parentIndexNumber ?? base.parentIndexNumber,
       lastPlayedAt: history.updatedAt,
-      posterUrl: history.poster.isNotEmpty ? history.poster : base.posterUrl,
-      backdropUrl: base.backdropUrl,
+      posterUrl: base.posterUrl ?? (history.poster.isNotEmpty ? history.poster : null),
+      backdropUrl: base.backdropUrl ?? history.backdrop,
+      overview: base.overview.isNotEmpty
+          ? base.overview
+          : (history.overview ?? ''),
+      year: history.year ?? base.year,
     ).copyWith(
       playbackProgress: progress ??
           MediaPlaybackProgress(

@@ -50,7 +50,7 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
       );
     }
     final history = switch (sourceType) {
-      WatchSourceType.emby => await _fetchAndCacheEmbyHistoryWithFallback(),
+      WatchSourceType.emby => await _getMergedEmbyHistory(),
       WatchSourceType.local => await _loadLocalHistoryForSource(sourceType),
     };
 
@@ -143,54 +143,72 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
     return WatchHistoryItem(
       id: dto.id,
       title: dto.name,
-      poster: dto.primaryImageUrl ?? '',
+      poster: dto.posterUrl ?? '',
       position: durationFromEmbyTicks(dto.playbackPositionTicks),
       duration: durationFromEmbyTicks(dto.runTimeTicks),
       updatedAt: updatedAt,
       sourceType: WatchSourceType.emby,
+      originalTitle: dto.originalTitle,
+      overview: dto.overview,
+      backdrop: dto.backdropUrl,
+      parentTitle: dto.seriesName,
+      year: dto.productionYear,
       seriesId: dto.seriesId,
       parentIndexNumber: dto.parentIndexNumber,
       indexNumber: dto.indexNumber,
     );
   }
 
-  Future<List<WatchHistoryItem>> _fetchAndCacheEmbyHistory() async {
+  Future<List<WatchHistoryItem>> _fetchEmbyHistory() async {
     if (kDebugMode) {
       debugPrint(
-        '[Diag][WatchHistoryRepository] fetchAndCacheEmbyHistory:start',
+        '[Diag][WatchHistoryRepository] fetchEmbyHistory:start',
       );
     }
     final embyHistory = (await _embyRemoteDataSource.getHistory())
         .map(_mapEmbyDtoToEntity)
         .toList(growable: false);
-    await _localDataSource.replaceHistoryForSource(
-      WatchSourceType.emby,
-      embyHistory
-          .map(PlaybackRecord.fromWatchHistoryItem)
-          .toList(growable: false),
-    );
     if (kDebugMode) {
       debugPrint(
-        '[Diag][WatchHistoryRepository] fetchAndCacheEmbyHistory:success | '
+        '[Diag][WatchHistoryRepository] fetchEmbyHistory:success | '
         'count=${embyHistory.length}',
       );
     }
     return embyHistory;
   }
 
-  Future<List<WatchHistoryItem>> _fetchAndCacheEmbyHistoryWithFallback() async {
+  Future<List<WatchHistoryItem>> _getMergedEmbyHistory() async {
+    final localHistory = await _loadLocalHistoryForSource(WatchSourceType.emby);
     try {
-      return await _fetchAndCacheEmbyHistory();
-    } catch (error, stackTrace) {
-      final fallback = await _loadLocalHistoryForSource(WatchSourceType.emby);
+      final remoteHistory = await _fetchEmbyHistory();
+      final mergedHistory = _mergeHistoryById(
+        remoteHistory: remoteHistory,
+        localHistory: localHistory,
+      );
+      await _localDataSource.replaceHistoryForSource(
+        WatchSourceType.emby,
+        mergedHistory
+            .map(PlaybackRecord.fromWatchHistoryItem)
+            .toList(growable: false),
+      );
       if (kDebugMode) {
         debugPrint(
-          '[Diag][WatchHistoryRepository] fetchAndCacheEmbyHistory:fallback_local | '
-          'count=${fallback.length}, error=$error',
+          '[Diag][WatchHistoryRepository] getMergedEmbyHistory:success | '
+          'remoteCount=${remoteHistory.length}, '
+          'localCount=${localHistory.length}, '
+          'mergedCount=${mergedHistory.length}',
+        );
+      }
+      return mergedHistory;
+    } catch (error, stackTrace) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][WatchHistoryRepository] getMergedEmbyHistory:fallback_local | '
+          'localCount=${localHistory.length}, error=$error',
         );
         debugPrint(stackTrace.toString());
       }
-      return fallback;
+      return localHistory;
     }
   }
 
@@ -208,5 +226,57 @@ class WatchHistoryRepositoryImpl implements WatchHistoryRepository {
       );
     }
     return history;
+  }
+
+  List<WatchHistoryItem> _mergeHistoryById({
+    required List<WatchHistoryItem> remoteHistory,
+    required List<WatchHistoryItem> localHistory,
+  }) {
+    final merged = <String, WatchHistoryItem>{};
+
+    for (final item in remoteHistory) {
+      merged[item.uniqueKey] = item;
+    }
+    for (final item in localHistory) {
+      final existing = merged[item.uniqueKey];
+      merged[item.uniqueKey] = existing == null
+          ? item
+          : _mergeHistoryItem(existing, item);
+    }
+
+    final result = merged.values.toList(growable: false)
+      ..sort((left, right) => right.updatedAt.compareTo(left.updatedAt));
+    return result;
+  }
+
+  WatchHistoryItem _mergeHistoryItem(
+    WatchHistoryItem remote,
+    WatchHistoryItem local,
+  ) {
+    final primary = local.updatedAt.isAfter(remote.updatedAt) ? local : remote;
+    final secondary = identical(primary, local) ? remote : local;
+
+    return primary.copyWith(
+      title: primary.title.isNotEmpty ? primary.title : secondary.title,
+      poster: primary.poster.isNotEmpty ? primary.poster : secondary.poster,
+      position: primary.position > Duration.zero
+          ? primary.position
+          : secondary.position,
+      duration: primary.duration > Duration.zero
+          ? primary.duration
+          : secondary.duration,
+      updatedAt: primary.updatedAt.isAfter(secondary.updatedAt)
+          ? primary.updatedAt
+          : secondary.updatedAt,
+      originalTitle: primary.originalTitle ?? secondary.originalTitle,
+      overview: primary.overview ?? secondary.overview,
+      backdrop: primary.backdrop ?? secondary.backdrop,
+      parentTitle: primary.parentTitle ?? secondary.parentTitle,
+      year: primary.year ?? secondary.year,
+      seriesId: primary.seriesId ?? secondary.seriesId,
+      parentIndexNumber:
+          primary.parentIndexNumber ?? secondary.parentIndexNumber,
+      indexNumber: primary.indexNumber ?? secondary.indexNumber,
+    );
   }
 }

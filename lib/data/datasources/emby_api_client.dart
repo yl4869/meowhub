@@ -606,7 +606,10 @@ class EmbyApiClient {
 
       return items
           .whereType<Map<String, dynamic>>()
-          .map(EmbyResumeItemDto.fromJson)
+          .map((json) => EmbyResumeItemDto.fromJson(
+                json,
+                serverUrl: serverUrl,
+              ))
           .toList(growable: false);
     } catch (error, stackTrace) {
       if (kDebugMode) {

@@ -10,6 +10,11 @@ class PlaybackRecord {
     required this.updatedAt,
     required this.sourceType,
     this.episodeIndex = 0,
+    this.originalTitle,
+    this.overview,
+    this.backdrop,
+    this.parentTitle,
+    this.year,
     this.seriesId,
     this.parentIndexNumber,
     this.indexNumber,
@@ -23,6 +28,11 @@ class PlaybackRecord {
   final DateTime updatedAt;
   final WatchSourceType sourceType;
   final int episodeIndex;
+  final String? originalTitle;
+  final String? overview;
+  final String? backdrop;
+  final String? parentTitle;
+  final int? year;
   final String? seriesId;
   final int? parentIndexNumber;
   final int? indexNumber;
@@ -36,6 +46,11 @@ class PlaybackRecord {
     DateTime? updatedAt,
     WatchSourceType? sourceType,
     int? episodeIndex,
+    Object? originalTitle = _sentinel,
+    Object? overview = _sentinel,
+    Object? backdrop = _sentinel,
+    Object? parentTitle = _sentinel,
+    Object? year = _sentinel,
     Object? seriesId = _sentinel,
     Object? parentIndexNumber = _sentinel,
     Object? indexNumber = _sentinel,
@@ -49,6 +64,19 @@ class PlaybackRecord {
       updatedAt: updatedAt ?? this.updatedAt,
       sourceType: sourceType ?? this.sourceType,
       episodeIndex: episodeIndex ?? this.episodeIndex,
+      originalTitle: identical(originalTitle, _sentinel)
+          ? this.originalTitle
+          : originalTitle as String?,
+      overview: identical(overview, _sentinel)
+          ? this.overview
+          : overview as String?,
+      backdrop: identical(backdrop, _sentinel)
+          ? this.backdrop
+          : backdrop as String?,
+      parentTitle: identical(parentTitle, _sentinel)
+          ? this.parentTitle
+          : parentTitle as String?,
+      year: identical(year, _sentinel) ? this.year : year as int?,
       seriesId: identical(seriesId, _sentinel)
           ? this.seriesId
           : seriesId as String?,
@@ -70,6 +98,11 @@ class PlaybackRecord {
       duration: duration,
       updatedAt: updatedAt,
       sourceType: sourceType,
+      originalTitle: originalTitle,
+      overview: overview,
+      backdrop: backdrop,
+      parentTitle: parentTitle,
+      year: year,
       seriesId: seriesId,
       parentIndexNumber: parentIndexNumber,
       indexNumber: indexNumber,
@@ -89,6 +122,11 @@ class PlaybackRecord {
       updatedAt: item.updatedAt,
       sourceType: item.sourceType,
       episodeIndex: episodeIndex,
+      originalTitle: item.originalTitle,
+      overview: item.overview,
+      backdrop: item.backdrop,
+      parentTitle: item.parentTitle,
+      year: item.year,
       seriesId: item.seriesId,
       parentIndexNumber: item.parentIndexNumber,
       indexNumber: item.indexNumber,

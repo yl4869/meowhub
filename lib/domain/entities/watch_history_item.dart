@@ -27,6 +27,11 @@ class WatchHistoryItem {
     required this.duration,
     required this.updatedAt,
     required this.sourceType,
+    this.originalTitle,
+    this.overview,
+    this.backdrop,
+    this.parentTitle,
+    this.year,
     this.seriesId,
     this.parentIndexNumber,
     this.indexNumber,
@@ -39,6 +44,11 @@ class WatchHistoryItem {
   final Duration duration;
   final DateTime updatedAt;
   final WatchSourceType sourceType;
+  final String? originalTitle;
+  final String? overview;
+  final String? backdrop;
+  final String? parentTitle;
+  final int? year;
   final String? seriesId;
   final int? parentIndexNumber;
   final int? indexNumber;
@@ -62,6 +72,11 @@ class WatchHistoryItem {
     Duration? duration,
     DateTime? updatedAt,
     WatchSourceType? sourceType,
+    Object? originalTitle = _sentinel,
+    Object? overview = _sentinel,
+    Object? backdrop = _sentinel,
+    Object? parentTitle = _sentinel,
+    Object? year = _sentinel,
     Object? seriesId = _sentinel,
     Object? parentIndexNumber = _sentinel,
     Object? indexNumber = _sentinel,
@@ -74,6 +89,19 @@ class WatchHistoryItem {
       duration: duration ?? this.duration,
       updatedAt: updatedAt ?? this.updatedAt,
       sourceType: sourceType ?? this.sourceType,
+      originalTitle: identical(originalTitle, _sentinel)
+          ? this.originalTitle
+          : originalTitle as String?,
+      overview: identical(overview, _sentinel)
+          ? this.overview
+          : overview as String?,
+      backdrop: identical(backdrop, _sentinel)
+          ? this.backdrop
+          : backdrop as String?,
+      parentTitle: identical(parentTitle, _sentinel)
+          ? this.parentTitle
+          : parentTitle as String?,
+      year: identical(year, _sentinel) ? this.year : year as int?,
       seriesId: identical(seriesId, _sentinel)
           ? this.seriesId
           : seriesId as String?,

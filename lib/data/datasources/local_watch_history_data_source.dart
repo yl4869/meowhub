@@ -61,6 +61,11 @@ class InMemoryLocalWatchHistoryDataSource
       episodeIndex: incoming.episodeIndex != 0
           ? incoming.episodeIndex
           : existing.episodeIndex,
+      originalTitle: incoming.originalTitle ?? existing.originalTitle,
+      overview: incoming.overview ?? existing.overview,
+      backdrop: incoming.backdrop ?? existing.backdrop,
+      parentTitle: incoming.parentTitle ?? existing.parentTitle,
+      year: incoming.year ?? existing.year,
       seriesId: incoming.seriesId ?? existing.seriesId,
       parentIndexNumber:
           incoming.parentIndexNumber ?? existing.parentIndexNumber,
