@@ -98,9 +98,22 @@ class MediaWithUserDataProvider extends ChangeNotifier {
       );
       if (resolvedItem != null && seenMediaKeys.add(resolvedItem.mediaKey)) {
         resolvedRecent.add(resolvedItem);
+      } else if (kDebugMode && resolvedItem == null) {
+        debugPrint(
+          '[Diag][MediaWithUserData] recent:unresolved | '
+          'historyKey=${history.uniqueKey}, seriesId=${history.seriesId}',
+        );
       }
     }
     _cachedRecent = resolvedRecent;
+
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][MediaWithUserData] recent:rebuilt | '
+        'historyCount=${_userDataProvider.watchHistory.length}, '
+        'resolvedCount=${_cachedRecent.length}',
+      );
+    }
 
     notifyListeners();
   }
@@ -127,16 +140,30 @@ class MediaWithUserDataProvider extends ChangeNotifier {
           history: history,
         );
       }
+
+      return _buildFallbackRecentItem(
+        history: history,
+        sourceId: seriesId,
+        title: history.parentTitle ?? history.title,
+        originalTitle: history.originalTitle ?? history.parentTitle,
+        type: MediaType.series,
+      );
     }
 
     final directMatch = itemLookup[history.uniqueKey];
-    if (directMatch == null) {
-      return null;
+    if (directMatch != null) {
+      return _applyHistoryToMediaItem(
+        base: directMatch,
+        history: history,
+      );
     }
 
-    return _applyHistoryToMediaItem(
-      base: directMatch,
+    return _buildFallbackRecentItem(
       history: history,
+      sourceId: history.id,
+      title: history.title,
+      originalTitle: history.originalTitle,
+      type: MediaType.movie,
     );
   }
 
@@ -165,6 +192,52 @@ class MediaWithUserDataProvider extends ChangeNotifier {
             duration: history.duration,
           ),
     );
+  }
+
+  MediaItem _buildFallbackRecentItem({
+    required WatchHistoryItem history,
+    required String sourceId,
+    required String title,
+    required String? originalTitle,
+    required MediaType type,
+  }) {
+    return MediaItem(
+      id: _stableNumericId(sourceId),
+      sourceId: sourceId,
+      title: title.isNotEmpty ? title : history.title,
+      originalTitle: (originalTitle?.isNotEmpty == true)
+          ? originalTitle!
+          : (title.isNotEmpty ? title : history.title),
+      type: type,
+      sourceType: history.sourceType,
+      posterUrl: history.poster.isNotEmpty ? history.poster : null,
+      backdropUrl: history.backdrop,
+      overview: history.overview ?? '',
+      year: history.year,
+      parentTitle: history.parentTitle,
+      seriesId: history.seriesId,
+      parentIndexNumber: history.parentIndexNumber,
+      indexNumber: history.indexNumber,
+      playbackProgress: MediaPlaybackProgress(
+        position: history.position,
+        duration: history.duration,
+      ),
+      lastPlayedAt: history.updatedAt,
+    );
+  }
+
+  int _stableNumericId(String value) {
+    final parsed = int.tryParse(value);
+    if (parsed != null) {
+      return parsed;
+    }
+
+    var hash = 0x811C9DC5;
+    for (final codeUnit in value.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x01000193) & 0x7fffffff;
+    }
+    return hash;
   }
 
   @override

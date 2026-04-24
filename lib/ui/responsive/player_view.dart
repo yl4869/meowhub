@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 // debugPrint is available via material.dart import
 import 'package:provider/provider.dart';
@@ -63,7 +64,6 @@ class _PlayerViewState extends State<PlayerView> {
   String? _selectedSubtitleLanguage;
   PlayerResolutionOption _selectedResolution = _resolutionOptions.first;
   bool _openSelectorPending = false;
-  int _serverSeekRequestToken = 0;
   bool _isPreparingPlan = true;
   String? _planErrorMessage;
 
@@ -100,10 +100,6 @@ class _PlayerViewState extends State<PlayerView> {
     if ((_selectedSubtitleUri ?? '').trim().isNotEmpty) {
       return false;
     }
-    final stream = _selectedSubtitleStream;
-    if (stream != null && !_isTextSubtitle(stream)) {
-      return true;
-    }
     return false;
   }
 
@@ -113,7 +109,7 @@ class _PlayerViewState extends State<PlayerView> {
       return savedUri;
     }
     final stream = _selectedSubtitleStream;
-    if (stream == null || !_isTextSubtitle(stream)) {
+    if (stream == null) {
       return null;
     }
     final uri = stream.deliveryUrl?.trim();
@@ -170,6 +166,7 @@ class _PlayerViewState extends State<PlayerView> {
   }
 
   Future<void> _preparePlaybackPlan() async {
+    final userDataProvider = context.read<UserDataProvider>();
     if (mounted) {
       setState(() {
         _isPreparingPlan = true;
@@ -189,23 +186,35 @@ class _PlayerViewState extends State<PlayerView> {
       return;
     }
     try {
-      final saved = context.read<UserDataProvider>().trackSelectionForItem(
+      final saved = userDataProvider.trackSelectionForItem(
         widget.mediaItem,
       );
-      // 在 _preparePlaybackPlan 中
-final plan = await _fetchPlaybackPlan(
-  audioIndex: saved?.audioIndex,
-  subtitleIndex: saved?.subtitleIndex, // 👈 确保这个也传进去了
-);
+      final plan = await _fetchPlaybackPlan(
+        audioIndex: saved?.audioIndex,
+        subtitleIndex: saved?.subtitleIndex,
+      );
+      PlaybackStream? initialSubtitleStream;
+      if ((saved?.subtitleIndex ?? -1) >= 0) {
+        for (final stream in plan.subtitleStreams) {
+          if (stream.index == saved?.subtitleIndex) {
+            initialSubtitleStream = stream;
+            break;
+          }
+        }
+      }
+      final initialSubtitleUri =
+          initialSubtitleStream?.deliveryUrl;
       _assertStrictPlan(plan);
       if (!mounted) return;
       setState(() {
         _plan = plan;
         _selectedAudioIndex = saved?.audioIndex;
         _selectedSubtitleIndex = saved?.subtitleIndex;
-        _selectedSubtitleUri = saved?.subtitleUri;
-        _selectedSubtitleTitle = saved?.subtitleTitle;
-        _selectedSubtitleLanguage = saved?.subtitleLanguage;
+        _selectedSubtitleUri = initialSubtitleUri;
+        _selectedSubtitleTitle =
+            initialSubtitleStream?.title ?? saved?.subtitleTitle;
+        _selectedSubtitleLanguage =
+            initialSubtitleStream?.language ?? saved?.subtitleLanguage;
         _currentUrl = plan.url;
         _isPreparingPlan = false;
         _planErrorMessage = null;
@@ -216,6 +225,23 @@ final plan = await _fetchPlaybackPlan(
       if (_openSelectorPending && mounted) {
         _openSelectorPending = false;
         await _openTrackSelector();
+      }
+
+      if (saved?.subtitleUri != initialSubtitleUri ||
+          saved?.subtitleTitle !=
+              (initialSubtitleStream?.title ?? saved?.subtitleTitle) ||
+          saved?.subtitleLanguage !=
+              (initialSubtitleStream?.language ?? saved?.subtitleLanguage)) {
+        userDataProvider.setTrackSelectionForItem(
+          widget.mediaItem,
+          audioIndex: saved?.audioIndex,
+          subtitleIndex: saved?.subtitleIndex,
+          audioTitle: saved?.audioTitle,
+          subtitleTitle: initialSubtitleStream?.title ?? saved?.subtitleTitle,
+          subtitleLanguage:
+              initialSubtitleStream?.language ?? saved?.subtitleLanguage,
+          subtitleUri: initialSubtitleUri,
+        );
       }
     } catch (error) {
       if (!mounted) return;
@@ -243,7 +269,6 @@ final plan = await _fetchPlaybackPlan(
     int? subtitleIndex,
     int? maxStreamingBitrate,
     String? playSessionIdOverride,
-    Duration? startPositionOverride,
   }) async {
     // ✅ 关键：直接从 context 读取注入好的抽象接口
     // 这将自动获取 main.dart 中配置的 EmbyPlaybackRepositoryImpl
@@ -255,8 +280,6 @@ final plan = await _fetchPlaybackPlan(
           maxStreamingBitrate ?? _selectedResolution.maxStreamingBitrate,
       subtitleStreamIndex: subtitleIndex,
       playSessionId: playSessionIdOverride ?? _plan?.playSessionId,
-      startPosition:
-          startPositionOverride ?? _resumePositionOverride ?? _initialPosition,
     );
   }
 
@@ -273,76 +296,84 @@ final plan = await _fetchPlaybackPlan(
         return StatefulBuilder(
           builder: (context, modalSetState) {
             return SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('选择音轨', style: Theme.of(ctx).textTheme.titleMedium),
-                    ...plan.audioStreams.map(
-                      (s) => ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        minLeadingWidth: 24,
-                        horizontalTitleGap: 12,
-                        leading: Icon(
-                          tempAudio == s.index
-                              ? Icons.radio_button_checked
-                              : Icons.radio_button_off,
+              child: FractionallySizedBox(
+                heightFactor: 0.78,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: ListView(
+                          children: [
+                            Text('选择音轨', style: Theme.of(ctx).textTheme.titleMedium),
+                            ...plan.audioStreams.map(
+                              (s) => ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                minLeadingWidth: 24,
+                                horizontalTitleGap: 12,
+                                leading: Icon(
+                                  tempAudio == s.index
+                                      ? Icons.radio_button_checked
+                                      : Icons.radio_button_off,
+                                ),
+                                title: Text(s.title),
+                                subtitle: _audioStreamDetail(s) == null
+                                    ? null
+                                    : Text(_audioStreamDetail(s)!),
+                                onTap: () => modalSetState(() => tempAudio = s.index),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text('选择字幕', style: Theme.of(ctx).textTheme.titleMedium),
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              minLeadingWidth: 24,
+                              horizontalTitleGap: 12,
+                              leading: Icon(
+                                (tempSub ?? -1) == -1
+                                    ? Icons.radio_button_checked
+                                    : Icons.radio_button_off,
+                              ),
+                              title: const Text('无字幕'),
+                              onTap: () => modalSetState(() => tempSub = -1),
+                            ),
+                            ...plan.subtitleStreams.map(
+                              (s) => ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                minLeadingWidth: 24,
+                                horizontalTitleGap: 12,
+                                leading: Icon(
+                                  (tempSub ?? -1) == s.index
+                                      ? Icons.radio_button_checked
+                                      : Icons.radio_button_off,
+                                ),
+                                title: Text(s.title),
+                                subtitle: _subtitleStreamDetail(s) == null
+                                    ? null
+                                    : Text(_subtitleStreamDetail(s)!),
+                                onTap: () => modalSetState(() => tempSub = s.index),
+                              ),
+                            ),
+                          ],
                         ),
-                        title: Text(s.title),
-                        subtitle: _audioStreamDetail(s) == null
-                            ? null
-                            : Text(_audioStreamDetail(s)!),
-                        onTap: () => modalSetState(() => tempAudio = s.index),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text('选择字幕', style: Theme.of(ctx).textTheme.titleMedium),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      minLeadingWidth: 24,
-                      horizontalTitleGap: 12,
-                      leading: Icon(
-                        (tempSub ?? -1) == -1
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_off,
-                      ),
-                      title: const Text('无字幕'),
-                      onTap: () => modalSetState(() => tempSub = -1),
-                    ),
-                    ...plan.subtitleStreams.map(
-                      (s) => ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        minLeadingWidth: 24,
-                        horizontalTitleGap: 12,
-                        leading: Icon(
-                          (tempSub ?? -1) == s.index
-                              ? Icons.radio_button_checked
-                              : Icons.radio_button_off,
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: FilledButton(
+                          onPressed: () {
+                            Navigator.of(ctx).pop();
+                            _applyTrackSelection(
+                              audioIndex: tempAudio,
+                              subtitleIndex: tempSub,
+                            );
+                          },
+                          child: const Text('应用'),
                         ),
-                        title: Text(s.title),
-                        subtitle: _subtitleStreamDetail(s) == null
-                            ? null
-                            : Text(_subtitleStreamDetail(s)!),
-                        onTap: () => modalSetState(() => tempSub = s.index),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: FilledButton(
-                        onPressed: () {
-                          Navigator.of(ctx).pop();
-                          _applyTrackSelection(
-                            audioIndex: tempAudio,
-                            subtitleIndex: tempSub,
-                          );
-                        },
-                        child: const Text('应用'),
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -396,6 +427,16 @@ final plan = await _fetchPlaybackPlan(
       subtitleLanguage: selectedSubtitleStream?.language,
       subtitleUri: selectedSubtitleStream?.deliveryUrl,
     );
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][PlayerView] subtitle:selected | '
+        'index=${subtitleIndex ?? -1}, '
+        'title=${selectedSubtitleStream?.title ?? ''}, '
+        'codec=${selectedSubtitleStream?.codec ?? ''}, '
+        'isText=${selectedSubtitleStream != null ? _isTextSubtitle(selectedSubtitleStream) : false}, '
+        'uri=${selectedSubtitleStream?.deliveryUrl ?? ''}',
+      );
+    }
     setState(() {
       _selectedAudioIndex = effectiveAudioIndex;
       _selectedSubtitleIndex = subtitleIndex;
@@ -426,27 +467,10 @@ final plan = await _fetchPlaybackPlan(
 
   Future<void> _handleServerSeek(Duration target) async {
     _resumePositionOverride = target;
-    final currentPlan = _plan;
-    if (currentPlan == null || !currentPlan.isTranscoding) {
+    if (!mounted) {
       return;
     }
-
-    final requestToken = ++_serverSeekRequestToken;
-    final nextPlan = await _fetchPlaybackPlan(
-      audioIndex: _selectedAudioIndex,
-      subtitleIndex: _selectedSubtitleIndex,
-      maxStreamingBitrate: _selectedResolution.maxStreamingBitrate,
-      startPositionOverride: target,
-    );
-    _assertStrictPlan(nextPlan);
-    if (!mounted || requestToken != _serverSeekRequestToken) {
-      return;
-    }
-
-    setState(() {
-      _plan = nextPlan;
-      _currentUrl = nextPlan.url;
-    });
+    setState(() {});
   }
 
   @override
@@ -499,10 +523,11 @@ final plan = await _fetchPlaybackPlan(
           subtitleLanguage:
               _selectedSubtitleLanguage ?? _selectedSubtitleStream?.language,
           disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
+          subtitleStreamIndex: _selectedSubtitleIndex,
+          subtitleStreams: _plan!.subtitleStreams,
           playSessionId: _plan!.playSessionId,
           mediaSourceId: _plan!.mediaSourceId,
           audioStreamIndex: _selectedAudioIndex,
-          subtitleStreamIndex: _selectedSubtitleIndex,
           audioStreams: _plan!.audioStreams,
         );
       },
@@ -522,10 +547,11 @@ final plan = await _fetchPlaybackPlan(
           subtitleLanguage:
               _selectedSubtitleLanguage ?? _selectedSubtitleStream?.language,
           disableSubtitleTrack: _shouldDisablePlayerSubtitleTrack,
+          subtitleStreamIndex: _selectedSubtitleIndex,
+          subtitleStreams: _plan!.subtitleStreams,
           playSessionId: _plan!.playSessionId,
           mediaSourceId: _plan!.mediaSourceId,
           audioStreamIndex: _selectedAudioIndex,
-          subtitleStreamIndex: _selectedSubtitleIndex,
           audioStreams: _plan!.audioStreams,
         );
       },

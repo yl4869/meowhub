@@ -86,11 +86,12 @@ class MediaDetailProvider extends ChangeNotifier {
       return;
     }
 
-    final savedSelection = _userDataProvider.trackSelectionForItem(item);
     await _prefetchPlaybackInfo(
       item,
-      audioStreamIndex: savedSelection?.audioIndex,
-      subtitleStreamIndex: savedSelection?.subtitleIndex,
+      // 详情页这里只是为了加载完整的音轨/字幕选项，不应带当前选择，
+      // 否则 Emby 可能按已选字幕裁剪返回结果，导致 SRT 等轨道不出现在列表里。
+      audioStreamIndex: null,
+      subtitleStreamIndex: null,
     );
   }
 
@@ -116,6 +117,21 @@ class MediaDetailProvider extends ChangeNotifier {
         return;
       }
       _selectedPlaybackPlan = plan;
+      if (kDebugMode) {
+        final subtitleSummary = plan.subtitleStreams
+            .map(
+              (stream) =>
+                  '{index=${stream.index}, codec=${stream.codec ?? ''}, '
+                  'title=${stream.title}, text=${stream.isTextSubtitleStream}, '
+                  'external=${stream.isExternal}}',
+            )
+            .join(', ');
+        debugPrint(
+          '[Diag][MediaDetailProvider] playback_prefetch:success | '
+          'itemId=${item.dataSourceId}, subtitleCount=${plan.subtitleStreams.length}, '
+          'subtitles=[$subtitleSummary]',
+        );
+      }
       _isLoadingPlaybackConfig = false;
       notifyListeners();
     } catch (e) {

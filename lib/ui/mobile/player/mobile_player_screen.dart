@@ -38,6 +38,8 @@ class MobilePlayerScreen extends StatefulWidget {
     this.subtitleTitle,
     this.subtitleLanguage,
     this.disableSubtitleTrack = false,
+    this.subtitleStreamIndexForPlayer,
+    this.subtitleStreams = const [],
     this.playSessionId,
     this.mediaSourceId,
     this.audioStreamIndex,
@@ -62,6 +64,8 @@ class MobilePlayerScreen extends StatefulWidget {
   final String? subtitleTitle;
   final String? subtitleLanguage;
   final bool disableSubtitleTrack;
+  final int? subtitleStreamIndexForPlayer;
+  final List<PlaybackStream> subtitleStreams;
   final String? playSessionId;
   final String? mediaSourceId;
   final int? audioStreamIndex;
@@ -97,6 +101,10 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   bool _isScrubbing = false;
   bool _isInitialSeeking = true;
   bool _hasReportedPlaybackStarted = false;
+  bool _uiIsPlaying = false;
+  bool _uiIsBuffering = false;
+  int _lastUiProgressSecond = -1;
+  Duration _lastUiDuration = Duration.zero;
   Duration? _pendingManualSeekTarget;
   _PlayerOptionPanel? _activeOptionPanel;
   double _currentSpeed = 1.0;
@@ -219,11 +227,12 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     return _currentPlaybackProgress?.duration ?? Duration.zero;
   }
 
-  bool get _isPlaying => _latestStatus?.isPlaying ?? false;
+  bool get _isPlaying => _latestStatus?.isPlaying ?? _uiIsPlaying;
 
   void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
     final isManualSeekAction = _consumeManualSeekAllowance(status.position);
     if (_shouldShieldInitialProgress(status)) {
+      _applyTransientPlaybackUi(status);
       return;
     }
 
@@ -238,10 +247,18 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
           status,
           allowPositionRegression: false,
         )) {
+      if (!_isExiting) {
+        _applyTransientPlaybackUi(status);
+      }
       return;
     }
 
     _applyValidStatusUpdate(status, allowPositionRegression: false);
+  }
+
+  void _applyTransientPlaybackUi(MeowVideoPlaybackStatus status) {
+    _refreshPlaybackUi(status);
+    widget.onPlaybackStatusChanged(status);
   }
 
   void _applyValidStatusUpdate(
@@ -250,6 +267,10 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
   }) {
     _latestStatus = status;
     if (status.isInitialized) {
+      _lastStablePlaybackProgress = MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
       // 1. 更新内存和本地 UI
       _udp.updatePlaybackProgressForItem(
         widget.mediaItem,
@@ -273,6 +294,31 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
         _maybeSyncProgressInBackground(status);
       }
     }
+    _refreshPlaybackUi(status);
+    widget.onPlaybackStatusChanged(status);
+  }
+
+  void _refreshPlaybackUi(
+    MeowVideoPlaybackStatus status, {
+    bool force = false,
+  }) {
+    final nextSecond = status.position.inSeconds;
+    final shouldRebuild =
+        force ||
+        _uiIsPlaying != status.isPlaying ||
+        _uiIsBuffering != status.isBuffering ||
+        _lastUiProgressSecond != nextSecond ||
+        _lastUiDuration != status.duration;
+
+    _uiIsPlaying = status.isPlaying;
+    _uiIsBuffering = status.isBuffering;
+    _lastUiProgressSecond = nextSecond;
+    _lastUiDuration = status.duration;
+
+    if (!shouldRebuild || !mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   bool _shouldShieldInitialProgress(MeowVideoPlaybackStatus status) {
@@ -664,21 +710,6 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
     if (widget.isTranscoding && widget.onServerSeekRequested != null) {
       try {
         await widget.onServerSeekRequested!(target);
-        _latestStatus = null;
-        _lastStablePlaybackProgress = MediaPlaybackProgress(
-          position: target,
-          duration: duration,
-        );
-        _udp.registerOptimisticSeekForItem(
-          widget.mediaItem,
-          position: target,
-          duration: duration,
-          notify: true,
-        );
-        if (mounted) {
-          setState(() {});
-        }
-        return;
       } catch (error) {
         debugPrint(
           '[Resume][Mobile][Seek][Server][Error] '
@@ -778,6 +809,8 @@ class _MobilePlayerScreenState extends State<MobilePlayerScreen> {
         subtitleTitle: widget.subtitleTitle,
         subtitleLanguage: widget.subtitleLanguage,
         disableSubtitleTrack: widget.disableSubtitleTrack,
+        subtitleStreamIndex: widget.subtitleStreamIndexForPlayer,
+        subtitleStreams: widget.subtitleStreams,
         audioStreamIndex: widget.audioStreamIndex,
         audioStreams: widget.audioStreams,
       ),

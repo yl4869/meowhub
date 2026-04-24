@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -75,6 +76,8 @@ class MeowVideoPlayer extends StatefulWidget {
     this.subtitleTitle,
     this.subtitleLanguage,
     this.disableSubtitleTrack = false,
+    this.subtitleStreamIndex,
+    this.subtitleStreams = const [],
     this.audioStreamIndex,
     this.audioStreams = const [],
   });
@@ -100,6 +103,8 @@ class MeowVideoPlayer extends StatefulWidget {
   final String? subtitleTitle;
   final String? subtitleLanguage;
   final bool disableSubtitleTrack;
+  final int? subtitleStreamIndex;
+  final List<PlaybackStream> subtitleStreams;
   final int? audioStreamIndex;
   final List<PlaybackStream> audioStreams;
 
@@ -123,6 +128,9 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   bool _isBuffering = false;
   bool _hasDispatchedPlaybackStarted = false;
   List<AudioTrack> _availableAudioTracks = const [];
+  List<SubtitleTrack> _availableSubtitleTracks = const [];
+  bool _applyingAudioSelection = false;
+  bool _applyingSubtitleSelection = false;
 
   bool get _usesFlutterRenderer =>
       widget.renderMode == MeowVideoRenderMode.flutter;
@@ -155,7 +163,9 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     if (oldWidget.subtitleUri != widget.subtitleUri ||
         oldWidget.subtitleTitle != widget.subtitleTitle ||
         oldWidget.subtitleLanguage != widget.subtitleLanguage ||
-        oldWidget.disableSubtitleTrack != widget.disableSubtitleTrack) {
+        oldWidget.disableSubtitleTrack != widget.disableSubtitleTrack ||
+        oldWidget.subtitleStreamIndex != widget.subtitleStreamIndex ||
+        !_sameSubtitleStreams(oldWidget.subtitleStreams, widget.subtitleStreams)) {
       // ignore: discarded_futures
       _applySubtitleSelection();
     }
@@ -217,7 +227,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       // 打开媒体
       await player.open(
         Media(widget.url, httpHeaders: widget.httpHeaders),
-        play: widget.autoPlay,
+        play: false,
       );
       await _applyAudioSelection(player: player);
       await _applySubtitleSelection(player: player);
@@ -235,6 +245,12 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         } catch (_) {
           // 某些版本不支持，忽略
         }
+      }
+
+      if (widget.autoPlay) {
+        try {
+          await player.play();
+        } catch (_) {}
       }
 
       if (!mounted) return;
@@ -270,7 +286,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       _resetPlaybackLifecycleState();
       await player.open(
         Media(url, httpHeaders: widget.httpHeaders),
-        play: widget.autoPlay,
+        play: false,
       );
       await _applyAudioSelection(player: player);
       await _applySubtitleSelection(player: player);
@@ -283,6 +299,11 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       if (widget.looping) {
         try {
           player.setPlaylistMode(PlaylistMode.loop);
+        } catch (_) {}
+      }
+      if (widget.autoPlay) {
+        try {
+          await player.play();
         } catch (_) {}
       }
     } finally {
@@ -342,8 +363,22 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     if (target == null || !_usesFlutterRenderer) {
       return;
     }
+    if (_applyingSubtitleSelection) {
+      return;
+    }
+    _applyingSubtitleSelection = true;
     try {
       final subtitleUri = widget.subtitleUri?.trim();
+      final desiredIndex = widget.subtitleStreamIndex;
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MeowVideoPlayer] subtitle:apply | '
+          'uri=${subtitleUri ?? ''}, title=${widget.subtitleTitle ?? ''}, '
+          'language=${widget.subtitleLanguage ?? ''}, '
+          'disable=${widget.disableSubtitleTrack}, '
+          'streamIndex=${desiredIndex ?? -1}',
+        );
+      }
       if (subtitleUri != null && subtitleUri.isNotEmpty) {
         await target.setSubtitleTrack(
           SubtitleTrack.uri(
@@ -352,14 +387,87 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
             language: widget.subtitleLanguage,
           ),
         );
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][MeowVideoPlayer] subtitle:external_loaded | '
+            'uri=$subtitleUri',
+          );
+        }
         return;
       }
       if (widget.disableSubtitleTrack) {
         await target.setSubtitleTrack(SubtitleTrack.no());
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][MeowVideoPlayer] subtitle:disabled_explicit',
+          );
+        }
         return;
       }
-      await target.setSubtitleTrack(SubtitleTrack.auto());
-    } catch (_) {}
+      if (desiredIndex != null && desiredIndex >= 0) {
+        final desiredPosition = widget.subtitleStreams.indexWhere(
+          (stream) => stream.index == desiredIndex,
+        );
+        if (desiredPosition >= 0) {
+          final localTracks = await _waitForSelectableSubtitleTracks(target);
+          final matchedTrack = _matchLocalSubtitleTrack(
+            targetStream: widget.subtitleStreams[desiredPosition],
+            desiredPosition: desiredPosition,
+            localTracks: localTracks,
+          );
+          if (matchedTrack != null) {
+            await target.setSubtitleTrack(matchedTrack);
+            if (kDebugMode) {
+              debugPrint(
+                '[Diag][MeowVideoPlayer] subtitle:internal_selected | '
+                'streamIndex=$desiredIndex, trackId=${matchedTrack.id}, '
+                'title=${matchedTrack.title}, codec=${matchedTrack.codec}',
+              );
+            }
+            return;
+          }
+          if (kDebugMode) {
+            final tracksSummary = localTracks
+                .map(
+                  (track) =>
+                      '{id=${track.id}, title=${track.title ?? ''}, '
+                      'lang=${track.language ?? ''}, codec=${track.codec ?? ''}}',
+                )
+                .join(', ');
+            debugPrint(
+              '[Diag][MeowVideoPlayer] subtitle:internal_not_found | '
+              'streamIndex=$desiredIndex, localCount=${localTracks.length}, '
+              'targetTitle=${widget.subtitleStreams[desiredPosition].title}, '
+              'targetLang=${widget.subtitleStreams[desiredPosition].language ?? ''}, '
+              'targetCodec=${widget.subtitleStreams[desiredPosition].codec ?? ''}, '
+              'tracks=[$tracksSummary]',
+            );
+          }
+          await target.setSubtitleTrack(SubtitleTrack.no());
+          if (kDebugMode) {
+            debugPrint(
+              '[Diag][MeowVideoPlayer] subtitle:disabled_no_match | '
+              'streamIndex=$desiredIndex',
+            );
+          }
+          return;
+        }
+      }
+      await target.setSubtitleTrack(SubtitleTrack.no());
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MeowVideoPlayer] subtitle:disabled_fallback',
+        );
+      }
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][MeowVideoPlayer] subtitle:failed | error=$error',
+        );
+      }
+    } finally {
+      _applyingSubtitleSelection = false;
+    }
   }
 
   Future<void> _applyAudioSelection({Player? player}) async {
@@ -367,43 +475,51 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     if (target == null || !_usesFlutterRenderer) {
       return;
     }
-
-    final desiredIndex = widget.audioStreamIndex;
-    if (desiredIndex == null) {
-      try {
-        await target.setAudioTrack(AudioTrack.auto());
-      } catch (_) {}
+    if (_applyingAudioSelection) {
       return;
     }
-
-    final desiredPosition = widget.audioStreams.indexWhere(
-      (stream) => stream.index == desiredIndex,
-    );
-    if (desiredPosition < 0) {
-      return;
-    }
-
-    final localTracks = await _waitForSelectableAudioTracks(target);
-    if (localTracks.isEmpty) {
-      return;
-    }
-
-    final matchedTrack = _matchLocalAudioTrack(
-      targetStream: widget.audioStreams[desiredPosition],
-      desiredPosition: desiredPosition,
-      localTracks: localTracks,
-    );
-    if (matchedTrack == null) {
-      return;
-    }
+    _applyingAudioSelection = true;
 
     try {
-      await target.setAudioTrack(matchedTrack);
-    } catch (_) {}
+      final desiredIndex = widget.audioStreamIndex;
+      if (desiredIndex == null) {
+        try {
+          await target.setAudioTrack(AudioTrack.auto());
+        } catch (_) {}
+        return;
+      }
+
+      final desiredPosition = widget.audioStreams.indexWhere(
+        (stream) => stream.index == desiredIndex,
+      );
+      if (desiredPosition < 0) {
+        return;
+      }
+
+      final localTracks = await _waitForSelectableAudioTracks(target);
+      if (localTracks.isEmpty) {
+        return;
+      }
+
+      final matchedTrack = _matchLocalAudioTrack(
+        targetStream: widget.audioStreams[desiredPosition],
+        desiredPosition: desiredPosition,
+        localTracks: localTracks,
+      );
+      if (matchedTrack == null) {
+        return;
+      }
+
+      try {
+        await target.setAudioTrack(matchedTrack);
+      } catch (_) {}
+    } finally {
+      _applyingAudioSelection = false;
+    }
   }
 
   Future<List<AudioTrack>> _waitForSelectableAudioTracks(Player player) async {
-    for (var attempt = 0; attempt < 8; attempt++) {
+    for (var attempt = 0; attempt < 20; attempt++) {
       final available = _extractSelectableAudioTracks(player.state.tracks.audio);
       if (available.isNotEmpty) {
         _availableAudioTracks = available;
@@ -420,6 +536,39 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   List<AudioTrack> _extractSelectableAudioTracks(List<AudioTrack> tracks) {
     return tracks
         .where((track) => track.id != 'auto' && track.id != 'no' && !track.uri)
+        .toList(growable: false);
+  }
+
+  Future<List<SubtitleTrack>> _waitForSelectableSubtitleTracks(
+    Player player,
+  ) async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      final available = _extractSelectableSubtitleTracks(
+        player.state.tracks.subtitle,
+      );
+      if (available.isNotEmpty) {
+        _availableSubtitleTracks = available;
+        return available;
+      }
+      if (_availableSubtitleTracks.isNotEmpty) {
+        return _availableSubtitleTracks;
+      }
+      await Future.delayed(const Duration(milliseconds: 120));
+    }
+    return _availableSubtitleTracks;
+  }
+
+  List<SubtitleTrack> _extractSelectableSubtitleTracks(
+    List<SubtitleTrack> tracks,
+  ) {
+    return tracks
+        .where(
+          (track) =>
+              track.id != 'auto' &&
+              track.id != 'no' &&
+              !track.uri &&
+              !track.data,
+        )
         .toList(growable: false);
   }
 
@@ -463,6 +612,41 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     return null;
   }
 
+  SubtitleTrack? _matchLocalSubtitleTrack({
+    required PlaybackStream targetStream,
+    required int desiredPosition,
+    required List<SubtitleTrack> localTracks,
+  }) {
+    String normalize(String? value) => (value ?? '').trim().toLowerCase();
+
+    final targetTitle = normalize(targetStream.title);
+    final targetLanguage = normalize(targetStream.language);
+    final targetCodec = normalize(targetStream.codec);
+
+    for (final track in localTracks) {
+      if (targetTitle.isNotEmpty &&
+          normalize(track.title).isNotEmpty &&
+          normalize(track.title) == targetTitle) {
+        return track;
+      }
+    }
+
+    for (final track in localTracks) {
+      final languageMatches =
+          targetLanguage.isNotEmpty && normalize(track.language) == targetLanguage;
+      final codecMatches =
+          targetCodec.isNotEmpty && normalize(track.codec) == targetCodec;
+      if ((languageMatches && codecMatches) || languageMatches || codecMatches) {
+        return track;
+      }
+    }
+
+    if (desiredPosition >= 0 && desiredPosition < localTracks.length) {
+      return localTracks[desiredPosition];
+    }
+    return null;
+  }
+
   bool _sameAudioStreams(
     List<PlaybackStream> left,
     List<PlaybackStream> right,
@@ -481,6 +665,31 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
           l.language != r.language ||
           l.codec != r.codec ||
           l.bitrate != r.bitrate) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _sameSubtitleStreams(
+    List<PlaybackStream> left,
+    List<PlaybackStream> right,
+  ) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      final l = left[index];
+      final r = right[index];
+      if (l.index != r.index ||
+          l.title != r.title ||
+          l.language != r.language ||
+          l.codec != r.codec ||
+          l.deliveryUrl != r.deliveryUrl ||
+          l.isTextSubtitleStream != r.isTextSubtitleStream) {
         return false;
       }
     }
@@ -527,7 +736,40 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         emit();
       }),
       player.stream.tracks.listen((tracks) {
+        final previousAudioCount = _availableAudioTracks.length;
+        final previousSubtitleCount = _availableSubtitleTracks.length;
         _availableAudioTracks = _extractSelectableAudioTracks(tracks.audio);
+        _availableSubtitleTracks = _extractSelectableSubtitleTracks(
+          tracks.subtitle,
+        );
+        if (kDebugMode) {
+          final subtitleTracksSummary = _availableSubtitleTracks
+              .map(
+                (track) =>
+                    '{id=${track.id}, title=${track.title ?? ''}, '
+                    'lang=${track.language ?? ''}, codec=${track.codec ?? ''}}',
+              )
+              .join(', ');
+          debugPrint(
+            '[Diag][MeowVideoPlayer] tracks:update | '
+            'audio=${_availableAudioTracks.length}, '
+            'subtitle=${_availableSubtitleTracks.length}, '
+            'subtitleTracks=[$subtitleTracksSummary]',
+          );
+        }
+        if (previousAudioCount == 0 &&
+            _availableAudioTracks.isNotEmpty &&
+            widget.audioStreamIndex != null) {
+          // ignore: discarded_futures
+          _applyAudioSelection(player: player);
+        }
+        if (previousSubtitleCount == 0 &&
+            _availableSubtitleTracks.isNotEmpty &&
+            (widget.subtitleStreamIndex ?? -1) >= 0 &&
+            (widget.subtitleUri?.trim().isEmpty ?? true)) {
+          // ignore: discarded_futures
+          _applySubtitleSelection(player: player);
+        }
       }),
     ]);
   }

@@ -24,6 +24,15 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
   final EmbyApiClient _apiClient;
   final SecurityService _securityService;
 
+  static const Set<String> _imageSubtitleCodecs = {
+    'pgs',
+    'pgssub',
+    'sup',
+    'dvdsub',
+    'sub',
+    'idx',
+  };
+
   @visibleForTesting
   static void clearPlaybackPlanCache() {
     _resolvedPlans.clear();
@@ -38,7 +47,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
     String? playSessionId,
-    Duration startPosition = Duration.zero,
   }) async {
     final normalizedAudioIndex = _normalizeSelectedIndex(audioStreamIndex);
     final normalizedSubtitleIndex = _normalizeSelectedIndex(
@@ -52,7 +60,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       audioStreamIndex: normalizedAudioIndex,
       subtitleStreamIndex: normalizedSubtitleIndex,
       playSessionId: playSessionId,
-      startPositionTicks: durationToEmbyTicks(startPosition),
     );
     _evictExpiredEntries();
 
@@ -73,7 +80,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       audioStreamIndex: normalizedAudioIndex,
       subtitleStreamIndex: normalizedSubtitleIndex,
       playSessionId: playSessionId,
-      startPosition: startPosition,
     );
     _ongoingPlans[cacheKey] = future;
 
@@ -98,7 +104,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
     String? playSessionId,
-    Duration startPosition = Duration.zero,
   }) async {
     final info = await _apiClient.getPlaybackInfo(
       itemId: item.dataSourceId,
@@ -107,7 +112,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       audioStreamIndex: audioStreamIndex,
       subtitleStreamIndex: subtitleStreamIndex,
       playSessionId: playSessionId,
-      startPosition: startPosition,
     );
 
     final source = _pickBestSource(
@@ -122,34 +126,70 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       namespace: _apiClient.securityNamespace,
     );
 
-    // 构建最终播放 URL
-    final url = await _buildFinalUrl(
-      item, info, source,
+    final resolvedAccess = _resolvePlaybackAccess(
+      item,
+      info,
+      source,
       token: token,
       userId: userId,
       transcodingUrl: transcodingUrl,
       playSessionId: info.playSessionId ?? playSessionId,
       audioStreamIndex: audioStreamIndex,
       subtitleStreamIndex: subtitleStreamIndex,
-      startPosition: startPosition,
     );
 
     // 1. 映射音轨与字幕（注入全量元数据）
     var audio = _mapAudioStreams(source.mediaStreams);
-    var subs = _mapSubtitleStreams(source.mediaStreams, token);
-    // 如果当前 Source 没流，尝试合并所有 Source（Emby 处理外挂字幕的常见行为）
-    if (audio.isEmpty || subs.isEmpty) {
+    if (audio.isEmpty) {
       final allStreams = info.mediaSources.expand((s) => s.mediaStreams).toList();
-      if (audio.isEmpty) audio = _mapAudioStreams(allStreams);
-      if (subs.isEmpty) subs = _mapSubtitleStreams(allStreams, token);
+      audio = _mapAudioStreams(allStreams);
+    }
+    var subs = await _mapMergedSubtitleStreams(
+      itemId: item.dataSourceId,
+      selectedSourceId: source.id,
+      mediaSources: info.mediaSources,
+      token: token,
+    );
+    final detail = await _apiClient.getMediaItemDetail(item.dataSourceId);
+    if (detail.mediaSources.isNotEmpty) {
+      final detailSubs = await _mapMergedSubtitleStreams(
+        itemId: item.dataSourceId,
+        selectedSourceId: source.id,
+        mediaSources: detail.mediaSources,
+        token: token,
+      );
+      final beforeMergeCount = subs.length;
+      subs = _mergeSubtitleStreams(subs, detailSubs);
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Playback] subtitle_list:detail_merged | '
+          'itemId=${item.dataSourceId}, playbackCount=$beforeMergeCount, '
+          'detailCount=${detailSubs.length}, mergedCount=${subs.length}',
+        );
+      }
+    }
+    if (kDebugMode) {
+      final subtitleSummary = subs
+          .map(
+            (stream) =>
+                '{index=${stream.index}, codec=${stream.codec ?? ''}, '
+                'title=${stream.title}, text=${stream.isTextSubtitleStream}, '
+                'external=${stream.isExternal}}',
+          )
+          .join(', ');
+      debugPrint(
+        '[Diag][Playback] subtitle_list:final | '
+        'itemId=${item.dataSourceId}, count=${subs.length}, '
+        'streams=[$subtitleSummary]',
+      );
     }
     // 2. 解析章节与标记 (直接调用类末尾的方法)
     final chapters = _parseChapters(source.chapters);
     final markers = _parseMarkers(source.markers);
     
     return PlaybackPlan(
-      url: url,
-      isTranscoding: transcodingUrl != null,
+      url: resolvedAccess.url,
+      isTranscoding: resolvedAccess.isTranscoding,
       playSessionId: info.playSessionId ?? playSessionId,
       mediaSourceId: source.id,
       audioStreams: audio,
@@ -180,22 +220,147 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
         .toList(growable: false);
   }
 
-  List<PlaybackStream> _mapSubtitleStreams(List<EmbyMediaStreamDto> streams, String token) {
-    return streams
-        .where((s) => s.type.toLowerCase() == 'subtitle')
-        .map((s) => PlaybackStream(
-              index: s.index,
-              title: _buildSubtitleStreamTitle(s),
-              language: _pickRawLanguageLabel(s),
-              codec: s.codec,
-              isDefault: s.isDefault,
-              isExternal: s.isExternal,
-              isTextSubtitleStream: s.isTextSubtitleStream,
-              deliveryUrl: s.deliveryUrl != null
-                  ? _buildAuthorizedSubtitleVttUrl(s.deliveryUrl!, token)
-                  : null,
-            ))
-        .toList(growable: false);
+  Future<List<PlaybackStream>> _mapMergedSubtitleStreams({
+    required String itemId,
+    required String selectedSourceId,
+    required List<EmbyMediaSourceDto> mediaSources,
+    required String token,
+  }) async {
+    final mapped = <PlaybackStream>[];
+    final seenKeys = <String>{};
+
+    Future<void> collectFromSource(EmbyMediaSourceDto source) async {
+      for (final stream in source.mediaStreams) {
+        if (stream.type.toLowerCase() != 'subtitle') {
+          continue;
+        }
+        final resolvedDeliveryUrl = await _resolveSubtitleDeliveryUrl(
+          itemId: itemId,
+          stream: stream,
+          mediaSourceId: source.id,
+          token: token,
+        );
+        final playbackStream = PlaybackStream(
+          index: stream.index,
+          title: _buildSubtitleStreamTitle(stream),
+          language: _pickRawLanguageLabel(stream),
+          codec: stream.codec,
+          isDefault: stream.isDefault,
+          isExternal: stream.isExternal,
+          isTextSubtitleStream: stream.isTextSubtitleStream,
+          deliveryUrl: resolvedDeliveryUrl,
+        );
+        final dedupeKey = [
+          playbackStream.index,
+          playbackStream.title,
+          playbackStream.language ?? '',
+          (playbackStream.codec ?? '').toLowerCase(),
+          playbackStream.isExternal,
+          playbackStream.isTextSubtitleStream,
+        ].join('|');
+        if (seenKeys.add(dedupeKey)) {
+          mapped.add(playbackStream);
+        }
+      }
+    }
+
+    final selectedSource = mediaSources.where((source) => source.id == selectedSourceId);
+    for (final source in selectedSource) {
+      await collectFromSource(source);
+    }
+    for (final source in mediaSources) {
+      if (source.id == selectedSourceId) {
+        continue;
+      }
+      await collectFromSource(source);
+    }
+
+    return mapped;
+  }
+
+  Future<String?> _resolveSubtitleDeliveryUrl({
+    required String itemId,
+    required EmbyMediaStreamDto stream,
+    required String mediaSourceId,
+    required String token,
+  }) async {
+    final codec = stream.codec?.trim().toLowerCase();
+    final shouldPreferTranscodedDelivery = _shouldPreferTranscodedSubtitleDelivery(
+      stream,
+      codec: codec,
+    );
+    final directDeliveryUrl = stream.deliveryUrl?.trim();
+    if (!shouldPreferTranscodedDelivery &&
+        directDeliveryUrl != null &&
+        directDeliveryUrl.isNotEmpty) {
+      return _buildAuthorizedSubtitleUrl(directDeliveryUrl, token);
+    }
+
+    if (mediaSourceId.trim().isEmpty) {
+      return null;
+    }
+    if (shouldPreferTranscodedDelivery) {
+      return _apiClient.buildSubtitleVttUrl(
+        itemId: itemId,
+        streamIndex: stream.index,
+        mediaSourceId: mediaSourceId,
+        deliveryUrl: directDeliveryUrl,
+      );
+    }
+    return _apiClient.buildSubtitleStreamUrl(
+      itemId: itemId,
+      streamIndex: stream.index,
+      mediaSourceId: mediaSourceId,
+      deliveryUrl: directDeliveryUrl,
+      codec: codec,
+    );
+  }
+
+  bool _shouldPreferTranscodedSubtitleDelivery(
+    EmbyMediaStreamDto stream, {
+    String? codec,
+  }) {
+    if (stream.isTextSubtitleStream) {
+      return false;
+    }
+    if (codec != null && _imageSubtitleCodecs.contains(codec)) {
+      return true;
+    }
+    final deliveryMethod = stream.deliveryMethod?.trim().toLowerCase();
+    return deliveryMethod == 'encode';
+  }
+
+  List<PlaybackStream> _mergeSubtitleStreams(
+    List<PlaybackStream> primary,
+    List<PlaybackStream> fallback,
+  ) {
+    final merged = <PlaybackStream>[...primary];
+    final seenKeys = primary
+        .map(
+          (stream) => [
+            stream.index,
+            stream.title,
+            stream.language ?? '',
+            (stream.codec ?? '').toLowerCase(),
+            stream.isExternal,
+            stream.isTextSubtitleStream,
+          ].join('|'),
+        )
+        .toSet();
+    for (final stream in fallback) {
+      final key = [
+        stream.index,
+        stream.title,
+        stream.language ?? '',
+        (stream.codec ?? '').toLowerCase(),
+        stream.isExternal,
+        stream.isTextSubtitleStream,
+      ].join('|');
+      if (seenKeys.add(key)) {
+        merged.add(stream);
+      }
+    }
+    return merged;
   }
 
   List<VideoChapter> _parseChapters(List<EmbyChapterDto>? dtos) {
@@ -253,7 +418,6 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     String rawUrl,
     String token, {
     String? userId,
-    Duration? startPosition,
     String? mediaSourceId,
     String? playSessionId,
     int? audioStreamIndex,
@@ -280,25 +444,14 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     if (subtitleStreamIndex != null) {
       qp['SubtitleStreamIndex'] = '$subtitleStreamIndex';
     }
-    if (startPosition != null && startPosition > Duration.zero) {
-      qp['StartTimeTicks'] = '${durationToEmbyTicks(startPosition)}';
-    }
     // 强制外部字幕模式以兼容更多播放器
     if (qp.containsKey('SubtitleCodec')) qp['SubtitleMethod'] = 'External';
 
     return uri.replace(queryParameters: qp).toString();
   }
 
-  String _buildAuthorizedSubtitleVttUrl(String rawUrl, String token) {
-    final authorizedUrl = _buildAuthorizedUrl(rawUrl, token);
-    final uri = Uri.parse(authorizedUrl);
-    final rewrittenPath = uri.path.replaceFirst(
-      RegExp(r'Stream\.[^/?.]+$'),
-      'Stream.vtt',
-    );
-    return uri.replace(
-      path: rewrittenPath == uri.path ? '${uri.path}.vtt' : rewrittenPath,
-    ).toString();
+  String _buildAuthorizedSubtitleUrl(String rawUrl, String token) {
+    return _buildAuthorizedUrl(rawUrl, token);
   }
 
   String _buildAudioStreamTitle(EmbyMediaStreamDto stream) {
@@ -371,7 +524,7 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     return null;
   }
 
-  Future<String> _buildFinalUrl(
+  _ResolvedPlaybackAccess _resolvePlaybackAccess(
     MediaItem item,
     EmbyPlaybackInfoDto info,
     EmbyMediaSourceDto source, {
@@ -381,8 +534,71 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     String? playSessionId,
     int? audioStreamIndex,
     int? subtitleStreamIndex,
-    Duration startPosition = Duration.zero,
-  }) async {
+  }) {
+    final serverSuggestedUrl = _resolveServerSuggestedPlaybackUrl(
+      info,
+      source,
+      token: token,
+      userId: userId,
+      playSessionId: playSessionId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+    final directUrl = _buildDirectPlaybackUrl(
+      item,
+      source,
+      token: token,
+      userId: userId,
+      playSessionId: playSessionId,
+    );
+    final shouldPreferServerUrl = _shouldPreferServerSuggestedUrl(
+      source,
+      transcodingUrl: transcodingUrl,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+
+    final resolved = shouldPreferServerUrl && serverSuggestedUrl != null
+        ? _ResolvedPlaybackAccess(
+            url: serverSuggestedUrl,
+            isTranscoding: true,
+            mode: 'ServerSuggested',
+            reason: 'emby_playback_info_recommended',
+          )
+        : _ResolvedPlaybackAccess(
+            url: directUrl,
+            isTranscoding: false,
+            mode: 'ClientDirect',
+            reason: shouldPreferServerUrl
+                ? 'server_url_missing_fallback_to_direct'
+                : 'client_prefers_direct',
+          );
+
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][Playback] access_decision | '
+        'mode=${resolved.mode}, '
+        'reason=${resolved.reason}, '
+        'sourceId=${source.id}, '
+        'supportsDirectPlay=${source.supportsDirectPlay}, '
+        'supportsTranscoding=${source.supportsTranscoding}, '
+        'hasTranscodingUrl=${(transcodingUrl ?? '').isNotEmpty}, '
+        'audioStreamIndex=${audioStreamIndex ?? -1}, '
+        'subtitleStreamIndex=${subtitleStreamIndex ?? -1}',
+      );
+      debugPrint('[Diag][Playback] Final URL: ${resolved.url}');
+      debugPrint('[Diag][Playback] Mode: ${resolved.mode}');
+    }
+
+    return resolved;
+  }
+
+  String _buildDirectPlaybackUrl(
+    MediaItem item,
+    EmbyMediaSourceDto source, {
+    required String token,
+    String? userId,
+    String? playSessionId,
+  }) {
     final uri = Uri.parse('${_apiClient.serverUrl}/emby/Videos/${item.dataSourceId}/stream');
     final qp = <String, String>{
       'Static': 'true',
@@ -391,18 +607,63 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
       if (source.id.isNotEmpty) 'MediaSourceId': source.id,
       if (playSessionId != null && playSessionId.isNotEmpty)
         'PlaySessionId': playSessionId,
-      if (startPosition > Duration.zero)
-        'StartTimeTicks': '${durationToEmbyTicks(startPosition)}',
     };
 
-    final finalUrl = uri.replace(queryParameters: qp).toString();
+    return uri.replace(queryParameters: qp).toString();
+  }
 
-    if (kDebugMode) {
-      debugPrint('[Diag][Playback] Final URL: $finalUrl');
-      debugPrint('[Diag][Playback] Mode: Static (Direct)');
+  String? _resolveServerSuggestedPlaybackUrl(
+    EmbyPlaybackInfoDto info,
+    EmbyMediaSourceDto source, {
+    required String token,
+    String? userId,
+    String? playSessionId,
+    int? audioStreamIndex,
+    int? subtitleStreamIndex,
+  }) {
+    final candidate = source.transcodingUrl?.trim().isNotEmpty == true
+        ? source.transcodingUrl!.trim()
+        : info.transcodingUrl?.trim();
+    if (candidate == null || candidate.isEmpty) {
+      return null;
     }
+    return _buildAuthorizedUrl(
+      candidate,
+      token,
+      userId: userId,
+      mediaSourceId: source.id,
+      playSessionId: playSessionId,
+      audioStreamIndex: audioStreamIndex,
+      subtitleStreamIndex: subtitleStreamIndex,
+    );
+  }
 
-    return finalUrl;
+  bool _shouldPreferServerSuggestedUrl(
+    EmbyMediaSourceDto source, {
+    required String? transcodingUrl,
+    required int? subtitleStreamIndex,
+  }) {
+    if ((transcodingUrl ?? '').isEmpty) {
+      return false;
+    }
+    if (!source.supportsDirectPlay) {
+      return true;
+    }
+    if (subtitleStreamIndex == null || subtitleStreamIndex < 0) {
+      return false;
+    }
+    final selectedSubtitle = source.mediaStreams.cast<EmbyMediaStreamDto?>().firstWhere(
+      (stream) =>
+          stream?.type.toLowerCase() == 'subtitle' &&
+          stream?.index == subtitleStreamIndex,
+      orElse: () => null,
+    );
+    final codec = selectedSubtitle?.codec?.trim().toLowerCase();
+    if (codec != null && _imageSubtitleCodecs.contains(codec)) {
+      return true;
+    }
+    final deliveryMethod = selectedSubtitle?.deliveryMethod?.trim().toLowerCase();
+    return deliveryMethod == 'encode';
   }
 
   int? _normalizeSelectedIndex(int? index) => (index == null || index < 0) ? null : index;
@@ -411,34 +672,47 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
     EmbyPlaybackInfoDto info,
     EmbyMediaSourceDto source,
   ) {
-    if (source.supportsDirectPlay) {
-      if (kDebugMode) {
-        debugPrint(
-          '[Diag][Playback] selected direct source | '
-          'sourceId=${source.id}, container=${source.container}, '
-          'ignoringTranscodingUrl=true',
-        );
-      }
-      return null;
-    }
-
     final sourceUrl = source.transcodingUrl?.trim();
     if (sourceUrl != null && sourceUrl.isNotEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Playback] server_suggestion:source_transcoding_url | '
+          'sourceId=${source.id}, supportsDirectPlay=${source.supportsDirectPlay}',
+        );
+      }
       return sourceUrl;
     }
 
     final topLevelUrl = info.transcodingUrl?.trim();
     if (topLevelUrl != null && topLevelUrl.isNotEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][Playback] server_suggestion:top_level_transcoding_url | '
+          'sourceId=${source.id}, supportsDirectPlay=${source.supportsDirectPlay}',
+        );
+      }
       return topLevelUrl;
     }
 
     for (final candidate in info.mediaSources) {
       final candidateUrl = candidate.transcodingUrl?.trim();
       if (candidateUrl != null && candidateUrl.isNotEmpty) {
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][Playback] server_suggestion:other_source_transcoding_url | '
+            'sourceId=${candidate.id}, supportsDirectPlay=${candidate.supportsDirectPlay}',
+          );
+        }
         return candidateUrl;
       }
     }
 
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][Playback] server_suggestion:none | '
+        'sourceId=${source.id}, supportsDirectPlay=${source.supportsDirectPlay}',
+      );
+    }
     return null;
   }
 
@@ -467,6 +741,20 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
   }
 }
 
+class _ResolvedPlaybackAccess {
+  const _ResolvedPlaybackAccess({
+    required this.url,
+    required this.isTranscoding,
+    required this.mode,
+    required this.reason,
+  });
+
+  final String url;
+  final bool isTranscoding;
+  final String mode;
+  final String reason;
+}
+
 class _PlaybackPlanCacheKey {
   const _PlaybackPlanCacheKey({
     required this.namespace,
@@ -476,7 +764,6 @@ class _PlaybackPlanCacheKey {
     required this.audioStreamIndex,
     required this.subtitleStreamIndex,
     required this.playSessionId,
-    required this.startPositionTicks,
   });
 
   final String namespace;
@@ -486,7 +773,6 @@ class _PlaybackPlanCacheKey {
   final int? audioStreamIndex;
   final int? subtitleStreamIndex;
   final String? playSessionId;
-  final int startPositionTicks;
 
   @override
   bool operator ==(Object other) {
@@ -497,8 +783,7 @@ class _PlaybackPlanCacheKey {
         other.requireAvc == requireAvc &&
         other.audioStreamIndex == audioStreamIndex &&
         other.subtitleStreamIndex == subtitleStreamIndex &&
-        other.playSessionId == playSessionId &&
-        other.startPositionTicks == startPositionTicks;
+        other.playSessionId == playSessionId;
   }
 
   @override
@@ -510,7 +795,6 @@ class _PlaybackPlanCacheKey {
     audioStreamIndex,
     subtitleStreamIndex,
     playSessionId,
-    startPositionTicks,
   );
 }
 

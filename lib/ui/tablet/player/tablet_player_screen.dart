@@ -27,6 +27,8 @@ class TabletPlayerScreen extends StatefulWidget {
     this.subtitleTitle,
     this.subtitleLanguage,
     this.disableSubtitleTrack = false,
+    this.subtitleStreamIndexForPlayer,
+    this.subtitleStreams = const [],
     this.playSessionId,
     this.mediaSourceId,
     this.audioStreamIndex,
@@ -48,6 +50,8 @@ class TabletPlayerScreen extends StatefulWidget {
   final String? subtitleTitle;
   final String? subtitleLanguage;
   final bool disableSubtitleTrack;
+  final int? subtitleStreamIndexForPlayer;
+  final List<PlaybackStream> subtitleStreams;
   final String? playSessionId;
   final String? mediaSourceId;
   final int? audioStreamIndex;
@@ -356,6 +360,8 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
                           subtitleTitle: widget.subtitleTitle,
                           subtitleLanguage: widget.subtitleLanguage,
                           disableSubtitleTrack: widget.disableSubtitleTrack,
+                          subtitleStreamIndex: widget.subtitleStreamIndexForPlayer,
+                          subtitleStreams: widget.subtitleStreams,
                           audioStreamIndex: widget.audioStreamIndex,
                           audioStreams: widget.audioStreams,
                         )

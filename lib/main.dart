@@ -533,7 +533,6 @@ class _UnavailablePlaybackRepository implements PlaybackRepository {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
     String? playSessionId,
-    Duration startPosition = Duration.zero,
   }) {
     throw StateError(
       'Playback repository is unavailable for current media service',

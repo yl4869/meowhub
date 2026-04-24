@@ -426,12 +426,10 @@ class EmbyApiClient {
     int? subtitleStreamIndex,
     String? mediaSourceId,
     String? playSessionId,
-    Duration startPosition = Duration.zero,
   }) async {
     final userId = await _requireUserId();
     final effectiveMaxStreamingBitrate =
         maxStreamingBitrate ?? 1000 * 1000 * 1000;
-    final startTimeTicks = durationToEmbyTicks(startPosition);
 
     // 1. 【极致精简】Query 只保留 UserId
     // 其余标识符已经在 Dio 的拦截器或 Header 中处理了
@@ -445,21 +443,19 @@ class EmbyApiClient {
       'UserId': userId,
       'DeviceId': _resolvedDeviceId,
       'ItemId': itemId,
-      'StartTimeTicks': startTimeTicks,
       'MaxStreamingBitrate': effectiveMaxStreamingBitrate,
       'AudioStreamIndex': audioStreamIndex,
       'SubtitleStreamIndex': subtitleStreamIndex,
       'MediaSourceId': mediaSourceId,
       'PlaySessionId': playSessionId,
       // 这里的布尔值开关，统一在这里声明，清晰明了
-      if (requireAvc != null) 'RequireAvc': requireAvc,
+      'RequireAvc': requireAvc,
       'EnableDirectPlay': true,
       'EnableDirectStream': true,
       'EnableTranscoding': true,
       'EnablePlaybackRemuxing': true,
       'AllowVideoStreamCopy': true,
       'AllowAudioStreamCopy': true,
-      'SubtitleMethod': 'External', // 强制外挂，避开烧录
       'DeviceProfile': _buildMediaKitDeviceProfile(
         deviceId: _resolvedDeviceId,
         maxStreamingBitrate: effectiveMaxStreamingBitrate,
@@ -477,8 +473,7 @@ class EmbyApiClient {
         '[Diag][EmbyApiClient] getPlaybackInfo:success | '
         'itemId=$itemId, audioStreamIndex=$audioStreamIndex, '
         'subtitleStreamIndex=$subtitleStreamIndex, '
-        'playSessionId=$playSessionId, '
-        'startPositionMs=${startPosition.inMilliseconds}',
+        'playSessionId=$playSessionId',
       );
     }
     return EmbyPlaybackInfoDto.fromJson(resp.data ?? {});
@@ -490,11 +485,36 @@ class EmbyApiClient {
     String? mediaSourceId,
     String? deliveryUrl,
   }) async {
+    return buildSubtitleStreamUrl(
+      itemId: itemId,
+      streamIndex: streamIndex,
+      mediaSourceId: mediaSourceId,
+      deliveryUrl: deliveryUrl,
+      codec: 'vtt',
+    );
+  }
+
+  Future<String?> buildSubtitleStreamUrl({
+    required String itemId,
+    required int streamIndex,
+    String? mediaSourceId,
+    String? deliveryUrl,
+    String? codec,
+  }) async {
     final token =
         await _securityService.readAccessToken(
           namespace: _config.credentialNamespace,
         ) ??
         '';
+    final normalizedCodec = (codec ?? 'vtt').trim().toLowerCase();
+    final subtitleExtension = switch (normalizedCodec) {
+      'subrip' => 'srt',
+      'webvtt' => 'vtt',
+      'pgs' => 'sup',
+      'pgssub' => 'sup',
+      final String value when value.isNotEmpty => value,
+      _ => 'vtt',
+    };
     final normalizedMediaSourceId = mediaSourceId?.trim();
     if (normalizedMediaSourceId != null && normalizedMediaSourceId.isNotEmpty) {
       final queryParameters = <String, String>{
@@ -502,7 +522,7 @@ class EmbyApiClient {
       };
       return Uri.parse(
         '$serverUrl/emby/Videos/$itemId/'
-        '$normalizedMediaSourceId/Subtitles/$streamIndex/0/Stream.vtt',
+        '$normalizedMediaSourceId/Subtitles/$streamIndex/0/Stream.$subtitleExtension',
       ).replace(queryParameters: queryParameters).toString();
     }
 
@@ -517,7 +537,7 @@ class EmbyApiClient {
     final uri = Uri.parse(base);
     final rewrittenPath = uri.path.replaceFirst(
       RegExp(r'Stream\.[^/?.]+$'),
-      'Stream.vtt',
+      'Stream.$subtitleExtension',
     );
     final queryParameters = Map<String, String>.from(uri.queryParameters);
     if (!queryParameters.containsKey('api_key') && token.isNotEmpty) {
@@ -525,7 +545,9 @@ class EmbyApiClient {
     }
     return uri
         .replace(
-          path: rewrittenPath == uri.path ? '${uri.path}.vtt' : rewrittenPath,
+          path: rewrittenPath == uri.path
+              ? '${uri.path}.$subtitleExtension'
+              : rewrittenPath,
           queryParameters: queryParameters,
         )
         .toString();
@@ -1022,12 +1044,12 @@ Map<String, dynamic> _buildMediaKitDeviceProfile({
       {'Format': 'ssa', 'Method': 'External'},
       {'Format': 'vtt', 'Method': 'External'},
       {'Format': 'webvtt', 'Method': 'External'},
-      {'Format': 'pgs', 'Method': 'External'},
-      {'Format': 'pgssub', 'Method': 'External'},
-      {'Format': 'sup', 'Method': 'External'},
-      {'Format': 'dvdsub', 'Method': 'External'},
-      {'Format': 'sub', 'Method': 'External'},
-      {'Format': 'idx', 'Method': 'External'},
+      {'Format': 'pgs', 'Method': 'Encode'},
+      {'Format': 'pgssub', 'Method': 'Encode'},
+      {'Format': 'sup', 'Method': 'Encode'},
+      {'Format': 'dvdsub', 'Method': 'Encode'},
+      {'Format': 'sub', 'Method': 'Encode'},
+      {'Format': 'idx', 'Method': 'Encode'},
     ],
     'SupportedSubtitles': subtitleFormats,
   };

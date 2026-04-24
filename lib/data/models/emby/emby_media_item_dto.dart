@@ -1,4 +1,5 @@
 import 'emby_image_tags_dto.dart';
+import 'emby_playback_info_dto.dart';
 
 class EmbyMediaItemDto {
   const EmbyMediaItemDto({
@@ -19,6 +20,7 @@ class EmbyMediaItemDto {
     this.seriesName,
     this.seriesId,
     this.userData,
+    this.mediaSources = const [],
   });
 
   final String id;
@@ -38,10 +40,13 @@ class EmbyMediaItemDto {
   final String? seriesName;
   final String? seriesId;
   final EmbyUserDataDto? userData;
+  final List<EmbyMediaSourceDto> mediaSources;
 
   factory EmbyMediaItemDto.fromJson(Map<String, dynamic> json) {
     final rawBackdropTags =
         json['BackdropImageTags'] as List<dynamic>? ?? const [];
+    final rawMediaSources =
+        json['MediaSources'] as List<dynamic>? ?? const [];
 
     return EmbyMediaItemDto(
       id: json['Id'] as String? ?? '',
@@ -65,6 +70,10 @@ class EmbyMediaItemDto {
       userData: json['UserData'] is Map<String, dynamic>
           ? EmbyUserDataDto.fromJson(json['UserData'] as Map<String, dynamic>)
           : null,
+      mediaSources: rawMediaSources
+          .whereType<Map<String, dynamic>>()
+          .map(EmbyMediaSourceDto.fromJson)
+          .toList(growable: false),
       backdropImageTags: rawBackdropTags
           .map((tag) => tag.toString())
           .where((tag) => tag.isNotEmpty)

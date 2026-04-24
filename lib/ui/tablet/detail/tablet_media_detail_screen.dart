@@ -1,4 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -718,8 +719,10 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
       final plan = await GetPlaybackPlanUseCase(playbackRepository).call(
         item,
         maxStreamingBitrate: _playbackPlanBitrate,
-        audioStreamIndex: saved?.audioIndex,
-        subtitleStreamIndex: saved?.subtitleIndex,
+        // 详情页选项列表必须拉全量轨道，不能带已选音轨/字幕去请求，
+        // 否则服务端可能只返回当前选择态对应的流信息。
+        audioStreamIndex: null,
+        subtitleStreamIndex: null,
       );
       _audioOptionsByItem[item.mediaKey] = plan.audioStreams;
       _subtitleOptionsByItem[item.mediaKey] = plan.subtitleStreams;
@@ -746,41 +749,52 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
       showDragHandle: true,
       builder: (context) {
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('选择字幕', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                ListTile(
-                  leading: Icon(
-                    initialValue == -1
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_off,
-                  ),
-                  title: const Text('无字幕'),
-                  onTap: () => Navigator.of(context).pop(-1),
-                ),
-                ...options.map(
-                  (stream) => ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    minLeadingWidth: 24,
-                    horizontalTitleGap: 12,
-                    leading: Icon(
-                      initialValue == stream.index
-                          ? Icons.radio_button_checked
-                          : Icons.radio_button_off,
+          child: FractionallySizedBox(
+            heightFactor: 0.72,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('选择字幕', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          minLeadingWidth: 24,
+                          horizontalTitleGap: 12,
+                          leading: Icon(
+                            initialValue == -1
+                                ? Icons.radio_button_checked
+                                : Icons.radio_button_off,
+                          ),
+                          title: const Text('无字幕'),
+                          onTap: () => Navigator.of(context).pop(-1),
+                        ),
+                        ...options.map(
+                          (stream) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            minLeadingWidth: 24,
+                            horizontalTitleGap: 12,
+                            leading: Icon(
+                              initialValue == stream.index
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_off,
+                            ),
+                            title: Text(stream.title),
+                            subtitle: _subtitleStreamDetail(stream) == null
+                                ? null
+                                : Text(_subtitleStreamDetail(stream)!),
+                            onTap: () => Navigator.of(context).pop(stream.index),
+                          ),
+                        ),
+                      ],
                     ),
-                    title: Text(stream.title),
-                    subtitle: _subtitleStreamDetail(stream) == null
-                        ? null
-                        : Text(_subtitleStreamDetail(stream)!),
-                    onTap: () => Navigator.of(context).pop(stream.index),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );
@@ -809,6 +823,16 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
       subtitleLanguage: selectedStream?.language,
       subtitleUri: selectedStream?.deliveryUrl,
     );
+    if (kDebugMode) {
+      debugPrint(
+        '[Diag][TabletDetail] subtitle:selected | '
+        'item=${item.dataSourceId}, '
+        'index=$selected, '
+        'title=${selectedStream?.title ?? ''}, '
+        'codec=${selectedStream?.codec ?? ''}, '
+        'uri=${selectedStream?.deliveryUrl ?? ''}',
+      );
+    }
     setState(() {
       _selectedSubtitleIndex = selected;
     });
@@ -919,6 +943,16 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
         subtitleLanguage: stream?.language ?? saved?.subtitleLanguage,
         subtitleUri: stream?.deliveryUrl,
       );
+      if (kDebugMode) {
+        debugPrint(
+          '[Diag][TabletDetail] subtitle:play_resolved | '
+          'item=${item.dataSourceId}, '
+          'index=${saved?.subtitleIndex ?? -1}, '
+          'title=${stream?.title ?? saved?.subtitleTitle ?? ''}, '
+          'codec=${stream?.codec ?? ''}, '
+          'uri=${stream?.deliveryUrl ?? ''}',
+        );
+      }
     }
     widget.onPlayPressed?.call(episodeIndex);
   }

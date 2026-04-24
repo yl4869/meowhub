@@ -13,7 +13,6 @@ class GetPlaybackPlanUseCase {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
     String? playSessionId,
-    Duration startPosition = Duration.zero,
   }) => _repo.getPlaybackPlan(
     item,
     maxStreamingBitrate: maxStreamingBitrate,
@@ -21,6 +20,5 @@ class GetPlaybackPlanUseCase {
     audioStreamIndex: audioStreamIndex,
     subtitleStreamIndex: subtitleStreamIndex,
     playSessionId: playSessionId,
-    startPosition: startPosition,
   );
 }

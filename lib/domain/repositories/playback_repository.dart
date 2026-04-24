@@ -14,6 +14,5 @@ abstract class PlaybackRepository {
     int? audioStreamIndex,
     int? subtitleStreamIndex,
     String? playSessionId,
-    Duration startPosition = Duration.zero,
   });
 }

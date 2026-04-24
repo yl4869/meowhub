@@ -95,7 +95,11 @@ class EmbyMediaStreamDto {
     this.isDefault = false,
     this.isExternal = false,
     this.deliveryUrl,
+    this.deliveryMethod,
     this.isTextSubtitleStream = false,
+    this.supportsExternalStream = false,
+    this.path,
+    this.subtitleLocationType,
   });
 
   final int index;
@@ -110,7 +114,11 @@ class EmbyMediaStreamDto {
   final bool isDefault;
   final bool isExternal;
   final String? deliveryUrl;
+  final String? deliveryMethod;
   final bool isTextSubtitleStream;
+  final bool supportsExternalStream;
+  final String? path;
+  final String? subtitleLocationType;
 
   factory EmbyMediaStreamDto.fromJson(Map<String, dynamic> json) {
     return EmbyMediaStreamDto(
@@ -126,7 +134,11 @@ class EmbyMediaStreamDto {
       isDefault: json['IsDefault'] as bool? ?? false,
       isExternal: json['IsExternal'] as bool? ?? false,
       deliveryUrl: json['DeliveryUrl'] as String?,
+      deliveryMethod: json['DeliveryMethod'] as String?,
       isTextSubtitleStream: json['IsTextSubtitleStream'] as bool? ?? false,
+      supportsExternalStream: json['SupportsExternalStream'] as bool? ?? false,
+      path: json['Path'] as String?,
+      subtitleLocationType: json['SubtitleLocationType'] as String?,
     );
   }
 }

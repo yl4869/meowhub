@@ -5,21 +5,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/app_diagnostics.dart';
 
 /// 敏感信息安全存储封装。
-/// Web 端使用 SharedPreferences 作为降级方案，移动端继续使用安全存储。
+/// 服务器地址等普通设置继续存储在 shared_preferences 中。
 class SecurityService {
   SecurityService({
     FlutterSecureStorage? secureStorage,
     required SharedPreferences preferences,
   }) : _secureStorage = secureStorage ?? const FlutterSecureStorage(),
-       _prefs = preferences;
+       _preferences = preferences;
 
   static const String _accessTokenKey = 'emby_access_token';
   static const String _userIdKey = 'emby_user_id';
   static const String _passwordKey = 'emby_password';
-  static const String _webKeyPrefix = 'web_secure_';
 
   final FlutterSecureStorage _secureStorage;
-  final SharedPreferences _prefs;
+  final SharedPreferences _preferences;
+
+  String get _storageBackend => kIsWeb ? 'shared_preferences' : 'secure_storage';
+
+  String _webScopedKey(String key) => 'web_secure_$key';
 
   String _scopedKey(String key, String? namespace) {
     if (namespace == null || namespace.trim().isEmpty) {
@@ -28,38 +31,41 @@ class SecurityService {
     return '${namespace.trim()}::$key';
   }
 
-  String _webScopedKey(String key) => '$_webKeyPrefix$key';
-
-  String get _backendName => kIsWeb ? 'shared_preferences' : 'secure_storage';
-
   String _describeKey(String key) {
     final separatorIndex = key.indexOf('::');
     if (separatorIndex < 0) {
-      return 'key=$key, namespace=null, backend=$_backendName';
+      return 'key=$key, namespace=null';
     }
 
     final namespace = key.substring(0, separatorIndex);
     final baseKey = key.substring(separatorIndex + 2);
-    return 'key=$baseKey, namespace=${AppDiagnostics.maskText(namespace, keepEnd: 4)}, backend=$_backendName';
+    return 'key=$baseKey, namespace=${AppDiagnostics.maskText(namespace, keepEnd: 4)}';
   }
 
   Future<void> write({required String key, required String value}) async {
     if (kDebugMode) {
-      debugPrint('[Diag][SecurityService] write:start | ${_describeKey(key)}');
+      debugPrint(
+        '[Diag][SecurityService] write:start | ${_describeKey(key)}, '
+        'backend=$_storageBackend',
+      );
     }
     try {
       if (kIsWeb) {
-        await _prefs.setString(_webScopedKey(key), value);
+        await _preferences.setString(_webScopedKey(key), value);
       } else {
         await _secureStorage.write(key: key, value: value);
       }
       if (kDebugMode) {
-        debugPrint('[Diag][SecurityService] write:success | ${_describeKey(key)}');
+        debugPrint(
+          '[Diag][SecurityService] write:success | ${_describeKey(key)}, '
+          'backend=$_storageBackend',
+        );
       }
     } catch (error, stackTrace) {
       if (kDebugMode) {
         debugPrint(
           '[Diag][SecurityService] write:failed | ${_describeKey(key)}, '
+          'backend=$_storageBackend, '
           'error=${AppDiagnostics.summarizeError(error)}',
         );
         debugPrint(stackTrace.toString());
@@ -70,15 +76,19 @@ class SecurityService {
 
   Future<String?> read(String key) async {
     if (kDebugMode) {
-      debugPrint('[Diag][SecurityService] read:start | ${_describeKey(key)}');
+      debugPrint(
+        '[Diag][SecurityService] read:start | ${_describeKey(key)}, '
+        'backend=$_storageBackend',
+      );
     }
     try {
       final value = kIsWeb
-          ? _prefs.getString(_webScopedKey(key))
+          ? _preferences.getString(_webScopedKey(key))
           : await _secureStorage.read(key: key);
       if (kDebugMode) {
         debugPrint(
           '[Diag][SecurityService] read:success | ${_describeKey(key)}, '
+          'backend=$_storageBackend, '
           'hasValue=${value?.isNotEmpty == true}',
         );
       }
@@ -87,6 +97,7 @@ class SecurityService {
       if (kDebugMode) {
         debugPrint(
           '[Diag][SecurityService] read:failed | ${_describeKey(key)}, '
+          'backend=$_storageBackend, '
           'error=${AppDiagnostics.summarizeError(error)}',
         );
         debugPrint(stackTrace.toString());
@@ -97,21 +108,28 @@ class SecurityService {
 
   Future<void> delete(String key) async {
     if (kDebugMode) {
-      debugPrint('[Diag][SecurityService] delete:start | ${_describeKey(key)}');
+      debugPrint(
+        '[Diag][SecurityService] delete:start | ${_describeKey(key)}, '
+        'backend=$_storageBackend',
+      );
     }
     try {
       if (kIsWeb) {
-        await _prefs.remove(_webScopedKey(key));
+        await _preferences.remove(_webScopedKey(key));
       } else {
         await _secureStorage.delete(key: key);
       }
       if (kDebugMode) {
-        debugPrint('[Diag][SecurityService] delete:success | ${_describeKey(key)}');
+        debugPrint(
+          '[Diag][SecurityService] delete:success | ${_describeKey(key)}, '
+          'backend=$_storageBackend',
+        );
       }
     } catch (error, stackTrace) {
       if (kDebugMode) {
         debugPrint(
           '[Diag][SecurityService] delete:failed | ${_describeKey(key)}, '
+          'backend=$_storageBackend, '
           'error=${AppDiagnostics.summarizeError(error)}',
         );
         debugPrint(stackTrace.toString());
