@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:media_kit/media_kit.dart' show Player;
 
-import '../../../models/media_item.dart';
+import '../../../domain/entities/media_item.dart';
+import '../../../domain/entities/playback_plan.dart';
 import '../../../providers/app_provider.dart';
 import '../../../theme/app_theme.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/duration_formatter.dart';
 import '../../atoms/meow_video_player.dart';
+import '../../atoms/playback_error_overlay.dart';
 
-class TabletPlayerScreen extends StatelessWidget {
+class TabletPlayerScreen extends StatefulWidget {
   const TabletPlayerScreen({
     super.key,
     required this.maxWidth,
@@ -16,6 +21,21 @@ class TabletPlayerScreen extends StatelessWidget {
     required this.savedProgress,
     required this.initialPosition,
     required this.onPlaybackStatusChanged,
+    this.playUrlOverride,
+    this.onShowTrackSelector,
+    this.selectionRequest,
+    this.subtitleUri,
+    this.subtitleTitle,
+    this.subtitleLanguage,
+    this.disableSubtitleTrack = false,
+    this.subtitleStreamIndexForPlayer,
+    this.subtitleStreams = const [],
+    this.playSessionId,
+    this.mediaSourceId,
+    this.audioStreamIndex,
+    this.subtitleStreamIndex,
+    this.audioStreams = const [],
+    this.onRetryWithTranscoding,
   });
 
   final double maxWidth;
@@ -24,86 +44,435 @@ class TabletPlayerScreen extends StatelessWidget {
   final MediaPlaybackProgress? savedProgress;
   final Duration initialPosition;
   final MeowVideoPlaybackStatusChanged onPlaybackStatusChanged;
+  final String? playUrlOverride;
+  final VoidCallback? onShowTrackSelector;
+  // 播放页移除音轨/字幕选择
+  final Object? selectionRequest;
+  final String? subtitleUri;
+  final String? subtitleTitle;
+  final String? subtitleLanguage;
+  final bool disableSubtitleTrack;
+  final int? subtitleStreamIndexForPlayer;
+  final List<PlaybackStream> subtitleStreams;
+  final String? playSessionId;
+  final String? mediaSourceId;
+  final int? audioStreamIndex;
+  final int? subtitleStreamIndex;
+  final List<PlaybackStream> audioStreams;
+  final VoidCallback? onRetryWithTranscoding;
+
+  @override
+  State<TabletPlayerScreen> createState() => _TabletPlayerScreenState();
+}
+
+class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
+  String? _playbackError;
+  bool _isRetrying = false;
+  static const Duration _meaningfulProgressThreshold = Duration(seconds: 5);
+  static const Duration _progressRollbackTolerance = Duration(seconds: 3);
+
+  MeowVideoPlaybackStatus? _latestStatus;
+  MediaPlaybackProgress? _lastStablePlaybackProgress;
+  Player? _player;
+  late final UserDataProvider _udp;
+  Future<void>? _syncOnExitFuture;
+  bool _isExiting = false;
+  bool _allowImmediatePop = false;
+  bool _hasReportedPlaybackStarted = false;
+  int _lastUiProgressSecond = -1;
+  int _lastLoggedPlaybackSecond = -1;
 
   bool get _hasPlayableUrl {
-    final playUrl = mediaItem.playUrl;
-    return playUrl != null && playUrl.isNotEmpty;
+    return (widget.playUrlOverride ?? widget.mediaItem.playUrl)?.isNotEmpty ==
+        true;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _udp = context.read<UserDataProvider>();
+    _lastStablePlaybackProgress = widget.savedProgress;
+  }
+
+  @override
+  void didUpdateWidget(covariant TabletPlayerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.mediaItem.dataSourceId != widget.mediaItem.dataSourceId ||
+        oldWidget.playUrlOverride != widget.playUrlOverride ||
+        oldWidget.playSessionId != widget.playSessionId ||
+        oldWidget.mediaSourceId != widget.mediaSourceId) {
+      _hasReportedPlaybackStarted = false;
+    }
+  }
+
+  // 播放页移除本地字幕切换
+
+  void _handlePlaybackStatusChanged(MeowVideoPlaybackStatus status) {
+    if (_isExiting ||
+        _shouldIgnoreZeroProgressUpdate(status) ||
+        _shouldIgnoreRegressiveProgressUpdate(status)) {
+      return;
+    }
+    _latestStatus = status;
+    if (status.isInitialized) {
+      _lastStablePlaybackProgress = MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
+      _refreshPlaybackInfoUi(status);
+      _logPlaybackProgress(status);
+      _udp.updatePlaybackProgressForItem(
+        widget.mediaItem,
+        position: status.position,
+        duration: status.duration,
+      );
+      _maybeSyncProgressInBackground(status);
+    }
+    widget.onPlaybackStatusChanged(status);
+  }
+
+  Future<void> _handlePlaybackStarted(MeowVideoPlaybackStatus status) async {
+    if (_isExiting || _hasReportedPlaybackStarted) {
+      return;
+    }
+    _hasReportedPlaybackStarted = true;
+    final pos = status.position;
+    final init = widget.initialPosition;
+    final effectivePosition = pos > Duration.zero &&
+            (pos - init).abs() < const Duration(seconds: 3)
+        ? pos
+        : init;
+    await _udp.startPlaybackForItem(
+      widget.mediaItem,
+      position: effectivePosition,
+      duration: status.duration,
+      playSessionId: widget.playSessionId,
+      mediaSourceId: widget.mediaSourceId,
+      audioStreamIndex: widget.audioStreamIndex,
+      subtitleStreamIndex: widget.subtitleStreamIndex,
+    );
+  }
+
+  bool _shouldIgnoreZeroProgressUpdate(MeowVideoPlaybackStatus status) {
+    if (status.position > Duration.zero) {
+      return false;
+    }
+
+    final latestPosition =
+        _latestStatus?.position ?? _lastStablePlaybackProgress?.position;
+    return latestPosition != null &&
+        latestPosition > _meaningfulProgressThreshold;
+  }
+
+  bool _shouldIgnoreRegressiveProgressUpdate(MeowVideoPlaybackStatus status) {
+    final latestPosition =
+        _latestStatus?.position ??
+        _lastStablePlaybackProgress?.position ??
+        widget.savedProgress?.position;
+    if (latestPosition == null ||
+        latestPosition <= _meaningfulProgressThreshold ||
+        status.position >= latestPosition) {
+      return false;
+    }
+
+    return latestPosition - status.position > _progressRollbackTolerance;
+  }
+
+  void _refreshPlaybackInfoUi(MeowVideoPlaybackStatus status) {
+    final nextSecond = status.position.inSeconds;
+    if (_lastUiProgressSecond == nextSecond) {
+      return;
+    }
+    _lastUiProgressSecond = nextSecond;
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
+  void _logPlaybackProgress(MeowVideoPlaybackStatus status) {
+    final currentSecond = status.position.inSeconds;
+    if (currentSecond <= 0 ||
+        currentSecond == _lastLoggedPlaybackSecond ||
+        currentSecond % 10 != 0) {
+      return;
+    }
+    _lastLoggedPlaybackSecond = currentSecond;
+  }
+
+  void _maybeSyncProgressInBackground(MeowVideoPlaybackStatus status) {
+    if (!status.isPlaying || status.position <= Duration.zero) {
+      return;
+    }
+    // 与 Mobile 对齐：由 UserDataProvider 内部的 _serverSyncThrottleInterval 统一节流
+    // ignore: discarded_futures
+    _udp.syncProgressToServerForItem(
+      widget.mediaItem,
+      position: status.position,
+      duration: status.duration,
+      playSessionId: widget.playSessionId,
+      mediaSourceId: widget.mediaSourceId,
+      audioStreamIndex: widget.audioStreamIndex,
+      subtitleStreamIndex: widget.subtitleStreamIndex,
+      force: false,
+    );
+  }
+
+  Future<void> _syncOnExit() {
+    final existing = _syncOnExitFuture;
+    if (existing != null) {
+      return existing;
+    }
+
+    final future = _performSyncOnExit();
+    _syncOnExitFuture = future;
+    return future;
+  }
+
+  Player? _detachPlayer() {
+    final player = _player;
+    _player = null;
+    return player;
+  }
+
+  Future<void> _disposePlayerSafely(Player player) async {
+    try {
+      player.dispose();
+    } catch (_) {}
+  }
+
+  Future<void> _stopPlayerSafely(Player player) async {
+    try {
+      await player.stop();
+    } catch (_) {}
+  }
+
+  void _applyLocalProgressOnExit() {
+    final status = _latestStatus;
+    if (status == null ||
+        !status.isInitialized ||
+        status.position <= Duration.zero) {
+      return;
+    }
+    _lastStablePlaybackProgress = MediaPlaybackProgress(
+      position: status.position,
+      duration: status.duration,
+    );
+    _udp.updatePlaybackProgressForItem(
+      widget.mediaItem,
+      position: status.position,
+      duration: status.duration,
+      notify: true,
+    );
+  }
+
+  Future<void> _performSyncOnExit() async {
+    final item = widget.mediaItem;
+    final status = _latestStatus;
+    final player = _detachPlayer();
+    _applyLocalProgressOnExit();
+    try {
+      if (player != null) {
+        await _stopPlayerSafely(player);
+      }
+      await _udp.stopPlaybackForItem(
+        item,
+        position: status?.position ?? Duration.zero,
+        duration: status?.duration ?? Duration.zero,
+        playSessionId: widget.playSessionId,
+        mediaSourceId: widget.mediaSourceId,
+        audioStreamIndex: widget.audioStreamIndex,
+        subtitleStreamIndex: widget.subtitleStreamIndex,
+      );
+    } finally {
+      if (player != null) {
+        await _disposePlayerSafely(player);
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final sideWidth = maxWidth >= 1100 ? 340.0 : 300.0;
+    final sideWidth = widget.maxWidth >= 1100 ? 340.0 : 300.0;
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('播放中')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (_allowImmediatePop) {
+          _allowImmediatePop = false;
+          return;
+        }
+        final navigator = Navigator.of(context);
+        _isExiting = true;
+        // ignore: discarded_futures
+        _syncOnExit().whenComplete(() {
+          if (!mounted) {
+            return;
+          }
+          _allowImmediatePop = true;
+          navigator.pop();
+        });
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('播放中')),
+        body: SafeArea(
+          child: Stack(
             children: [
-              Expanded(
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  children: [
-                    if (_hasPlayableUrl)
-                      MeowVideoPlayer(
-                        url: mediaItem.playUrl!,
-                        autoPlay: true,
-                        initialPosition: initialPosition,
-                        onPlaybackStatusChanged: onPlaybackStatusChanged,
-                      )
-                    else
-                      _UnavailablePlayerCard(title: mediaItem.title),
-                    const SizedBox(height: 20),
-                    Text(
-                      mediaItem.title,
-                      style: Theme.of(context).textTheme.headlineLarge,
-                    ),
-                    if (mediaItem.originalTitle.isNotEmpty &&
-                        mediaItem.originalTitle != mediaItem.title) ...[
-                      const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: ListView(
+                    physics: const BouncingScrollPhysics(),
+                    children: [
+                      if (_hasPlayableUrl)
+                        MeowVideoPlayer(
+                          key: ObjectKey(widget.mediaItem.dataSourceId),
+                          url:
+                              widget.playUrlOverride ??
+                              widget.mediaItem.playUrl!,
+                          autoPlay: true,
+                          initialPosition: widget.initialPosition,
+                          onPlaybackStatusChanged: _handlePlaybackStatusChanged,
+                          onPlaybackStarted: _handlePlaybackStarted,
+                          onPlayerCreated: (p) async {
+                            _player = p;
+                          },
+                          overlayCcButton: widget.onShowTrackSelector != null,
+                          onTapCc: widget.onShowTrackSelector,
+                          subtitleUri: widget.subtitleUri,
+                          subtitleTitle: widget.subtitleTitle,
+                          subtitleLanguage: widget.subtitleLanguage,
+                          disableSubtitleTrack: widget.disableSubtitleTrack,
+                          subtitleStreamIndex:
+                              widget.subtitleStreamIndexForPlayer ??
+                              widget.subtitleStreamIndex,
+                          subtitleStreams: widget.subtitleStreams,
+                          audioStreamIndex: widget.audioStreamIndex,
+                          audioStreams: widget.audioStreams,
+                          onPlayerError: (error) {
+                            if (!mounted) return;
+                            setState(() {
+                              _playbackError = error;
+                              _isRetrying = false;
+                            });
+                          },
+                        )
+                      else
+                        _UnavailablePlayerCard(title: widget.mediaItem.title),
+                      if (widget.onShowTrackSelector != null) ...[
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: OutlinedButton.icon(
+                            onPressed: widget.onShowTrackSelector,
+                            icon: const Icon(Icons.library_music_outlined),
+                            label: const Text('音轨/字幕'),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 20),
                       Text(
-                        mediaItem.originalTitle,
-                        style: Theme.of(context).textTheme.bodyLarge,
+                        widget.mediaItem.title,
+                        style: Theme.of(context).textTheme.headlineLarge,
+                      ),
+                      if (widget.mediaItem.originalTitle.isNotEmpty &&
+                          widget.mediaItem.originalTitle !=
+                              widget.mediaItem.title) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          widget.mediaItem.originalTitle,
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      ],
+                      const SizedBox(height: 18),
+                      AppSurfaceCard(
+                        child: Text(
+                          widget.mediaItem.overview.isNotEmpty
+                              ? widget.mediaItem.overview
+                              : '这部作品暂时没有更多介绍。',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
                       ),
                     ],
-                    const SizedBox(height: 18),
-                    AppSurfaceCard(
-                      child: Text(
-                        mediaItem.overview.isNotEmpty
-                            ? mediaItem.overview
-                            : '这部作品暂时没有更多介绍。',
-                        style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                ),
+                const SizedBox(width: 24),
+                SizedBox(
+                  width: sideWidth,
+                  child: ListView(
+                    physics: const BouncingScrollPhysics(),
+                    children: [
+                      _PlaybackInfoCard(
+                        selectedServer: widget.selectedServer,
+                        playbackProgress: _currentPlaybackProgress,
+                        initialPosition: widget.initialPosition,
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+                      _PlaybackHintCard(
+                        hasSavedProgress: _currentPlaybackProgress != null,
+                        overview: widget.mediaItem.overview,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 24),
-              SizedBox(
-                width: sideWidth,
-                child: ListView(
-                  physics: const BouncingScrollPhysics(),
-                  children: [
-                    _PlaybackInfoCard(
-                      selectedServer: selectedServer,
-                      playbackProgress: savedProgress,
-                      initialPosition: initialPosition,
-                    ),
-                    const SizedBox(height: 16),
-                    _PlaybackHintCard(
-                      hasSavedProgress: savedProgress != null,
-                      overview: mediaItem.overview,
-                    ),
-                  ],
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+          if (_playbackError != null)
+            Positioned.fill(
+              child: PlaybackErrorOverlay(
+                message: _playbackError!,
+                isRetrying: _isRetrying,
+                hasRetry: widget.onRetryWithTranscoding != null,
+                onRetry: () {
+                  setState(() {
+                    _isRetrying = true;
+                    _playbackError = null;
+                  });
+                  widget.onRetryWithTranscoding?.call();
+                },
+                onDismiss: () {
+                  setState(() {
+                    _playbackError = null;
+                    _isRetrying = false;
+                  });
+                },
+              ),
+            ),
+        ],
       ),
-    );
+    ),
+  ),
+);
+  }
+
+  @override
+  void dispose() {
+    // ignore: discarded_futures
+    _syncOnExit();
+    final detachedPlayer = _detachPlayer();
+    if (detachedPlayer != null) {
+      // ignore: discarded_futures
+      _disposePlayerSafely(detachedPlayer);
+    }
+    super.dispose();
+  }
+
+  MediaPlaybackProgress? get _currentPlaybackProgress {
+    if (_isExiting) {
+      return _lastStablePlaybackProgress ?? widget.savedProgress;
+    }
+    final status = _latestStatus;
+    if (status != null && status.isInitialized) {
+      return MediaPlaybackProgress(
+        position: status.position,
+        duration: status.duration,
+      );
+    }
+    return _lastStablePlaybackProgress ?? widget.savedProgress;
   }
 }
 

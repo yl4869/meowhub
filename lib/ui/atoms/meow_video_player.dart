@@ -1,10 +1,12 @@
 import 'dart:async';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:video_player/video_player.dart';
+import '../../domain/entities/playback_plan.dart';
 
-import '../../theme/app_theme.dart';
+// --- 保留你原有且优秀的架构定义 ---
 
 enum MeowVideoRenderMode { flutter, androidNative, harmonyNative }
 
@@ -48,6 +50,8 @@ class MeowVideoPlaybackStatus {
 typedef MeowVideoPlaybackStatusChanged =
     void Function(MeowVideoPlaybackStatus status);
 
+// --- 核心组件重构 ---
+
 class MeowVideoPlayer extends StatefulWidget {
   const MeowVideoPlayer({
     super.key,
@@ -56,13 +60,27 @@ class MeowVideoPlayer extends StatefulWidget {
     this.autoPlay = false,
     this.looping = false,
     this.renderMode = MeowVideoRenderMode.flutter,
-    this.flutterViewType = VideoViewType.textureView,
+    this.fit = BoxFit.contain,
+    this.expandToFill = false,
     this.borderRadius = const BorderRadius.all(Radius.circular(24)),
     this.httpHeaders = const {},
     this.androidNativeBuilder,
     this.harmonyNativeBuilder,
     this.initialPosition = Duration.zero,
     this.onPlaybackStatusChanged,
+    this.onPlaybackStarted,
+    this.onPlayerCreated,
+    this.overlayCcButton = false,
+    this.onTapCc,
+    this.subtitleUri,
+    this.subtitleTitle,
+    this.subtitleLanguage,
+    this.disableSubtitleTrack = false,
+    this.subtitleStreamIndex,
+    this.subtitleStreams = const [],
+    this.audioStreamIndex,
+    this.audioStreams = const [],
+    this.onPlayerError,
   });
 
   final String url;
@@ -70,32 +88,73 @@ class MeowVideoPlayer extends StatefulWidget {
   final bool autoPlay;
   final bool looping;
   final MeowVideoRenderMode renderMode;
-  final VideoViewType flutterViewType;
+  final BoxFit fit;
+  final bool expandToFill;
   final BorderRadius borderRadius;
   final Map<String, String> httpHeaders;
   final MeowVideoNativeRendererBuilder? androidNativeBuilder;
   final MeowVideoNativeRendererBuilder? harmonyNativeBuilder;
   final Duration initialPosition;
   final MeowVideoPlaybackStatusChanged? onPlaybackStatusChanged;
+  final MeowVideoPlaybackStatusChanged? onPlaybackStarted;
+  final ValueChanged<Player>? onPlayerCreated;
+  final bool overlayCcButton;
+  final VoidCallback? onTapCc;
+  final String? subtitleUri;
+  final String? subtitleTitle;
+  final String? subtitleLanguage;
+  final bool disableSubtitleTrack;
+  final int? subtitleStreamIndex;
+  final List<PlaybackStream> subtitleStreams;
+  final int? audioStreamIndex;
+  final List<PlaybackStream> audioStreams;
+  final ValueChanged<String>? onPlayerError;
 
   @override
   State<MeowVideoPlayer> createState() => _MeowVideoPlayerState();
 }
 
 class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
-  VideoPlayerController? _controller;
+  Player? _player;
+  VideoController? _videoController;
   Future<void>? _initializeVideoFuture;
-  Timer? _hideControlsTimer;
-  bool _showControls = true;
-  bool _isScrubbing = false;
-  double? _scrubValueMs;
-  bool _wasPlaying = false;
+  bool _switchingSource = false; // 串行化切源，避免双音轨窗口
+  String? _pendingUrl; // 切源过程中又收到新 URL，等当前完成后再切
 
-  bool get _usesFlutterRenderer {
-    return widget.renderMode == MeowVideoRenderMode.flutter;
-  }
+  // Cached state for callback synthesis
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool _isPlaying = false;
+  bool _isBuffering = false;
+  bool _hasDispatchedPlaybackStarted = false;
+  List<AudioTrack> _availableAudioTracks = const [];
+  List<SubtitleTrack> _availableSubtitleTracks = const [];
+  bool _applyingAudioSelection = false;
+  bool _applyingSubtitleSelection = false;
 
+  bool get _usesFlutterRenderer =>
+      widget.renderMode == MeowVideoRenderMode.flutter;
   double get _fallbackAspectRatio => widget.aspectRatio ?? 16 / 9;
+
+  static const _subtitleViewConfig = SubtitleViewConfiguration(
+    style: TextStyle(
+      fontSize: 30.0,
+      height: 1.4,
+      letterSpacing: 0.5,
+      wordSpacing: 1.0,
+      color: Color(0xFFFFFFFF),
+      fontWeight: FontWeight.w600,
+      shadows: [
+        // 三层阴影实现清晰描边效果，确保在任何背景上可读
+        Shadow(blurRadius: 6.0, color: Color(0xE6000000)),
+        Shadow(blurRadius: 2.0, color: Color(0xFF000000)),
+        Shadow(offset: Offset(0, 1), blurRadius: 0, color: Color(0xFF000000)),
+      ],
+      backgroundColor: Color(0x73000000),
+    ),
+    textAlign: TextAlign.center,
+    padding: EdgeInsets.fromLTRB(24.0, 0.0, 24.0, 40.0),
+  );
 
   @override
   void initState() {
@@ -106,227 +165,769 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   @override
   void didUpdateWidget(covariant MeowVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final shouldReconfigure =
-        oldWidget.url != widget.url ||
-        oldWidget.renderMode != widget.renderMode ||
-        oldWidget.autoPlay != widget.autoPlay ||
-        oldWidget.looping != widget.looping ||
-        oldWidget.flutterViewType != widget.flutterViewType ||
-        oldWidget.initialPosition != widget.initialPosition;
-
-    if (shouldReconfigure) {
+    // 渲染模式变化需要重配；仅 URL 变化时在同一 Player 上 reopen，避免重建导致双音轨
+    if (oldWidget.renderMode != widget.renderMode) {
       _configureRenderer();
+      return;
+    }
+    if (_needsNativeSubtitleRendering(oldWidget) !=
+        _needsNativeSubtitleRendering(widget)) {
+      _configureRenderer();
+      return;
+    }
+    if (oldWidget.url != widget.url) {
+      // ignore: discarded_futures
+      _reopenOnSamePlayer(url: widget.url);
+      return;
+    }
+    if (oldWidget.audioStreamIndex != widget.audioStreamIndex ||
+        !_sameAudioStreams(oldWidget.audioStreams, widget.audioStreams)) {
+      // ignore: discarded_futures
+      _applyAudioSelection();
+    }
+    if (oldWidget.subtitleUri != widget.subtitleUri ||
+        oldWidget.subtitleTitle != widget.subtitleTitle ||
+        oldWidget.subtitleLanguage != widget.subtitleLanguage ||
+        oldWidget.disableSubtitleTrack != widget.disableSubtitleTrack ||
+        oldWidget.subtitleStreamIndex != widget.subtitleStreamIndex ||
+        !_sameSubtitleStreams(
+          oldWidget.subtitleStreams,
+          widget.subtitleStreams,
+        )) {
+      // ignore: discarded_futures
+      _applySubtitleSelection();
     }
   }
 
   @override
   void dispose() {
-    _hideControlsTimer?.cancel();
-    _disposeController();
+    _disposeControllers();
     super.dispose();
   }
 
+  void _disposeControllers() {
+    for (final s in _subscriptions) {
+      s.cancel();
+    }
+    _subscriptions.clear();
+    _videoController = null;
+    _availableAudioTracks = const [];
+    _availableSubtitleTracks = const [];
+    final p = _player;
+    _player = null;
+    if (p != null) {
+      try {
+        p.dispose();
+      } catch (_) {}
+    }
+  }
+
   void _configureRenderer() {
-    _hideControlsTimer?.cancel();
-    _showControls = true;
-    _isScrubbing = false;
-    _scrubValueMs = null;
-    _wasPlaying = false;
-
     if (_usesFlutterRenderer) {
-      _initializeFlutterController();
+      _initializeFlutterPlayer();
     } else {
-      _disposeController();
-      if (mounted) {
-        setState(() {
-          _initializeVideoFuture = null;
-        });
-      }
+      _disposeControllers();
+      setState(() {
+        _initializeVideoFuture = null;
+      });
     }
   }
 
-  void _initializeFlutterController() {
-    _disposeController();
+  Future<void> _initializeFlutterPlayer() async {
+    _disposeControllers();
+    _resetPlaybackLifecycleState();
 
-    final controller = VideoPlayerController.networkUrl(
-      Uri.parse(widget.url),
-      httpHeaders: widget.httpHeaders,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
-      viewType: widget.flutterViewType,
+    // 确保底层已初始化（多平台安全）
+    MediaKit.ensureInitialized();
+
+    final needsNativeSubtitleRendering = _needsNativeSubtitleRendering(widget);
+    final player = Player(
+      configuration: PlayerConfiguration(libass: needsNativeSubtitleRendering),
     );
+    final videoController = VideoController(player);
 
-    controller.addListener(_handlePlaybackStateChange);
+    _player = player;
+    _videoController = videoController;
+    // 暴露底层 Player，便于上层在退出前 await stop()
+    widget.onPlayerCreated?.call(player);
 
-    final initializeFuture = controller.initialize().then((_) async {
-      await controller.setLooping(widget.looping);
-      final initialPosition = _clampedInitialPosition(
-        controller.value.duration,
+    // 监听核心状态流并合成统一回调
+    _bindStreams(player);
+
+    _initializeVideoFuture = () async {
+      // 打开媒体
+      await player.open(
+        Media(widget.url, httpHeaders: widget.httpHeaders),
+        play: false,
       );
-      if (initialPosition > Duration.zero) {
-        await controller.seekTo(initialPosition);
+      // 1. 预热解码器（仅唤醒，不 seek）
+      await _warmDecoder(player);
+      // 2. 设置音轨/字幕（可能在内部重置解码器状态）
+      _debugSubtitleState('after_open_before_apply', player);
+      await _applyAudioSelection(player: player);
+      await _applySubtitleSelection(player: player);
+      // 3. 所有轨道设置完毕后，最终执行 seek 并验证位置
+      await _seekWithVerify(player, widget.initialPosition, autoPlay: false);
+
+      // 循环逻辑：单源循环
+      if (widget.looping) {
+        try {
+          player.setPlaylistMode(PlaylistMode.loop);
+        } catch (_) {
+          // 某些版本不支持，忽略
+        }
       }
+
       if (widget.autoPlay) {
-        await controller.play();
-        _scheduleControlsAutoHide();
+        try {
+          await player.play();
+        } catch (_) {}
       }
-      _emitPlaybackStatus(controller.value);
-    });
 
-    setState(() {
-      _controller = controller;
-      _initializeVideoFuture = initializeFuture;
-    });
+      if (!mounted) return;
+      setState(() {});
+    }();
   }
 
-  void _disposeController() {
-    _controller?.removeListener(_handlePlaybackStateChange);
-    _controller?.dispose();
-    _controller = null;
+  Future<void> _reopenOnSamePlayer({
+    required String url,
+    Duration? seekTo,
+  }) async {
+    // 仅 Flutter 渲染下在同一实例上切源；其他渲染模式仍交给外层重配
+    if (!_usesFlutterRenderer) {
+      _configureRenderer();
+      return;
+    }
+    final player = _player;
+    if (player == null) {
+      // 若尚未完成初始化，退回到常规初始化流程
+      await _initializeFlutterPlayer();
+      return;
+    }
+    if (_switchingSource) {
+      // 当前正在切源，暂存新 URL 等当前操作完成后再切
+      _pendingUrl = url;
+      return;
+    }
+    _switchingSource = true;
+    try {
+      await _doReopen(player, url, seekTo: seekTo);
+    } finally {
+      _switchingSource = false;
+    }
+    // 处理切源过程中积压的新请求
+    final pending = _pendingUrl;
+    _pendingUrl = null;
+    if (pending != null && pending != url && mounted) {
+      // 使用最新的积压 URL 再次执行切源
+      await _reopenOnSamePlayer(url: pending, seekTo: seekTo);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {});
   }
 
-  void _handlePlaybackStateChange() {
-    final controller = _controller;
-    if (controller == null || !mounted) {
+  Future<void> _doReopen(
+    Player player,
+    String url, {
+    Duration? seekTo,
+  }) async {
+    _resetPlaybackLifecycleState();
+    try {
+      // stop() 确保前一媒体源完全释放（Web 平台 WASM 解码器需此步骤），
+      // 等待一小段时间让播放器内部状态机完成转换，避免 stop/ open 竞态
+      try {
+        await player.stop();
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 150));
+      await player.open(
+        Media(url, httpHeaders: widget.httpHeaders),
+        play: false,
+      );
+    } catch (e) {
+      // open() 失败，通知上层；不在此重建播放器，避免用同一 URL 死循环
+      // 播放器保持前一源的停止状态，上层通过 onPlayerError 展示错误并提供恢复路径
+      if (mounted && widget.onPlayerError != null) {
+        widget.onPlayerError!(e.toString());
+      }
+      // 清掉积压 URL，避免在异常状态下继续切源
+      _pendingUrl = null;
+      return;
+    }
+    final startPosition =
+        seekTo ??
+        (widget.initialPosition > Duration.zero
+            ? widget.initialPosition
+            : Duration.zero);
+    // 1. 预热解码器（仅唤醒，不 seek）
+    await _warmDecoder(player);
+    // 2. 设置音轨/字幕（可能在内部重置解码器状态）
+    _debugSubtitleState('after_reopen_before_apply', player);
+    await _applyAudioSelection(player: player);
+    await _applySubtitleSelection(player: player);
+    // 3. 所有轨道设置完毕后，最终执行 seek 并验证位置
+    await _seekWithVerify(player, startPosition, autoPlay: false);
+
+    if (widget.looping) {
+      try {
+        player.setPlaylistMode(PlaylistMode.loop);
+      } catch (_) {}
+    }
+    if (widget.autoPlay) {
+      try {
+        await player.play();
+      } catch (_) {}
+    }
+  }
+
+  final List<StreamSubscription> _subscriptions = [];
+
+  void _resetPlaybackLifecycleState() {
+    _position = Duration.zero;
+    _duration = Duration.zero;
+    _isPlaying = false;
+    _isBuffering = false;
+    _hasDispatchedPlaybackStarted = false;
+  }
+
+  /// 仅预热解码器（不 seek），确保后续 seek 不会因解码器未就绪被无声丢弃。
+  /// play() → 等待 position > 0 → pause()
+  Future<void> _warmDecoder(Player player) async {
+    try {
+      await player.play();
+    } catch (_) {}
+    try {
+      await player.stream.position
+          .firstWhere((p) => p > Duration.zero)
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {}
+    try {
+      await player.pause();
+    } catch (_) {}
+  }
+
+  /// 在解码器已预热、所有轨道已设置完毕后执行 seek，并通过 player.state.position
+  /// 验证实际位置。若位置偏差超过 2 秒则重试（最多 3 次）。
+  Future<void> _seekWithVerify(
+    Player player,
+    Duration target, {
+    required bool autoPlay,
+  }) async {
+    if (target <= Duration.zero) {
+      if (autoPlay) {
+        try { await player.play(); } catch (_) {}
+      }
       return;
     }
 
-    final value = controller.value;
-    final isPlaying = value.isPlaying;
+    const retryCount = 3;
+    const retryDelay = Duration(milliseconds: 200);
+    const tolerance = Duration(seconds: 2);
 
-    if (isPlaying && !_wasPlaying) {
-      _scheduleControlsAutoHide();
-    }
+    for (var attempt = 1; attempt <= retryCount; attempt++) {
+      try {
+        await player.seek(target);
+      } catch (_) {}
 
-    if (!isPlaying && _wasPlaying) {
-      _hideControlsTimer?.cancel();
-      if (!_showControls) {
-        setState(() {
-          _showControls = true;
-        });
+      // 短暂等待解码器处理 seek
+      await Future.delayed(retryDelay);
+
+      final actual = player.state.position;
+      // 位置已在容差范围内，seek 成功
+      if ((actual - target).abs() <= tolerance) break;
+
+      if (attempt < retryCount) {
+        // 位置偏差大，再次启动播放保持解码器活跃后重试
+        try { await player.play(); } catch (_) {}
+        await Future.delayed(const Duration(milliseconds: 100));
       }
     }
 
-    final isFinished =
-        value.isInitialized &&
-        value.duration > Duration.zero &&
-        value.position >= value.duration &&
-        !value.isPlaying;
-
-    if (isFinished) {
-      _hideControlsTimer?.cancel();
-      if (!_showControls) {
-        setState(() {
-          _showControls = true;
-        });
-      }
+    if (!autoPlay) {
+      try { await player.pause(); } catch (_) {}
     }
-
-    _wasPlaying = isPlaying;
-    _emitPlaybackStatus(value);
   }
 
-  Duration _clampedInitialPosition(Duration totalDuration) {
-    final requestedPosition = widget.initialPosition;
-    if (requestedPosition <= Duration.zero || totalDuration <= Duration.zero) {
-      return Duration.zero;
-    }
-
-    final maxResumePosition = totalDuration > const Duration(seconds: 2)
-        ? totalDuration - const Duration(seconds: 2)
-        : Duration.zero;
-
-    if (requestedPosition > maxResumePosition) {
-      return maxResumePosition;
-    }
-
-    return requestedPosition;
-  }
-
-  void _emitPlaybackStatus(VideoPlayerValue value) {
-    final callback = widget.onPlaybackStatusChanged;
-    if (callback == null) {
-      return;
-    }
-
-    final completionThreshold =
-        value.duration > const Duration(milliseconds: 600)
-        ? value.duration - const Duration(milliseconds: 600)
-        : value.duration;
-    final isCompleted =
-        value.isInitialized &&
-        value.duration > Duration.zero &&
-        value.position >= completionThreshold &&
-        !value.isPlaying;
-
-    callback(
-      MeowVideoPlaybackStatus(
-        position: value.position,
-        duration: value.duration,
-        isInitialized: value.isInitialized,
-        isPlaying: value.isPlaying,
-        isBuffering: value.isBuffering,
-        isCompleted: isCompleted,
-      ),
-    );
-  }
-
-  void _scheduleControlsAutoHide() {
-    _hideControlsTimer?.cancel();
-    _hideControlsTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted || _isScrubbing) {
+  /// 字幕选择核心逻辑。
+  ///
+  /// 策略分两类：
+  /// - **图形字幕 (PGS)**：由服务端转码烧录或 libass 内部渲染，绝不走外部 URI 加载。
+  /// - **文本字幕 (SRT/ASS/WebVTT)**：如果有外挂 URL 则通过 SubtitleTrack.uri 加载；
+  ///   否则在内部轨道列表中按 index 匹配。
+  Future<void> _applySubtitleSelection({Player? player}) async {
+    final target = player ?? _player;
+    if (target == null || !_usesFlutterRenderer) return;
+    if (_applyingSubtitleSelection) return;
+    _applyingSubtitleSelection = true;
+    try {
+      if (widget.disableSubtitleTrack) {
+        await target.setSubtitleTrack(SubtitleTrack.no());
         return;
       }
-      setState(() {
-        _showControls = false;
-      });
-    });
+      _debugSubtitleState('apply_before', target);
+
+      // 判断当前选中字幕的类型
+      final selectedStream = _findSubtitleStreamForWidget(widget);
+      final isImageSub =
+          selectedStream != null && _isImageSubtitleCodec(selectedStream.codec);
+
+      if (isImageSub) {
+        // 图形字幕 (PGS)：服务端转码烧录 或 libass 渲染，让 media_kit 自动选择内部轨道
+        await target.setSubtitleTrack(SubtitleTrack.auto());
+        _debugSubtitleState('apply_after_image_sub_auto', target);
+        return;
+      }
+
+      // --- 文本字幕 ---
+
+      // 有外部 URL → 加载外挂字幕文件
+      final externalUri = widget.subtitleUri?.trim();
+      if (externalUri != null && externalUri.isNotEmpty) {
+        await target.setSubtitleTrack(
+          SubtitleTrack.uri(
+            externalUri,
+            title: widget.subtitleTitle,
+            language: widget.subtitleLanguage,
+          ),
+        );
+        _debugSubtitleState('apply_after_external_uri', target);
+        return;
+      }
+
+      // 内部文本字幕 → 按 index 匹配
+      final desiredIndex = widget.subtitleStreamIndex;
+      if (desiredIndex != null) {
+        final selectable = _extractSelectableSubtitleTracks(
+          target.state.tracks.subtitle,
+        );
+        final matched = _findSubtitleTrackByIndex(selectable, desiredIndex);
+        if (matched != null) {
+          await target.setSubtitleTrack(matched);
+          _debugSubtitleState('apply_after_matched_index_$desiredIndex', target);
+          return;
+        }
+        await target.setSubtitleTrack(SubtitleTrack.auto());
+        _debugSubtitleState(
+          'apply_after_no_match_index_${desiredIndex}_auto',
+          target,
+        );
+        return;
+      }
+
+      // 无显式选择 → auto
+      await target.setSubtitleTrack(SubtitleTrack.auto());
+      _debugSubtitleState('apply_after_auto', target);
+    } catch (_) {
+    } finally {
+      _applyingSubtitleSelection = false;
+    }
   }
 
-  void _togglePlayback() {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) {
+  /// 在本地轨道列表中按 index 查找匹配的 SubtitleTrack
+  SubtitleTrack? _findSubtitleTrackByIndex(
+    List<SubtitleTrack> tracks,
+    int index,
+  ) {
+    final indexStr = index.toString();
+    // 精确匹配: id == "2"
+    for (final track in tracks) {
+      if (track.id == indexStr) return track;
+    }
+    // 带前缀匹配: id == "s:2" / "sid:2"
+    for (final track in tracks) {
+      if (track.id.endsWith(':$indexStr') || track.id.endsWith(' $indexStr')) {
+        return track;
+      }
+    }
+    // 按位置匹配（tracks 列表顺序与 stream index 一致）
+    final position = tracks.indexWhere((t) {
+      final parsed = int.tryParse(t.id);
+      return parsed == index;
+    });
+    if (position >= 0) return tracks[position];
+    return null;
+  }
+
+  Future<void> _applyAudioSelection({Player? player}) async {
+    final target = player ?? _player;
+    if (target == null || !_usesFlutterRenderer) {
       return;
     }
-
-    if (controller.value.isPlaying) {
-      controller.pause();
-    } else {
-      controller.play();
-      _scheduleControlsAutoHide();
-    }
-  }
-
-  void _toggleControlsVisibility() {
-    final controller = _controller;
-    final canAutoHide = controller?.value.isPlaying ?? false;
-
-    setState(() {
-      _showControls = !_showControls;
-    });
-
-    if (_showControls && canAutoHide) {
-      _scheduleControlsAutoHide();
-    } else {
-      _hideControlsTimer?.cancel();
-    }
-  }
-
-  void _seekBy(Duration delta) {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) {
+    if (_applyingAudioSelection) {
       return;
     }
+    _applyingAudioSelection = true;
 
-    final duration = controller.value.duration;
-    final target = controller.value.position + delta;
-    final clamped = target < Duration.zero
-        ? Duration.zero
-        : (target > duration ? duration : target);
-    controller.seekTo(clamped);
+    try {
+      final desiredIndex = widget.audioStreamIndex;
+      if (desiredIndex == null) {
+        try {
+          await target.setAudioTrack(AudioTrack.auto());
+        } catch (_) {}
+        return;
+      }
+
+      final desiredPosition = widget.audioStreams.indexWhere(
+        (stream) => stream.index == desiredIndex,
+      );
+      if (desiredPosition < 0) {
+        return;
+      }
+
+      final localTracks = await _waitForSelectableAudioTracks(target);
+      if (localTracks.isEmpty) {
+        return;
+      }
+
+      final matchedTrack = _matchLocalAudioTrack(
+        targetStream: widget.audioStreams[desiredPosition],
+        desiredPosition: desiredPosition,
+        localTracks: localTracks,
+      );
+      if (matchedTrack == null) {
+        return;
+      }
+
+      try {
+        await target.setAudioTrack(matchedTrack);
+      } catch (_) {}
+    } finally {
+      _applyingAudioSelection = false;
+    }
+  }
+
+  Future<List<AudioTrack>> _waitForSelectableAudioTracks(Player player) async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      final available = _extractSelectableAudioTracks(
+        player.state.tracks.audio,
+      );
+      if (available.isNotEmpty) {
+        _availableAudioTracks = available;
+        return available;
+      }
+      if (_availableAudioTracks.isNotEmpty) {
+        return _availableAudioTracks;
+      }
+      await Future.delayed(const Duration(milliseconds: 120));
+    }
+    return _availableAudioTracks;
+  }
+
+  List<AudioTrack> _extractSelectableAudioTracks(List<AudioTrack> tracks) {
+    return tracks
+        .where((track) => track.id != 'auto' && track.id != 'no' && !track.uri)
+        .toList(growable: false);
+  }
+
+  List<SubtitleTrack> _extractSelectableSubtitleTracks(
+    List<SubtitleTrack> tracks,
+  ) {
+    return tracks
+        .where(
+          (track) =>
+              track.id != 'auto' &&
+              track.id != 'no' &&
+              !track.uri &&
+              !track.data,
+        )
+        .toList(growable: false);
+  }
+
+  void _debugSubtitleState(String reason, Player player) {
+    if (!kDebugMode) {
+      return;
+    }
+    final tracks = player.state.tracks.subtitle;
+    final selectable = _extractSelectableSubtitleTracks(tracks);
+    debugPrint(
+      '[Diag][MeowVideoPlayer] subtitle:$reason | '
+      'selected=${_describeSubtitleTrack(player.state.track.subtitle)}, '
+      'all=${_describeSubtitleTracks(tracks)}, '
+      'selectable=${_describeSubtitleTracks(selectable)}',
+    );
+  }
+
+  String _describeSubtitleTracks(List<SubtitleTrack> tracks) {
+    return [
+      for (var index = 0; index < tracks.length; index++)
+        _describeSubtitleTrack(tracks[index], position: index),
+    ].join(', ');
+  }
+
+  String _describeSubtitleTrack(SubtitleTrack track, {int? position}) {
+    final parts = <String>[
+      if (position != null) 'pos=$position',
+      'id=${track.id}',
+      'title=${track.title ?? ''}',
+      'lang=${track.language ?? ''}',
+      'codec=${track.codec ?? ''}',
+      'default=${track.isDefault ?? false}',
+      'uri=${track.uri}',
+      'data=${track.data}',
+    ];
+    return '{${parts.join(', ')}}';
+  }
+
+  AudioTrack? _matchLocalAudioTrack({
+    required PlaybackStream targetStream,
+    required int desiredPosition,
+    required List<AudioTrack> localTracks,
+  }) {
+    String normalize(String? value) => (value ?? '').trim().toLowerCase();
+
+    final targetTitle = normalize(targetStream.title);
+    final targetLanguage = normalize(targetStream.language);
+    final targetCodec = normalize(targetStream.codec);
+
+    for (final track in localTracks) {
+      if (targetTitle.isNotEmpty &&
+          normalize(track.title).isNotEmpty &&
+          normalize(track.title) == targetTitle) {
+        return track;
+      }
+    }
+
+    for (final track in localTracks) {
+      final languageMatches =
+          targetLanguage.isNotEmpty &&
+          normalize(track.language) == targetLanguage;
+      final codecMatches =
+          targetCodec.isNotEmpty && normalize(track.codec) == targetCodec;
+      final bitrateMatches =
+          targetStream.bitrate != null &&
+          track.bitrate != null &&
+          (track.bitrate! - targetStream.bitrate!).abs() <= 32000;
+      if ((languageMatches && codecMatches) ||
+          (languageMatches && bitrateMatches) ||
+          (codecMatches && bitrateMatches)) {
+        return track;
+      }
+    }
+
+    if (desiredPosition >= 0 && desiredPosition < localTracks.length) {
+      return localTracks[desiredPosition];
+    }
+    return null;
+  }
+
+  String _normalizeSubtitleCodec(String? codec) {
+    return switch ((codec ?? '').trim().toLowerCase()) {
+      'pgs' || 'pgssub' || 'sup' || 'hdmv_pgs_subtitle' => 'pgs',
+      'subrip' || 'srt' => 'srt',
+      'webvtt' || 'vtt' => 'vtt',
+      final String value => value,
+    };
+  }
+
+  bool _isImageSubtitleCodec(String? codec) {
+    return _normalizeSubtitleCodec(codec) == 'pgs';
+  }
+
+  bool _needsNativeSubtitleRendering(MeowVideoPlayer widget) {
+    if (widget.disableSubtitleTrack) {
+      return false;
+    }
+    final subtitleUri = widget.subtitleUri?.trim();
+    if (subtitleUri != null && subtitleUri.isNotEmpty) {
+      return false;
+    }
+    final stream = _findSubtitleStreamForWidget(widget);
+    if (stream == null) {
+      return false;
+    }
+    return _isImageSubtitleCodec(stream.codec);
+  }
+
+  PlaybackStream? _findSubtitleStreamForWidget(MeowVideoPlayer widget) {
+    final desiredIndex = widget.subtitleStreamIndex;
+    final subtitleUri = widget.subtitleUri?.trim();
+    for (final stream in widget.subtitleStreams) {
+      if (desiredIndex != null && stream.index == desiredIndex) {
+        return stream;
+      }
+      final deliveryUrl = stream.deliveryUrl?.trim();
+      if (subtitleUri != null &&
+          subtitleUri.isNotEmpty &&
+          deliveryUrl != null &&
+          deliveryUrl == subtitleUri) {
+        return stream;
+      }
+    }
+    final normalizedTitle = widget.subtitleTitle?.trim().toLowerCase() ?? '';
+    final normalizedLanguage =
+        widget.subtitleLanguage?.trim().toLowerCase() ?? '';
+    if (normalizedTitle.isEmpty && normalizedLanguage.isEmpty) {
+      return null;
+    }
+    PlaybackStream? languageOnlyMatch;
+    for (final stream in widget.subtitleStreams) {
+      final streamTitle = stream.title.trim().toLowerCase();
+      final streamLanguage = (stream.language ?? '').trim().toLowerCase();
+      final titleMatches =
+          normalizedTitle.isNotEmpty && streamTitle == normalizedTitle;
+      final languageMatches =
+          normalizedLanguage.isNotEmpty && streamLanguage == normalizedLanguage;
+      if (titleMatches && languageMatches) {
+        return stream;
+      }
+      if (titleMatches) {
+        return stream;
+      }
+      if (languageOnlyMatch == null && languageMatches) {
+        languageOnlyMatch = stream;
+      }
+    }
+    return languageOnlyMatch;
+  }
+
+  bool _sameAudioStreams(
+    List<PlaybackStream> left,
+    List<PlaybackStream> right,
+  ) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      final l = left[index];
+      final r = right[index];
+      if (l.index != r.index ||
+          l.title != r.title ||
+          l.language != r.language ||
+          l.codec != r.codec ||
+          l.bitrate != r.bitrate) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _sameSubtitleStreams(
+    List<PlaybackStream> left,
+    List<PlaybackStream> right,
+  ) {
+    if (identical(left, right)) {
+      return true;
+    }
+    if (left.length != right.length) {
+      return false;
+    }
+    for (var index = 0; index < left.length; index++) {
+      final l = left[index];
+      final r = right[index];
+      if (l.index != r.index ||
+          l.title != r.title ||
+          l.language != r.language ||
+          l.codec != r.codec ||
+          l.deliveryMethod != r.deliveryMethod ||
+          l.subtitleLocationType != r.subtitleLocationType ||
+          l.supportsExternalStream != r.supportsExternalStream ||
+          l.deliveryUrl != r.deliveryUrl ||
+          l.isTextSubtitleStream != r.isTextSubtitleStream) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _bindStreams(Player player) {
+    void emit() {
+      final duration = _duration;
+      final position = _position;
+      final completionThreshold = duration > const Duration(milliseconds: 600)
+          ? duration - const Duration(milliseconds: 600)
+          : duration;
+      final status = MeowVideoPlaybackStatus(
+        position: position,
+        duration: duration,
+        isInitialized: duration > Duration.zero,
+        isPlaying: _isPlaying,
+        isBuffering: _isBuffering,
+        isCompleted:
+            duration > Duration.zero &&
+            position >= completionThreshold &&
+            !_isPlaying,
+      );
+      _maybeDispatchPlaybackStarted(status);
+      widget.onPlaybackStatusChanged?.call(status);
+    }
+
+    _subscriptions.addAll([
+      player.stream.position.listen((p) {
+        _position = p;
+        emit();
+      }),
+      player.stream.duration.listen((d) {
+        _duration = d;
+        emit();
+      }),
+      player.stream.playing.listen((playing) {
+        _isPlaying = playing;
+        emit();
+      }),
+      player.stream.buffering.listen((b) {
+        _isBuffering = b;
+        emit();
+      }),
+      player.stream.track.listen((track) {
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][MeowVideoPlayer] subtitle:selected_update | '
+            'selected=${_describeSubtitleTrack(track.subtitle)}',
+          );
+        }
+      }),
+      player.stream.error.listen((error) {
+        if (mounted && widget.onPlayerError != null) {
+          widget.onPlayerError!(error.toString());
+        }
+      }),
+      player.stream.tracks.listen((tracks) {
+        final previousAudioCount = _availableAudioTracks.length;
+        final previousSubtitleCount = _availableSubtitleTracks.length;
+        _availableAudioTracks = _extractSelectableAudioTracks(tracks.audio);
+        _availableSubtitleTracks = _extractSelectableSubtitleTracks(
+          tracks.subtitle,
+        );
+        if (kDebugMode) {
+          debugPrint(
+            '[Diag][MeowVideoPlayer] subtitle:tracks_update | '
+            'selected=${_describeSubtitleTrack(player.state.track.subtitle)}, '
+            'all=${_describeSubtitleTracks(tracks.subtitle)}, '
+            'selectable=${_describeSubtitleTracks(_availableSubtitleTracks)}',
+          );
+        }
+        if (previousAudioCount == 0 &&
+            _availableAudioTracks.isNotEmpty &&
+            widget.audioStreamIndex != null) {
+          // ignore: discarded_futures
+          _applyAudioSelection(player: player);
+        }
+        if (previousSubtitleCount == 0 &&
+            _availableSubtitleTracks.length >= 2) {
+          // ignore: discarded_futures
+          _applySubtitleSelection(player: player);
+        }
+      }),
+    ]);
+  }
+
+  void _maybeDispatchPlaybackStarted(MeowVideoPlaybackStatus status) {
+    if (_hasDispatchedPlaybackStarted) {
+      return;
+    }
+    if (!status.isInitialized || !status.isPlaying) {
+      return;
+    }
+    _hasDispatchedPlaybackStarted = true;
+    widget.onPlaybackStarted?.call(status);
   }
 
   @override
   Widget build(BuildContext context) {
+    // 原生渲染模式分支保持不变
     if (!_usesFlutterRenderer) {
       return _NativeRendererShell(
         widget: widget,
@@ -334,81 +935,86 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       );
     }
 
-    return FutureBuilder<void>(
+    final video = FutureBuilder<void>(
       future: _initializeVideoFuture,
       builder: (context, snapshot) {
-        final controller = _controller;
-        final initialized = controller?.value.isInitialized ?? false;
-        final aspectRatio = initialized
-            ? controller!.value.aspectRatio
-            : _fallbackAspectRatio;
+        final aspectRatio = widget.aspectRatio ?? _fallbackAspectRatio;
+        final playerContent = Container(
+          color: Colors.black,
+          child: _videoController != null
+              ? Video(
+                  controller: _videoController!,
+                  fit: widget.fit,
+                  subtitleViewConfiguration: _subtitleViewConfig,
+                )
+              : const _VideoLoadingState(),
+        );
 
         return ClipRRect(
           borderRadius: widget.borderRadius,
-          child: AspectRatio(
-            aspectRatio: aspectRatio > 0 ? aspectRatio : _fallbackAspectRatio,
-            child: Material(
-              color: Colors.black,
-              child: InkWell(
-                onTap: _toggleControlsVisibility,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (snapshot.connectionState == ConnectionState.waiting ||
-                        !initialized)
-                      const _VideoLoadingState()
-                    else
-                      VideoPlayer(controller!),
-                    if (snapshot.hasError)
-                      const _VideoErrorState()
-                    else if (initialized)
-                      _PlaybackOverlay(
-                        controller: controller!,
-                        showControls: _showControls,
-                        isScrubbing: _isScrubbing,
-                        scrubValueMs: _scrubValueMs,
-                        onPlayPausePressed: _togglePlayback,
-                        onReplayPressed: () =>
-                            _seekBy(const Duration(seconds: -10)),
-                        onForwardPressed: () =>
-                            _seekBy(const Duration(seconds: 10)),
-                        onScrubbingStart: (value) {
-                          _hideControlsTimer?.cancel();
-                          _isScrubbing = true;
-                          _scrubValueMs = value;
-                        },
-                        onScrubbingUpdate: (value) {
-                          setState(() {
-                            _scrubValueMs = value;
-                          });
-                        },
-                        onScrubbingEnd: (value) {
-                          final target = Duration(milliseconds: value.round());
-                          controller.seekTo(target);
-                          _isScrubbing = false;
-                          _scrubValueMs = null;
-                          if (controller.value.isPlaying) {
-                            _scheduleControlsAutoHide();
-                          }
-                        },
-                      ),
-                  ],
-                ),
+          child: widget.expandToFill
+              ? SizedBox.expand(child: playerContent)
+              : AspectRatio(aspectRatio: aspectRatio, child: playerContent),
+        );
+      },
+    );
+    if (!widget.overlayCcButton) return video;
+    return Stack(
+      children: [
+        Positioned.fill(child: video),
+        Positioned(
+          right: 12,
+          bottom: 12,
+          child: Material(
+            color: Colors.black54,
+            borderRadius: BorderRadius.circular(20),
+            child: InkWell(
+              onTap: widget.onTapCc,
+              borderRadius: BorderRadius.circular(20),
+              child: const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Icon(Icons.closed_caption_outlined, color: Colors.white),
               ),
             ),
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 }
 
+// --- 辅助组件：保留你之前精美的加载和错误态 ---
+
+class _VideoLoadingState extends StatelessWidget {
+  const _VideoLoadingState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Shimmer.fromColors(
+      baseColor: const Color(0xFF101010),
+      highlightColor: const Color(0xFF1C1C1C),
+      child: Container(
+        color: Colors.black,
+        child: const Center(
+          child: Icon(
+            Icons.play_circle_outline_rounded,
+            size: 48,
+            color: Colors.white24,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// 移除专用错误组件（media_kit 内部会抛出异常，可在上层捕获并渲染）
+
+// 保留原有的 NativeShell 逻辑
 class _NativeRendererShell extends StatelessWidget {
   const _NativeRendererShell({
     required this.widget,
     required this.fallbackAspectRatio,
   });
-
   final MeowVideoPlayer widget;
   final double fallbackAspectRatio;
 
@@ -421,290 +1027,18 @@ class _NativeRendererShell extends StatelessWidget {
       aspectRatio: fallbackAspectRatio,
       borderRadius: widget.borderRadius,
     );
-
-    final builder = switch (widget.renderMode) {
-      MeowVideoRenderMode.androidNative => widget.androidNativeBuilder,
-      MeowVideoRenderMode.harmonyNative => widget.harmonyNativeBuilder,
-      MeowVideoRenderMode.flutter => null,
-    };
-
-    final content = builder != null
-        ? builder(context, config)
-        : const _UnsupportedNativeRendererState();
+    final builder = widget.renderMode == MeowVideoRenderMode.androidNative
+        ? widget.androidNativeBuilder
+        : widget.harmonyNativeBuilder;
 
     return ClipRRect(
       borderRadius: widget.borderRadius,
-      child: AspectRatio(aspectRatio: fallbackAspectRatio, child: content),
-    );
-  }
-}
-
-class _PlaybackOverlay extends StatelessWidget {
-  const _PlaybackOverlay({
-    required this.controller,
-    required this.showControls,
-    required this.isScrubbing,
-    required this.scrubValueMs,
-    required this.onPlayPausePressed,
-    required this.onReplayPressed,
-    required this.onForwardPressed,
-    required this.onScrubbingStart,
-    required this.onScrubbingUpdate,
-    required this.onScrubbingEnd,
-  });
-
-  final VideoPlayerController controller;
-  final bool showControls;
-  final bool isScrubbing;
-  final double? scrubValueMs;
-  final VoidCallback onPlayPausePressed;
-  final VoidCallback onReplayPressed;
-  final VoidCallback onForwardPressed;
-  final ValueChanged<double> onScrubbingStart;
-  final ValueChanged<double> onScrubbingUpdate;
-  final ValueChanged<double> onScrubbingEnd;
-
-  @override
-  Widget build(BuildContext context) {
-    final value = controller.value;
-    final totalMs = value.duration.inMilliseconds.toDouble();
-    final currentMs = isScrubbing
-        ? (scrubValueMs ?? 0)
-        : value.position.inMilliseconds.toDouble();
-
-    return AnimatedOpacity(
-      opacity: showControls ? 1 : 0,
-      duration: const Duration(milliseconds: 180),
-      child: IgnorePointer(
-        ignoring: !showControls,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Colors.black.withValues(alpha: 0.38),
-                Colors.transparent,
-                Colors.black.withValues(alpha: 0.6),
-              ],
-              stops: const [0, 0.45, 1],
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
-            child: Column(
-              children: [
-                Align(
-                  alignment: Alignment.topRight,
-                  child: value.isBuffering
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.white70,
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-                const Spacer(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _OverlayButton(
-                      icon: Icons.replay_10_rounded,
-                      onPressed: onReplayPressed,
-                    ),
-                    const SizedBox(width: 14),
-                    _OverlayButton(
-                      icon: value.isPlaying
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
-                      size: 68,
-                      fill: true,
-                      onPressed: onPlayPausePressed,
-                    ),
-                    const SizedBox(width: 14),
-                    _OverlayButton(
-                      icon: Icons.forward_10_rounded,
-                      onPressed: onForwardPressed,
-                    ),
-                  ],
-                ),
-                const Spacer(),
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3,
-                    thumbShape: const RoundSliderThumbShape(
-                      enabledThumbRadius: 6,
-                    ),
-                    overlayShape: const RoundSliderOverlayShape(
-                      overlayRadius: 14,
-                    ),
-                    activeTrackColor: AppTheme.accentColor,
-                    inactiveTrackColor: Colors.white24,
-                    thumbColor: AppTheme.accentColor,
-                    overlayColor: AppTheme.accentColor.withValues(alpha: 0.18),
-                  ),
-                  child: Slider(
-                    min: 0,
-                    max: totalMs > 0 ? totalMs : 1,
-                    value: currentMs.clamp(0, totalMs > 0 ? totalMs : 1),
-                    onChanged: onScrubbingUpdate,
-                    onChangeStart: onScrubbingStart,
-                    onChangeEnd: onScrubbingEnd,
-                  ),
-                ),
-                Row(
-                  children: [
-                    Text(
-                      _formatDuration(
-                        Duration(milliseconds: currentMs.round()),
-                      ),
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: Colors.white70),
-                    ),
-                    const Spacer(),
-                    Text(
-                      _formatDuration(value.duration),
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: Colors.white70),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
+      child: AspectRatio(
+        aspectRatio: fallbackAspectRatio,
+        child:
+            builder?.call(context, config) ??
+            const Center(child: Text('不支持的原生渲染')),
       ),
     );
   }
-}
-
-class _OverlayButton extends StatelessWidget {
-  const _OverlayButton({
-    required this.icon,
-    required this.onPressed,
-    this.fill = false,
-    this.size = 50,
-  });
-
-  final IconData icon;
-  final VoidCallback onPressed;
-  final bool fill;
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: fill
-          ? AppTheme.accentColor.withValues(alpha: 0.92)
-          : Colors.black.withValues(alpha: 0.42),
-      shape: const CircleBorder(),
-      child: InkWell(
-        customBorder: const CircleBorder(),
-        onTap: onPressed,
-        child: SizedBox(
-          width: size,
-          height: size,
-          child: Icon(
-            icon,
-            color: fill ? AppTheme.onAccentColor : Colors.white,
-            size: fill ? 34 : 28,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _VideoLoadingState extends StatelessWidget {
-  const _VideoLoadingState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Shimmer.fromColors(
-      baseColor: const Color(0xFF101010),
-      highlightColor: const Color(0xFF1C1C1C),
-      child: DecoratedBox(
-        decoration: const BoxDecoration(color: Colors.black),
-        child: Center(
-          child: Icon(
-            Icons.play_circle_outline_rounded,
-            size: 48,
-            color: Colors.white.withValues(alpha: 0.28),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _VideoErrorState extends StatelessWidget {
-  const _VideoErrorState();
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Colors.black.withValues(alpha: 0.86),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline_rounded, color: Colors.white70),
-              const SizedBox(height: 10),
-              Text(
-                '视频加载失败，请稍后重试。',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _UnsupportedNativeRendererState extends StatelessWidget {
-  const _UnsupportedNativeRendererState();
-
-  @override
-  Widget build(BuildContext context) {
-    return ColoredBox(
-      color: AppTheme.cardColor,
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Text(
-            '当前渲染模式还没有接入原生播放器实现。',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-String _formatDuration(Duration duration) {
-  final totalSeconds = duration.inSeconds;
-  final hours = totalSeconds ~/ 3600;
-  final minutes = (totalSeconds % 3600) ~/ 60;
-  final seconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return '${hours.toString().padLeft(2, '0')}:'
-        '${minutes.toString().padLeft(2, '0')}:'
-        '${seconds.toString().padLeft(2, '0')}';
-  }
-
-  return '${minutes.toString().padLeft(2, '0')}:'
-      '${seconds.toString().padLeft(2, '0')}';
 }

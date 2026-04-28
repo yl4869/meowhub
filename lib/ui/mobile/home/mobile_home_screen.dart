@@ -2,53 +2,66 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../../models/media_item.dart';
+import '../../../domain/entities/media_item.dart';
+import '../../../domain/entities/media_library_info.dart';
 import '../../../providers/app_provider.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/poster_card.dart';
 import '../../atoms/poster_card_skeleton.dart';
 import '../../atoms/section_header.dart';
 import '../../atoms/status_pill.dart';
+import '../../screens/search_screen.dart';
 
 class MobileHomeScreen extends StatelessWidget {
   const MobileHomeScreen({
     super.key,
     required this.maxWidth,
-    required this.movies,
-    required this.series,
-    required this.recentWatching,
+    required this.libraries,
+    required this.continueWatching,
+    required this.recentlyAdded,
+    required this.libraryItems,
     required this.isLoading,
     required this.errorMessage,
     required this.selectedServer,
+    required this.hasSelectedServer,
     required this.availableServers,
     required this.favoriteCount,
     required this.inProgressCount,
     required this.onRefresh,
     required this.onRetry,
     required this.onMovieTap,
+    required this.onOpenLibraryCollection,
     required this.onServerSelected,
-    required this.onOpenMobileSample,
+    required this.onClearServerSelection,
+    required this.onOpenFileSources,
   });
 
   final double maxWidth;
-  final List<MediaItem> movies;
-  final List<MediaItem> series;
-  final List<MediaItem> recentWatching;
+  final List<MediaLibraryInfo> libraries;
+  final List<MediaItem> continueWatching;
+  final List<MediaItem> recentlyAdded;
+  final Map<String, List<MediaItem>> libraryItems;
   final bool isLoading;
   final String? errorMessage;
   final MediaServerInfo selectedServer;
+  final bool hasSelectedServer;
   final List<MediaServerInfo> availableServers;
   final int favoriteCount;
   final int inProgressCount;
   final Future<void> Function() onRefresh;
   final VoidCallback onRetry;
   final ValueChanged<MediaItem> onMovieTap;
+  final ValueChanged<MediaLibraryInfo> onOpenLibraryCollection;
   final ValueChanged<MediaServerInfo> onServerSelected;
-  final VoidCallback onOpenMobileSample;
+  final VoidCallback onClearServerSelection;
+  final VoidCallback onOpenFileSources;
 
   @override
   Widget build(BuildContext context) {
+    final hasContent = libraryItems.values.any((items) => items.isNotEmpty);
+
     return Scaffold(
       body: RefreshIndicator(
         color: AppTheme.accentColor,
@@ -69,8 +82,10 @@ class MobileHomeScreen extends StatelessWidget {
                         alignment: Alignment.centerLeft,
                         child: _ServerSwitcherPill(
                           selectedServer: selectedServer,
+                          hasSelectedServer: hasSelectedServer,
                           availableServers: availableServers,
                           onSelected: onServerSelected,
+                          onClearSelection: onClearServerSelection,
                         ),
                       ),
                     ),
@@ -78,10 +93,14 @@ class MobileHomeScreen extends StatelessWidget {
                     _TopActionButton(
                       icon: Icons.search_rounded,
                       tooltip: '搜索',
-                      onTap: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('搜索功能准备中')),
+                      onTap: () async {
+                        final result = await showSearch<MediaItem?>(
+                          context: context,
+                          delegate: MeowSearchDelegate(),
                         );
+                        if (result != null && context.mounted) {
+                          onMovieTap(result);
+                        }
                       },
                     ),
                     const SizedBox(width: 10),
@@ -96,9 +115,16 @@ class MobileHomeScreen extends StatelessWidget {
                 ),
               ),
             ),
-            if (isLoading && movies.isEmpty)
+            if (!hasSelectedServer)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: _NoFileSourceSelectedCard(
+                  onOpenFileSources: onOpenFileSources,
+                ),
+              )
+            else if (isLoading && !hasContent)
               const SliverToBoxAdapter(child: _HomeLoadingShelves())
-            else if (errorMessage != null && movies.isEmpty)
+            else if (errorMessage != null && !hasContent)
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: _HomeErrorState(
@@ -109,61 +135,98 @@ class MobileHomeScreen extends StatelessWidget {
             else ...[
               SliverToBoxAdapter(
                 child: _ShelfSection(
-                  title: '最近观看',
-                  subtitle: recentWatching.isEmpty ? '还没有续播记录' : '从上次的位置继续',
+                  title: '继续播放',
+                  subtitle: continueWatching.isEmpty
+                      ? '还没有可继续播放的内容'
+                      : '从上次的位置继续',
                   child: SizedBox(
-                    height: 184,
-                    child: recentWatching.isEmpty
+                    height: 200,
+                    child: continueWatching.isEmpty
                         ? const _EmptyShelfState(
-                            icon: Icons.history_rounded,
-                            message: '开始播放后，这里会出现宽卡片续播货架',
+                            icon: Icons.play_circle_outline_rounded,
+                            message: '开始播放后，这里会出现可继续播放的内容',
                           )
-                        : ListView.separated(
+                        : SingleChildScrollView(
                             padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
                             scrollDirection: Axis.horizontal,
                             physics: const BouncingScrollPhysics(),
-                            itemCount: recentWatching.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(width: 14),
-                            itemBuilder: (context, index) {
-                              final mediaItem = recentWatching[index];
-                              final progress = context
-                                  .select<AppProvider, double>(
-                                    (provider) => provider.progressFractionFor(
-                                      mediaItem.id,
-                                    ),
-                                  );
-                              return _RecentWatchCard(
-                                mediaItem: mediaItem,
-                                progress: progress,
-                                onTap: () => onMovieTap(mediaItem),
-                              );
-                            },
+                            child: Row(
+                              children: [
+                                for (
+                                  var index = 0;
+                                  index < continueWatching.length;
+                                  index++
+                                ) ...[
+                                  Builder(
+                                    builder: (context) {
+                                      final mediaItem = continueWatching[index];
+                                      final progress = context
+                                          .select<UserDataProvider, double>(
+                                            (provider) => provider
+                                                .progressFractionForItem(
+                                                  mediaItem,
+                                                ),
+                                          );
+                                      return _ContinueWatchingCard(
+                                        mediaItem: mediaItem,
+                                        progress: progress,
+                                        onTap: () => onMovieTap(mediaItem),
+                                      );
+                                    },
+                                  ),
+                                  if (index != continueWatching.length - 1)
+                                    const SizedBox(width: 14),
+                                ],
+                              ],
+                            ),
                           ),
                   ),
                 ),
               ),
               SliverToBoxAdapter(
                 child: _ShelfSection(
-                  title: '电视剧',
-                  subtitle: '适合连刷的剧集推荐',
-                  action: TextButton(
-                    onPressed: onOpenMobileSample,
-                    child: const Text('设计样例'),
-                  ),
-                  child: _PosterShelf(items: series, onMovieTap: onMovieTap),
-                ),
-              ),
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 28),
-                  child: _ShelfSection(
-                    title: '电影',
-                    subtitle: '适合今晚开的精选影片',
-                    child: _PosterShelf(items: movies, onMovieTap: onMovieTap),
+                  title: '最近添加',
+                  subtitle: recentlyAdded.isEmpty
+                      ? '还没有最近添加的内容'
+                      : '最新入库的作品',
+                  child: _PosterShelf(
+                    items: recentlyAdded,
+                    onMovieTap: onMovieTap,
                   ),
                 ),
               ),
+              for (final library in libraries)
+                if (libraryItems[library.id]?.isNotEmpty == true)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        bottom: library == libraries.lastWhere(
+                          (l) => libraryItems[l.id]?.isNotEmpty == true,
+                          orElse: () => library,
+                        )
+                            ? 28
+                            : 0,
+                      ),
+                      child: _ShelfSection(
+                        title: library.name,
+                        subtitle: '共 ${libraryItems[library.id]?.length ?? 0} 部',
+                        action: TextButton.icon(
+                          onPressed: () =>
+                              onOpenLibraryCollection(library),
+                          icon: const Icon(
+                            Icons.arrow_forward_rounded,
+                            size: 18,
+                          ),
+                          label: const Text('查看全部'),
+                        ),
+                        child: _PosterShelf(
+                          items:
+                              libraryItems[library.id] ?? const [],
+                          onMovieTap: onMovieTap,
+                        ),
+                      ),
+                    ),
+                  ),
             ],
           ],
         ),
@@ -240,21 +303,23 @@ class _PosterShelf extends StatelessWidget {
             width: 136,
             child: Builder(
               builder: (context) {
-                final isFavorite = context.select<AppProvider, bool>(
+                final isFavorite = context.select<UserDataProvider, bool>(
                   (provider) => provider.isFavorite(mediaItem.id),
                 );
-                final progress = context.select<AppProvider, double>(
-                  (provider) => provider.progressFractionFor(mediaItem.id),
+                final progress = context.select<UserDataProvider, double>(
+                  (provider) => provider.progressFractionForItem(mediaItem),
                 );
-                final isRecent = context.select<AppProvider, bool>(
-                  (provider) =>
-                      provider.latestRecentMediaId == mediaItem.id,
-                );
+                final isContinueWatching = context
+                    .select<UserDataProvider, bool>(
+                      (provider) =>
+                          provider.latestContinueWatchingMediaKey ==
+                          mediaItem.mediaKey,
+                    );
 
                 return PosterCard(
                   mediaItem: mediaItem,
                   isFavorite: isFavorite,
-                  isRecent: isRecent,
+                  isContinueWatching: isContinueWatching,
                   progress: progress,
                   onTap: () => onMovieTap(mediaItem),
                 );
@@ -267,8 +332,8 @@ class _PosterShelf extends StatelessWidget {
   }
 }
 
-class _RecentWatchCard extends StatelessWidget {
-  const _RecentWatchCard({
+class _ContinueWatchingCard extends StatelessWidget {
+  const _ContinueWatchingCard({
     required this.mediaItem,
     required this.progress,
     required this.onTap,
@@ -325,7 +390,7 @@ class _RecentWatchCard extends StatelessWidget {
                     padding: const EdgeInsets.all(16),
                     child: Row(
                       children: [
-                        _RecentPosterPreview(mediaItem: mediaItem),
+                        _ContinueWatchingPosterPreview(mediaItem: mediaItem),
                         const SizedBox(width: 14),
                         Expanded(
                           child: Column(
@@ -371,7 +436,7 @@ class _RecentWatchCard extends StatelessWidget {
                               ),
                               const SizedBox(height: 10),
                               Text(
-                                '继续观看',
+                                '继续播放',
                                 style: Theme.of(context).textTheme.labelLarge,
                               ),
                             ],
@@ -390,8 +455,8 @@ class _RecentWatchCard extends StatelessWidget {
   }
 }
 
-class _RecentPosterPreview extends StatelessWidget {
-  const _RecentPosterPreview({required this.mediaItem});
+class _ContinueWatchingPosterPreview extends StatelessWidget {
+  const _ContinueWatchingPosterPreview({required this.mediaItem});
 
   final MediaItem mediaItem;
 
@@ -422,38 +487,79 @@ class _RecentPosterPreview extends StatelessWidget {
 class _ServerSwitcherPill extends StatelessWidget {
   const _ServerSwitcherPill({
     required this.selectedServer,
+    required this.hasSelectedServer,
     required this.availableServers,
     required this.onSelected,
+    required this.onClearSelection,
   });
 
   final MediaServerInfo selectedServer;
+  final bool hasSelectedServer;
   final List<MediaServerInfo> availableServers;
   final ValueChanged<MediaServerInfo> onSelected;
+  final VoidCallback onClearSelection;
+
+  static const String _noneSelectedValue = '__none__';
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<MediaServerInfo>(
+    return PopupMenuButton<String>(
       tooltip: '切换媒体服务器',
       color: AppTheme.cardColor,
-      onSelected: onSelected,
+      onSelected: (value) {
+        if (value == _noneSelectedValue) {
+          onClearSelection();
+          return;
+        }
+        for (final server in availableServers) {
+          if (server.id == value) {
+            onSelected(server);
+            return;
+          }
+        }
+      },
       itemBuilder: (context) {
-        return availableServers.map((server) {
-          final isSelected = server.id == selectedServer.id;
-          return PopupMenuItem<MediaServerInfo>(
-            value: server,
+        final entries = <PopupMenuEntry<String>>[
+          PopupMenuItem<String>(
+            value: _noneSelectedValue,
             child: Row(
               children: [
                 Icon(
-                  isSelected ? Icons.radio_button_checked : Icons.dns_rounded,
+                  hasSelectedServer
+                      ? Icons.radio_button_off_rounded
+                      : Icons.radio_button_checked,
                   size: 18,
-                  color: isSelected ? AppTheme.accentColor : Colors.white70,
+                  color: !hasSelectedServer
+                      ? AppTheme.accentColor
+                      : Colors.white70,
                 ),
                 const SizedBox(width: 10),
-                Text('${server.name} · ${server.region}'),
+                const Text('未选择文件源'),
               ],
             ),
-          );
-        }).toList();
+          ),
+        ];
+        entries.addAll(
+          availableServers.map((server) {
+            final isSelected =
+                hasSelectedServer && server.id == selectedServer.id;
+            return PopupMenuItem<String>(
+              value: server.id,
+              child: Row(
+                children: [
+                  Icon(
+                    isSelected ? Icons.radio_button_checked : Icons.dns_rounded,
+                    size: 18,
+                    color: isSelected ? AppTheme.accentColor : Colors.white70,
+                  ),
+                  const SizedBox(width: 10),
+                  Text('${server.name} · ${server.region}'),
+                ],
+              ),
+            );
+          }),
+        );
+        return entries;
       },
       child: StatusPill(
         icon: Icons.dns_rounded,
@@ -461,6 +567,54 @@ class _ServerSwitcherPill extends StatelessWidget {
         value: selectedServer.name,
         accent: true,
         trailingIcon: Icons.unfold_more_rounded,
+      ),
+    );
+  }
+}
+
+class _NoFileSourceSelectedCard extends StatelessWidget {
+  const _NoFileSourceSelectedCard({required this.onOpenFileSources});
+
+  final VoidCallback onOpenFileSources;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: AppSurfaceCard(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.dns_outlined,
+                  size: 42,
+                  color: AppTheme.accentColor,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  '先选择一个文件源',
+                  style: Theme.of(context).textTheme.titleLarge,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '当前媒体库没有连接到任何服务器。选择文件源后，我们会重新拉取电影、电视剧和继续播放内容。',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 18),
+                FilledButton.icon(
+                  onPressed: onOpenFileSources,
+                  icon: const Icon(Icons.dns_rounded),
+                  label: const Text('去选择文件源'),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -508,9 +662,9 @@ class _HomeLoadingShelves extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _LoadingShelf(title: '最近观看', height: 184, itemWidth: 304, count: 2),
-        _LoadingShelf(title: '电视剧', height: 234, itemWidth: 136, count: 5),
-        _LoadingShelf(title: '电影', height: 234, itemWidth: 136, count: 5),
+        _LoadingShelf(title: '继续播放', height: 200, itemWidth: 304, count: 2),
+        _LoadingShelf(title: '最近添加', height: 234, itemWidth: 136, count: 5),
+        _LoadingShelf(title: '媒体库', height: 234, itemWidth: 136, count: 5),
       ],
     );
   }

@@ -2,14 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-import '../../models/media_item.dart';
+import '../../domain/entities/media_item.dart';
+import '../../domain/repositories/i_media_repository.dart';
 import '../../providers/app_provider.dart';
+import '../../providers/media_detail_provider.dart';
+import '../../providers/user_data_provider.dart';
 import '../mobile/detail/mobile_media_detail_screen.dart';
 import '../tablet/detail/tablet_media_detail_screen.dart';
 import 'player_view.dart';
 import 'responsive_layout_builder.dart';
 
-class MediaDetailView extends StatelessWidget {
+class MediaDetailView extends StatefulWidget {
   const MediaDetailView({super.key, required this.mediaItem});
 
   static const String routePath = '/media/:id';
@@ -19,57 +22,220 @@ class MediaDetailView extends StatelessWidget {
   final MediaItem mediaItem;
 
   @override
+  State<MediaDetailView> createState() => _MediaDetailViewState();
+}
+
+class _MediaDetailViewState extends State<MediaDetailView> {
+  late Future<MediaItem> _mediaDetailFuture;
+  String? _lastResumeLogSignature;
+
+  @override
+  void initState() {
+    super.initState();
+    _mediaDetailFuture = context.read<IMediaRepository>().getMediaDetail(
+      widget.mediaItem,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final hasPlayableUrl = mediaItem.playUrl?.isNotEmpty ?? false;
     final selectedServer = context.select<AppProvider, MediaServerInfo>(
       (provider) => provider.selectedServer,
     );
-    final isFavorite = context.select<AppProvider, bool>(
-      (provider) => provider.isFavorite(mediaItem.id),
-    );
-    final playbackProgress = context
-        .select<AppProvider, MediaPlaybackProgress?>(
-          (provider) => provider.playbackProgressFor(mediaItem.id),
+    return FutureBuilder<MediaItem>(
+      future: _mediaDetailFuture,
+      initialData: widget.mediaItem,
+      builder: (context, snapshot) {
+        final mediaItem = (snapshot.data ?? widget.mediaItem).copyWith(
+          parentIndexNumber: widget.mediaItem.parentIndexNumber,
+          indexNumber: widget.mediaItem.indexNumber,
         );
-
-    void handlePlayPressed() {
-      context.read<AppProvider>().markRecentlyWatched(mediaItem.id);
-      context.push(PlayerView.locationFor(mediaItem.id), extra: mediaItem);
-    }
-
-    void handleToggleFavorite() {
-      context.read<AppProvider>().toggleFavorite(mediaItem);
-    }
-
-    VoidCallback? resolvePlayPressed() {
-      if (!hasPlayableUrl) {
-        return null;
-      }
-      return handlePlayPressed;
-    }
-
-    return ResponsiveLayoutBuilder(
-      mobileBuilder: (context, maxWidth) {
-        return MobileMediaDetailScreen(
-          mediaItem: mediaItem,
-          selectedServer: selectedServer,
-          isFavorite: isFavorite,
-          playbackProgress: playbackProgress,
-          onPlayPressed: resolvePlayPressed(),
-          onToggleFavorite: handleToggleFavorite,
+        final rawPlayableItems = mediaItem.playableItems.isEmpty
+            ? [mediaItem]
+            : mediaItem.playableItems;
+        final userDataProvider = context.watch<UserDataProvider>();
+        final isFavorite = userDataProvider.isFavorite(mediaItem.id);
+        final playableItems = rawPlayableItems
+            .map(
+              (item) => item.copyWith(
+                playbackProgress:
+                    userDataProvider.playbackProgressForItem(item) ??
+                    item.playbackProgress,
+              ),
+            )
+            .toList(growable: false);
+        final hasPlayableUrl = playableItems.any(
+          (item) => item.playUrl?.isNotEmpty ?? false,
         );
-      },
-      tabletBuilder: (context, maxWidth) {
-        return TabletMediaDetailScreen(
-          maxWidth: maxWidth,
+        final resumePlayableItemId = userDataProvider
+            .resumePlayableItemIdForItem(mediaItem);
+        final fallbackEpisodeIndex = userDataProvider.episodeIndexForItem(
+          mediaItem,
+        );
+        final initialEpisodeIndex = _resolveInitialEpisodeIndex(
           mediaItem: mediaItem,
-          selectedServer: selectedServer,
-          isFavorite: isFavorite,
-          playbackProgress: playbackProgress,
-          onPlayPressed: resolvePlayPressed(),
-          onToggleFavorite: handleToggleFavorite,
+          playableItems: playableItems,
+          resumePlayableItemId: resumePlayableItemId,
+          fallbackEpisodeIndex: fallbackEpisodeIndex,
+        );
+        _logResumeState(
+          mediaItem: mediaItem,
+          playableItems: playableItems,
+          initialEpisodeIndex: initialEpisodeIndex,
+          resumePlayableItemId: resumePlayableItemId,
+        );
+        void handlePlayPressed(
+          int episodeIndex, {
+          bool openTrackSelector = false,
+        }) {
+          final detailProvider = context.read<MediaDetailProvider>();
+          final targetIndex = episodeIndex.clamp(0, playableItems.length - 1);
+          final selectedItem = playableItems[targetIndex];
+          final latestProgress =
+              userDataProvider.playbackProgressForItem(selectedItem) ??
+              selectedItem.playbackProgress;
+          final liveSelectedItem = selectedItem.copyWith(
+            playbackProgress: latestProgress,
+          );
+          userDataProvider.markContinueWatchingItemMemoryOnly(
+            liveSelectedItem,
+            episodeIndex: targetIndex,
+          );
+          final initialPlaybackPlan =
+              detailProvider.selectedPlaybackItemKey ==
+                  liveSelectedItem.mediaKey
+              ? detailProvider.playbackPlanForItem(liveSelectedItem)
+              : null;
+          final path =
+              PlayerView.locationFor(liveSelectedItem.id) +
+              (openTrackSelector ? '?tracks=1' : '');
+          context.push(
+            path,
+            extra: PlayerViewRoutePayload(
+              mediaItem: liveSelectedItem,
+              initialPlaybackPlan: initialPlaybackPlan,
+            ),
+          );
+        }
+
+        void handleToggleFavorite() {
+          userDataProvider.toggleFavorite(mediaItem);
+        }
+
+        ValueChanged<int>? resolvePlayPressed() {
+          if (!hasPlayableUrl) {
+            return null;
+          }
+          return handlePlayPressed;
+        }
+
+        return ResponsiveLayoutBuilder(
+          mobileBuilder: (context, maxWidth) {
+            return MobileMediaDetailScreen(
+              mediaItem: mediaItem,
+              selectedServer: selectedServer,
+              isFavorite: isFavorite,
+              playableItems: playableItems,
+              onPlayPressed: resolvePlayPressed(),
+              onOpenTrackSelector: (index) =>
+                  handlePlayPressed(index, openTrackSelector: true),
+              onToggleFavorite: handleToggleFavorite,
+            );
+          },
+          tabletBuilder: (context, maxWidth) {
+            return TabletMediaDetailScreen(
+              maxWidth: maxWidth,
+              mediaItem: mediaItem,
+              selectedServer: selectedServer,
+              isFavorite: isFavorite,
+              initialEpisodeIndex: initialEpisodeIndex,
+              playableItems: playableItems,
+              onPlayPressed: resolvePlayPressed(),
+              onOpenTrackSelector: (index) =>
+                  handlePlayPressed(index, openTrackSelector: true),
+              onToggleFavorite: handleToggleFavorite,
+            );
+          },
         );
       },
     );
   }
+
+  void _logResumeState({
+    required MediaItem mediaItem,
+    required List<MediaItem> playableItems,
+    required int initialEpisodeIndex,
+    required String? resumePlayableItemId,
+  }) {
+    if (playableItems.isEmpty) {
+      return;
+    }
+
+    final selectedIndex = initialEpisodeIndex.clamp(
+      0,
+      playableItems.length - 1,
+    );
+    final selectedItem = playableItems[selectedIndex];
+    final progress = selectedItem.playbackProgress;
+    final signature =
+        '${mediaItem.dataSourceId}|${selectedItem.dataSourceId}|'
+        '${progress?.position.inMilliseconds ?? 0}|'
+        '${progress?.duration.inMilliseconds ?? 0}|'
+        '${resumePlayableItemId ?? ''}|$selectedIndex';
+    if (_lastResumeLogSignature == signature) {
+      return;
+    }
+    _lastResumeLogSignature = signature;
+  }
+}
+
+int _resolveInitialEpisodeIndex({
+  required MediaItem mediaItem,
+  required List<MediaItem> playableItems,
+  required String? resumePlayableItemId,
+  required int fallbackEpisodeIndex,
+}) {
+  if (mediaItem.type == MediaType.movie || playableItems.isEmpty) {
+    return 0;
+  }
+
+  if (resumePlayableItemId != null && resumePlayableItemId.isNotEmpty) {
+    final matchedIndex = playableItems.indexWhere(
+      (item) => item.dataSourceId == resumePlayableItemId,
+    );
+    if (matchedIndex >= 0) {
+      return matchedIndex;
+    }
+  }
+
+  if (fallbackEpisodeIndex >= 0 &&
+      fallbackEpisodeIndex < playableItems.length) {
+    return fallbackEpisodeIndex;
+  }
+
+  var latestIndex = -1;
+  DateTime? latestPlayedAt;
+  for (var index = 0; index < playableItems.length; index++) {
+    final item = playableItems[index];
+    final lastPlayedAt = item.lastPlayedAt;
+    if (lastPlayedAt == null) {
+      continue;
+    }
+    if (latestPlayedAt == null || lastPlayedAt.isAfter(latestPlayedAt)) {
+      latestPlayedAt = lastPlayedAt;
+      latestIndex = index;
+    }
+  }
+  if (latestIndex >= 0) {
+    return latestIndex;
+  }
+
+  for (var index = 0; index < playableItems.length; index++) {
+    final progress = playableItems[index].playbackProgress;
+    if (progress != null && progress.position > Duration.zero) {
+      return index;
+    }
+  }
+
+  return 0;
 }

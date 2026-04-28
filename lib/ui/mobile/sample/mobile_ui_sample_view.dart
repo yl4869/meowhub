@@ -2,9 +2,9 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../../models/media_item.dart';
-import '../../../providers/app_provider.dart';
-import '../../../providers/movie_provider.dart';
+import '../../../domain/entities/media_item.dart';
+import '../../../providers/media_library_provider.dart';
+import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
 import '../../atoms/info_chip.dart';
@@ -19,18 +19,23 @@ class MobileUiSampleView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final movieState = context.select<MovieProvider, MovieState>(
-      (provider) => provider.state,
-    );
-    final movieProvider = context.read<MovieProvider>();
-    final featured = movieState.movies.length > 1
-        ? movieState.movies[1]
-        : (movieState.movies.isNotEmpty ? movieState.movies.first : null);
-    final continueWatching = movieState.movies.take(3).toList();
-    final recommendations = movieState.movies.length > 3
-        ? movieState.movies.skip(3).take(6).toList()
-        : movieState.movies;
-    final isInitialLoading = movieState.isLoading && movieState.movies.isEmpty;
+    final mediaLibraryState = context
+        .select<MediaLibraryProvider, MediaLibraryState>(
+          (provider) => provider.state,
+        );
+    final mediaLibraryProvider = context.read<MediaLibraryProvider>();
+    final allItems = mediaLibraryState.libraryItems.values
+        .expand((items) => items)
+        .toList();
+    final featured = allItems.length > 1
+        ? allItems[1]
+        : (allItems.isNotEmpty ? allItems.first : null);
+    final continueWatching = allItems.take(3).toList();
+    final recommendations = allItems.length > 3
+        ? allItems.skip(3).take(6).toList()
+        : allItems;
+    final isInitialLoading =
+        mediaLibraryState.isLoading && allItems.isEmpty;
 
     return Scaffold(
       body: DecoratedBox(
@@ -64,7 +69,7 @@ class MobileUiSampleView extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                '由 MovieProvider 驱动的推荐、续播和双列海报瀑布',
+                                '由 MediaLibraryProvider 驱动的推荐、续播和双列海报瀑布',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                             ],
@@ -78,8 +83,8 @@ class MobileUiSampleView extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (movieState.errorMessage != null &&
-                      movieState.movies.isEmpty)
+                  if (mediaLibraryState.errorMessage != null &&
+                      allItems.isEmpty)
                     SliverFillRemaining(
                       hasScrollBody: false,
                       child: Center(
@@ -96,14 +101,14 @@ class MobileUiSampleView extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 14),
                                 Text(
-                                  movieState.errorMessage!,
+                                  mediaLibraryState.errorMessage!,
                                   textAlign: TextAlign.center,
                                   style: Theme.of(context).textTheme.bodyLarge,
                                 ),
                                 const SizedBox(height: 18),
                                 FilledButton(
                                   onPressed: () {
-                                    movieProvider.loadInitialMovies();
+                                    mediaLibraryProvider.loadInitialMedia();
                                   },
                                   child: const Text('重新加载'),
                                 ),
@@ -127,7 +132,7 @@ class MobileUiSampleView extends StatelessWidget {
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(18, 18, 18, 0),
                         child: const SectionHeader(
-                          title: '继续观看',
+                          title: '继续播放',
                           subtitle: '更偏单手操作的横向卡片信息密度',
                         ),
                       ),
@@ -149,7 +154,7 @@ class MobileUiSampleView extends StatelessWidget {
 
                             final mediaItem = continueWatching[index];
                             final progress = context
-                                .select<AppProvider, double>(
+                                .select<UserDataProvider, double>(
                                   (provider) => provider.progressFractionFor(
                                     mediaItem.id,
                                   ),
@@ -206,12 +211,12 @@ class MobileUiSampleView extends StatelessWidget {
                           itemBuilder: (context, index) {
                             final mediaItem = recommendations[index];
                             final isFavorite = context
-                                .select<AppProvider, bool>(
+                                .select<UserDataProvider, bool>(
                                   (provider) =>
                                       provider.isFavorite(mediaItem.id),
                                 );
                             final progress = context
-                                .select<AppProvider, double>(
+                                .select<UserDataProvider, double>(
                                   (provider) => provider.progressFractionFor(
                                     mediaItem.id,
                                   ),

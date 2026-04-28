@@ -2,7 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 
-import '../../models/media_item.dart';
+import '../../domain/entities/media_item.dart';
 import '../../theme/app_theme.dart';
 
 class PosterCard extends StatelessWidget {
@@ -11,14 +11,14 @@ class PosterCard extends StatelessWidget {
     required this.mediaItem,
     this.onTap,
     this.isFavorite = false,
-    this.isRecent = false,
+    this.isContinueWatching = false,
     this.progress = 0,
   });
 
   final MediaItem mediaItem;
   final VoidCallback? onTap;
   final bool isFavorite;
-  final bool isRecent;
+  final bool isContinueWatching;
   final double progress;
 
   @override
@@ -43,14 +43,14 @@ class PosterCard extends StatelessWidget {
                   right: 10,
                   child: _RatingBadge(rating: mediaItem.rating),
                 ),
-                if (isRecent)
-                  const Positioned(top: 10, left: 10, child: _RecentBadge()),
-                if (isFavorite)
-                  Positioned(
-                    top: 42,
+                if (isContinueWatching)
+                  const Positioned(
+                    top: 10,
                     left: 10,
-                    child: const _FavoriteBadge(),
+                    child: _ContinueWatchingBadge(),
                   ),
+                if (isFavorite)
+                  Positioned(top: 42, left: 10, child: const _FavoriteBadge()),
                 Positioned(
                   left: 0,
                   right: 0,
@@ -110,8 +110,8 @@ class _FavoriteBadge extends StatelessWidget {
   }
 }
 
-class _RecentBadge extends StatelessWidget {
-  const _RecentBadge();
+class _ContinueWatchingBadge extends StatelessWidget {
+  const _ContinueWatchingBadge();
 
   @override
   Widget build(BuildContext context) {
@@ -123,7 +123,7 @@ class _RecentBadge extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         child: Text(
-          '最近观看',
+          '继续播放',
           style: Theme.of(context).textTheme.labelLarge?.copyWith(
             fontSize: 11,
             color: AppTheme.onAccentColor,
