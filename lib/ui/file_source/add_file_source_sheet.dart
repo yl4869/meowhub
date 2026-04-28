@@ -1,16 +1,17 @@
-import 'package:dio/dio.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/services/security_service.dart';
-import '../../core/session/session_expired_notifier.dart';
-import '../../data/datasources/emby_api_client.dart';
 import '../../domain/entities/media_service_config.dart';
+import '../../domain/repositories/i_media_connection_tester.dart';
+import '../../domain/repositories/i_media_maintainer.dart';
 import '../../providers/app_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
 import 'file_source_form_section.dart';
 import 'file_source_type_selector.dart';
+import 'local_file_source_form.dart';
 
 class AddFileSourceSheet extends StatefulWidget {
   const AddFileSourceSheet({super.key, this.initialServer});
@@ -25,6 +26,7 @@ enum _ConnectionTestState { idle, success, failure }
 
 class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
   final _embyFormKey = GlobalKey<FormState>();
+  final _localFormKey = GlobalKey<LocalFileSourceFormState>();
   final _serverNameController = TextEditingController();
   final _addressController = TextEditingController();
   final _portController = TextEditingController(text: '8096');
@@ -39,6 +41,10 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
   _ConnectionTestState _connectionTestState = _ConnectionTestState.idle;
   String? _connectionFeedback;
   String? _lastSuccessfulEndpointSignature;
+
+  // Local media state
+  final List<String> _localPaths = [];
+  final _localNameController = TextEditingController();
 
   bool get _isEditMode => widget.initialServer != null;
   String? get _editingServerId => widget.initialServer?.id;
@@ -56,6 +62,11 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     if (server?.config case final config?) {
       _selectedType = config.type;
       _serverNameController.text = server!.name;
+      if (config.type == MediaServiceType.local) {
+        _localPaths.addAll(config.localPaths);
+        _localNameController.text = server.name != '本地视频' ? server.name : '';
+        return;
+      }
       _usernameController.text = config.username ?? '';
       _passwordController.text = config.password ?? '';
       final uri = Uri.tryParse(config.normalizedServerUrl);
@@ -77,13 +88,16 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     _portController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
+    _localNameController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
-    final canSubmit = _selectedType == MediaServiceType.emby && !_isSaving;
+    final canSubmit = (_selectedType == MediaServiceType.emby ||
+            _selectedType == MediaServiceType.local) &&
+        !_isSaving;
 
     return SafeArea(
       child: Padding(
@@ -129,7 +143,9 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
                 switchOutCurve: Curves.easeInCubic,
                 child: _selectedType == null
                     ? _buildTypeSelector()
-                    : _buildEmbyManager(context),
+                    : _selectedType == MediaServiceType.local
+                        ? _buildLocalManager(context)
+                        : _buildEmbyManager(context),
               ),
               const SizedBox(height: 16),
               _ActionBar(
@@ -332,6 +348,28 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     );
   }
 
+  Widget _buildLocalManager(BuildContext context) {
+    return KeyedSubtree(
+      key: const ValueKey<String>('local-manager'),
+      child: LocalFileSourceForm(
+        key: _localFormKey,
+        initialPaths: _localPaths,
+        initialName: _localNameController.text.isNotEmpty
+            ? _localNameController.text
+            : widget.initialServer?.name,
+        onBack: _isEditMode
+            ? null
+            : () {
+                setState(() {
+                  _selectedType = null;
+                  _connectionTestState = _ConnectionTestState.idle;
+                  _connectionFeedback = null;
+                });
+              },
+      ),
+    );
+  }
+
   Future<void> _testConnection() async {
     setState(() {
       _showValidation = true;
@@ -351,38 +389,23 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     });
 
     try {
-      final apiClient = EmbyApiClient(
-        config: config,
-        securityService: context.read<SecurityService>(),
-        sessionExpiredNotifier: context.read<SessionExpiredNotifier>(),
-      );
-      final publicInfo = await apiClient.getPublicSystemInfo();
-      final serverName = publicInfo['ServerName']?.toString().trim();
-      final version = publicInfo['Version']?.toString().trim();
+      final tester = context.read<IMediaConnectionTester>();
+      final result = await tester.testConnection(config);
       setState(() {
-        _connectionTestState = _ConnectionTestState.success;
-        _connectionFeedback = [
-          if (serverName != null && serverName.isNotEmpty) serverName,
-          if (version != null && version.isNotEmpty) '版本 $version',
-          '连接测试成功',
-        ].join(' · ');
-        _lastSuccessfulEndpointSignature = endpointSignature;
+        _connectionTestState = result.success
+            ? _ConnectionTestState.success
+            : _ConnectionTestState.failure;
+        _connectionFeedback = result.displayMessage;
+        if (result.success) {
+          _lastSuccessfulEndpointSignature = endpointSignature;
+        } else {
+          _lastSuccessfulEndpointSignature = null;
+        }
       });
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(_connectionFeedback!)));
-    } catch (error) {
-      final message = _describeConnectionError(error);
-      setState(() {
-        _connectionTestState = _ConnectionTestState.failure;
-        _connectionFeedback = message;
-        _lastSuccessfulEndpointSignature = null;
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) {
         setState(() {
@@ -400,6 +423,68 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     setState(() {
       _showValidation = true;
     });
+
+    if (_selectedType == MediaServiceType.local) {
+      final localFormState = _localFormKey.currentState;
+      if (localFormState == null) return;
+
+      if (!localFormState.isValid) {
+        scaffoldMessenger.showSnackBar(
+          const SnackBar(
+            content: Text('请至少添加一个视频文件夹'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      final config = localFormState.buildConfig();
+      final customName = localFormState.name;
+      debugPrint('[AddSource][Sheet] ===== 提交本地文件源 =====');
+      debugPrint('[AddSource][Sheet] 路径数: ${config.localPaths.length}, 名称: ${customName ?? "默认"}, 编辑: $_isEditMode');
+      for (var i = 0; i < config.localPaths.length; i++) {
+        debugPrint('[AddSource][Sheet]   路径[$i]: ${config.localPaths[i]}');
+      }
+
+      setState(() {
+        _isSaving = true;
+      });
+
+      try {
+        debugPrint('[AddSource][Sheet] 步骤1: 调用 AppProvider.saveConfiguredServer...');
+        await appProvider.saveConfiguredServer(
+          customName: customName,
+          config: config,
+          editingServerId: _editingServerId,
+        );
+        debugPrint('[AddSource][Sheet] 步骤1: saveConfiguredServer 完成');
+        if (!mounted) return;
+
+        // Trigger scan. The onScanCompleted callback (set in main.dart)
+        // will refresh the media library when the scan finishes.
+        debugPrint('[AddSource][Sheet] 步骤2: 触发 runScan, 路径=${config.localPaths}');
+        unawaited(context.read<IMediaMaintainer>().runScan(config.localPaths));
+
+        scaffoldMessenger.showSnackBar(
+          SnackBar(content: Text(_isEditMode ? '服务器已更新' : '媒体源已添加')),
+        );
+        navigator.pop();
+      } catch (error) {
+        debugPrint('[LocalMedia][Sheet] 保存失败: $error');
+        if (!mounted) return;
+        scaffoldMessenger.showSnackBar(
+          SnackBar(content: Text(_describeSaveError(error))),
+        );
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isSaving = false;
+          });
+        }
+      }
+      return;
+    }
+
     final isValid = _embyFormKey.currentState?.validate() ?? false;
     if (!isValid || _selectedType != MediaServiceType.emby) {
       return;
@@ -412,11 +497,15 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     });
 
     try {
+      debugPrint('[AddSource][Sheet] ===== 提交 Emby 服务器 =====');
+      debugPrint('[AddSource][Sheet] 地址: $_protocol://${_addressController.text.trim()}:${_portController.text.trim()}, 编辑: $_isEditMode');
+      debugPrint('[AddSource][Sheet] 步骤1: 调用 AppProvider.saveConfiguredServer...');
       await appProvider.saveConfiguredServer(
         customName: _serverNameController.text.trim(),
         config: config,
         editingServerId: _editingServerId,
       );
+      debugPrint('[AddSource][Sheet] 步骤1: saveConfiguredServer 完成');
       if (!mounted) return;
       scaffoldMessenger.showSnackBar(
         SnackBar(content: Text(_isEditMode ? '服务器已更新' : '服务器已添加')),
@@ -490,20 +579,6 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     }
 
     return null;
-  }
-
-  String _describeConnectionError(Object error) {
-    if (error is DioException) {
-      final statusCode = error.response?.statusCode;
-      if (statusCode != null) {
-        return '连接测试失败，服务器返回状态码 $statusCode';
-      }
-      if (error.type == DioExceptionType.connectionTimeout ||
-          error.type == DioExceptionType.receiveTimeout) {
-        return '连接测试超时，请确认地址与端口是否正确';
-      }
-    }
-    return '连接测试失败，请检查服务器地址、端口和网络环境';
   }
 
   String _describeSaveError(Object error) {

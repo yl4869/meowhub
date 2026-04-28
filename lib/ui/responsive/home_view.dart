@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../providers/stable_id.dart';
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/media_library_info.dart';
 import '../../domain/entities/watch_history_item.dart';
 import '../../providers/app_provider.dart';
 import '../../providers/media_library_provider.dart';
 import '../../providers/media_with_user_data_provider.dart';
+import '../atoms/media_image.dart';
 import '../../providers/user_data_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
@@ -48,9 +50,7 @@ class _HomeViewState extends State<HomeView> {
     final availableServers = appProvider.availableServers.toList(
       growable: false,
     );
-    final favoriteCount = mediaWithUserData.allItems
-        .where((item) => item.isFavorite)
-        .length;
+    final favoriteCount = mediaWithUserData.favoriteCount;
     final inProgressCount = mediaWithUserData.continueWatching.length;
 
     final tabs = <Widget>[
@@ -90,7 +90,8 @@ class _HomeViewState extends State<HomeView> {
       _MyTab(
         favoriteItems: mediaWithUserData.allItems
             .where((item) => item.isFavorite)
-            .toList(),
+            .take(200)
+            .toList(growable: false),
         watchHistory: context.read<UserDataProvider>().watchHistory,
         selectedServer: selectedServer,
         hasSelectedServer: hasSelectedServer,
@@ -504,7 +505,7 @@ class _MyTab extends StatelessWidget {
     final isEpisode = history.seriesId != null && history.seriesId!.isNotEmpty;
     final type = isEpisode ? MediaType.series : MediaType.movie;
     return MediaItem(
-      id: (isEpisode ? history.seriesId! : history.id).hashCode,
+      id: StableId.hash(isEpisode ? history.seriesId! : history.id),
       sourceId: isEpisode ? history.seriesId! : history.id,
       title: isEpisode ? (history.parentTitle ?? history.title) : history.title,
       originalTitle: history.originalTitle ?? history.title,
@@ -728,10 +729,9 @@ class _WatchHistoryTile extends StatelessWidget {
                   width: 56,
                   height: 80,
                   child: posterUrl != null
-                      ? Image.network(
-                          posterUrl,
+                      ? MediaImage(
+                          url: posterUrl,
                           fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => _fallbackIcon(),
                         )
                       : _fallbackIcon(),
                 ),
@@ -819,14 +819,9 @@ class _FavoritePosterCard extends StatelessWidget {
                 child: ColoredBox(
                   color: AppTheme.cardColor,
                   child: mediaItem.posterUrl != null
-                      ? Image.network(
-                          mediaItem.posterUrl!,
+                      ? MediaImage(
+                          url: mediaItem.posterUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (c, e, s) => const Icon(
-                            Icons.movie_outlined,
-                            color: Colors.white24,
-                            size: 32,
-                          ),
                         )
                       : const Icon(
                           Icons.movie_outlined,

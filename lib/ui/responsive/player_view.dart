@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../domain/entities/media_item.dart';
+import '../../domain/entities/watch_history_item.dart';
 import '../../providers/app_provider.dart';
 import '../../providers/user_data_provider.dart';
 import '../../domain/entities/playback_plan.dart';
@@ -80,6 +81,10 @@ class _PlayerViewState extends State<PlayerView> {
   bool get _hasStrictPlaybackPlan {
     final plan = _plan;
     final url = _currentUrl ?? plan?.url;
+    final isLocal = widget.mediaItem.sourceType == WatchSourceType.local;
+    if (isLocal) {
+      return plan != null && url != null && url.isNotEmpty;
+    }
     final playSessionId = plan?.playSessionId;
     return plan != null &&
         url != null &&
@@ -381,6 +386,42 @@ class _PlayerViewState extends State<PlayerView> {
         _planErrorMessage = null;
       });
     }
+
+    if (widget.mediaItem.sourceType == WatchSourceType.local) {
+      final playUrl = widget.mediaItem.playUrl ??
+          (widget.mediaItem.sourceId != null
+              ? 'file://${widget.mediaItem.sourceId}'
+              : null);
+      if (playUrl == null || playUrl.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _plan = null;
+          _currentUrl = null;
+          _isPreparingPlan = false;
+          _planErrorMessage = '本地文件路径不可用';
+        });
+        return;
+      }
+      final plan = PlaybackPlan(
+        url: playUrl,
+        isTranscoding: false,
+        playSessionId: null,
+        mediaSourceId: widget.mediaItem.sourceId,
+        audioStreams: const [],
+        subtitleStreams: const [],
+        chapters: const [],
+        markers: const {},
+        videoInfo: null,
+      );
+      if (!mounted) return;
+      setState(() {
+        _plan = plan;
+        _currentUrl = plan.url;
+        _isPreparingPlan = false;
+      });
+      return;
+    }
+
     final manager = context.read<IMediaServiceManager>();
     final config = manager.getSavedConfig();
     if (config == null || config.type != MediaServiceType.emby) {
@@ -484,6 +525,7 @@ class _PlayerViewState extends State<PlayerView> {
     if (plan.url.trim().isEmpty) {
       throw StateError('PlaybackInfo 未返回可用播放地址');
     }
+    if (widget.mediaItem.sourceType == WatchSourceType.local) return;
     final playSessionId = plan.playSessionId?.trim();
     if (playSessionId == null || playSessionId.isEmpty) {
       throw StateError('PlaybackInfo 未返回有效 PlaySessionId');

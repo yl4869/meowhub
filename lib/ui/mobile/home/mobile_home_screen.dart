@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -8,6 +7,7 @@ import '../../../providers/app_provider.dart';
 import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
 import '../../atoms/app_surface_card.dart';
+import '../../atoms/media_image.dart';
 import '../../atoms/poster_card.dart';
 import '../../atoms/poster_card_skeleton.dart';
 import '../../atoms/section_header.dart';
@@ -363,7 +363,7 @@ class _ContinueWatchingCard extends StatelessWidget {
                 children: [
                   if (mediaItem.backdropUrl case final backdropUrl?
                       when backdropUrl.isNotEmpty)
-                    CachedNetworkImage(imageUrl: backdropUrl, fit: BoxFit.cover)
+                    MediaImage(url: backdropUrl, fit: BoxFit.cover)
                   else
                     const DecoratedBox(
                       decoration: BoxDecoration(
@@ -470,7 +470,7 @@ class _ContinueWatchingPosterPreview extends StatelessWidget {
         width: 84,
         height: 126,
         child: posterUrl != null && posterUrl.isNotEmpty
-            ? CachedNetworkImage(imageUrl: posterUrl, fit: BoxFit.cover)
+            ? MediaImage(url: posterUrl, fit: BoxFit.cover)
             : const ColoredBox(
                 color: Color(0xFF181818),
                 child: Icon(

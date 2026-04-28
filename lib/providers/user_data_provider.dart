@@ -22,6 +22,9 @@ class UserDataProvider extends ChangeNotifier {
   );
   static const Duration _optimisticSeekForwardTolerance = Duration(seconds: 4);
 
+  static const int _historyMapMaxSize = 2000;
+  static const int _pendingSyncMaxItems = 50;
+
   // 离线积压：同步失败时入队，下次同步调用时优先重试
   final List<_PendingSyncItem> _pendingSyncItems = [];
   static const int _pendingSyncMaxRetries = 3;
@@ -91,25 +94,25 @@ class UserDataProvider extends ChangeNotifier {
   }
   final Map<String, _OptimisticSeekState> _optimisticSeekStates = {};
 
+  List<WatchHistoryItem> _cachedWatchHistory = [];
+
   // Getters
   List<MediaItem> get favoriteItems => _favoriteItems.values.toList();
   int get favoriteCount => _favoriteItems.length;
 
-  List<WatchHistoryItem> get watchHistory =>
-      _historyMap.values.toList()
-        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+  List<WatchHistoryItem> get watchHistory => _cachedWatchHistory;
 
   // 统计逻辑也变简单了
   int get inProgressCount =>
       _historyMap.values.where((item) => item.position > Duration.zero).length;
 
-  List<int> get continueWatchingMediaIds => watchHistory
+  List<int> get continueWatchingMediaIds => _cachedWatchHistory
       .map((item) => int.tryParse(item.id))
       .whereType<int>()
       .toList(growable: false);
 
   List<String> get continueWatchingMediaKeys {
-    return watchHistory // 使用公共 getter 替代 _watchHistory
+    return _cachedWatchHistory
         .map((item) {
           final targetId = item.seriesId ?? item.id;
           return '${item.sourceType.name}:$targetId';
@@ -118,17 +121,19 @@ class UserDataProvider extends ChangeNotifier {
   }
 
   int? get latestContinueWatchingMediaId {
-    final history = watchHistory; // 获取转换后的有序列表
-    if (history.isEmpty) {
-      return null;
-    }
-    return int.tryParse(history.first.id);
+    if (_cachedWatchHistory.isEmpty) return null;
+    return int.tryParse(_cachedWatchHistory.first.id);
   }
 
   String? get latestContinueWatchingMediaKey {
     if (_historyMap.isEmpty) return null;
-    final latest = watchHistory.first; // 获取排序后的第一条
+    final latest = _cachedWatchHistory.first;
     return '${latest.sourceType.name}:${latest.seriesId ?? latest.id}';
+  }
+
+  void _rebuildWatchHistoryCache() {
+    _cachedWatchHistory = _historyMap.values.toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
   }
 
   // Query methods
@@ -572,6 +577,9 @@ class UserDataProvider extends ChangeNotifier {
       audioStreamIndex: audioStreamIndex,
       subtitleStreamIndex: subtitleStreamIndex,
     ));
+    while (_pendingSyncItems.length > _pendingSyncMaxItems) {
+      _pendingSyncItems.removeAt(0);
+    }
   }
 
   Future<void> _drainPendingSyncItems() async {
@@ -706,14 +714,10 @@ class UserDataProvider extends ChangeNotifier {
     }
     _isLoading = true;
     try {
-      final remoteHistory = await _watchHistoryRepository.getHistoryBySource(
-        WatchSourceType.emby,
-      );
-      _replaceWatchHistoryItemsForSource(
-        WatchSourceType.emby,
-        remoteHistory,
-        notify: false,
-      );
+      await Future.wait([
+        _loadWatchHistoryForSource(WatchSourceType.emby),
+        _loadWatchHistoryForSource(WatchSourceType.local),
+      ]);
       notifyListeners();
     } catch (e) {
       if (rethrowOnError) {
@@ -721,6 +725,15 @@ class UserDataProvider extends ChangeNotifier {
       }
     } finally {
       _isLoading = false;
+    }
+  }
+
+  Future<void> _loadWatchHistoryForSource(WatchSourceType sourceType) async {
+    try {
+      final history = await _watchHistoryRepository.getHistoryBySource(sourceType);
+      _replaceWatchHistoryItemsForSource(sourceType, history, notify: false);
+    } catch (_) {
+      // 单个源加载失败不影响另一个源
     }
   }
 
@@ -866,6 +879,7 @@ class UserDataProvider extends ChangeNotifier {
 
     if (!changed) return;
 
+    _trimHistoryMap();
     _rebuildDerivedProgressState();
     if (notify) notifyListeners();
   }
@@ -883,8 +897,21 @@ class UserDataProvider extends ChangeNotifier {
       _historyMap[item.uniqueKey] = item;
     }
 
+    _trimHistoryMap();
     _rebuildDerivedProgressState();
     if (notify) notifyListeners();
+  }
+
+  void _trimHistoryMap() {
+    if (_historyMap.length <= _historyMapMaxSize) return;
+
+    final entries = _historyMap.entries.toList()
+      ..sort((a, b) => a.value.updatedAt.compareTo(b.value.updatedAt));
+
+    final toRemove = entries.take(_historyMap.length - _historyMapMaxSize);
+    for (final entry in toRemove) {
+      _historyMap.remove(entry.key);
+    }
   }
 
   WatchHistoryItem _selectPreferredProgressItem(
@@ -963,7 +990,11 @@ class UserDataProvider extends ChangeNotifier {
     // 4. 直接更新 Map，由于 Key 唯一，它会自动覆盖旧数据
     _historyMap[item.uniqueKey] = resolved;
 
-    // 5. 更新派生状态（如最近剧集索引）
+    // 5. 限制 Map 大小
+    _trimHistoryMap();
+
+    // 6. 更新缓存和派生状态
+    _rebuildWatchHistoryCache();
     _registerRecentProgress(resolved, explicitEpisodeIndex: episodeIndex);
 
     if (notify) notifyListeners();
@@ -1033,6 +1064,7 @@ class UserDataProvider extends ChangeNotifier {
   void _rebuildDerivedProgressState() {
     _recentEpisodeIndices.clear();
     _recentPlayableItemIds.clear();
+    _rebuildWatchHistoryCache();
     // 改为遍历 _historyMap.values
     for (final item in _historyMap.values) {
       _registerRecentProgress(item);

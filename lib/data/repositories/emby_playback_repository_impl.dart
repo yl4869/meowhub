@@ -16,6 +16,7 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
        _securityService = securityService;
 
   static const Duration _cacheTtl = Duration(seconds: 12);
+  static const int _maxCacheEntries = 200;
   static final Map<_PlaybackPlanCacheKey, _PlaybackPlanCacheEntry>
   _resolvedPlans = {};
   static final Map<_PlaybackPlanCacheKey, Future<PlaybackPlan>> _ongoingPlans =
@@ -198,6 +199,20 @@ class EmbyPlaybackRepositoryImpl implements PlaybackRepository {
 
   void _evictExpiredEntries() {
     _resolvedPlans.removeWhere((_, entry) => entry.isExpired);
+    if (_resolvedPlans.length > _maxCacheEntries) {
+      final entries = _resolvedPlans.entries.toList()
+        ..sort((a, b) => a.value.cachedAt.compareTo(b.value.cachedAt));
+      for (final entry in entries.take(_resolvedPlans.length - _maxCacheEntries)) {
+        _resolvedPlans.remove(entry.key);
+      }
+    }
+    if (_ongoingPlans.length > _maxCacheEntries) {
+      final entries = _ongoingPlans.entries.toList();
+      final toRemove = entries.take(_ongoingPlans.length - _maxCacheEntries);
+      for (final entry in toRemove) {
+        _ongoingPlans.remove(entry.key);
+      }
+    }
   }
 
   // --- 提炼后的私有映射方法 ---

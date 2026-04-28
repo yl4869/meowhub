@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../core/session/session_expired_notifier.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../../domain/repositories/i_media_service_manager.dart';
+import '../../providers/app_provider.dart';
 import '../responsive/home_view.dart';
 
 /// 媒体服务配置屏幕
@@ -92,11 +93,17 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
 
       setState(() {
         _verificationSuccess = isValid;
-        _verificationMessage = isValid ? '连接成功' : '连接失败，请检查配置';
+        _verificationMessage = _selectedType == MediaServiceType.local
+            ? (isValid ? '文件夹验证通过' : '部分文件夹不存在')
+            : (isValid ? '连接成功' : '连接失败，请检查配置');
       });
 
       if (isValid && mounted) {
-        await _manager.setConfig(config);
+        debugPrint('[ConfigScreen] 配置验证通过, 通过 AppProvider 保存...');
+        await context.read<AppProvider>().saveConfiguredServer(
+          customName: null,
+          config: config,
+        );
         if (mounted) {
           context.read<SessionExpiredNotifier>().markAuthenticated();
           ScaffoldMessenger.of(
@@ -182,6 +189,10 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
                   value: MediaServiceType.jellyfin,
                   label: Text('Jellyfin'),
                   enabled: false,
+                ),
+                ButtonSegment(
+                  value: MediaServiceType.local,
+                  label: Text('本地'),
                 ),
               ],
               selected: {_selectedType},

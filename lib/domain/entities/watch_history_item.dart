@@ -1,21 +1,6 @@
 enum WatchSourceType {
   emby,
   local;
-
-  factory WatchSourceType.fromJson(dynamic value) {
-    final normalized = value?.toString().trim().toLowerCase();
-    return switch (normalized) {
-      'local' || 'file' || 'disk' || 'network' => WatchSourceType.local,
-      _ => WatchSourceType.emby,
-    };
-  }
-
-  String toJson() {
-    return switch (this) {
-      WatchSourceType.emby => 'emby',
-      WatchSourceType.local => 'local',
-    };
-  }
 }
 
 class WatchHistoryItem {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:device_preview/device_preview.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +13,9 @@ import 'core/services/capability_prober.dart';
 import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
 import 'data/datasources/emby_api_client.dart';
+import 'data/datasources/local_media_database.dart';
+import 'data/datasources/local_thumbnail_service.dart';
+
 import 'data/datasources/local_watch_history_data_source.dart';
 import 'data/repositories/empty_media_repository_impl.dart';
 import 'data/repositories/media_repository_factory.dart';
@@ -24,7 +29,15 @@ import 'domain/repositories/i_media_service_manager.dart'; // ✅ 唯一接口
 import 'domain/repositories/playback_repository.dart';
 import 'domain/repositories/watch_history_repository.dart';
 import 'providers/app_provider.dart';
+
 import 'providers/media_detail_provider.dart';
+import 'data/services/emby_connection_tester.dart';
+import 'data/services/android_saf_service.dart';
+import 'data/services/local_media_maintainer.dart';
+import 'data/services/storage_permission_service.dart';
+import 'domain/repositories/i_media_connection_tester.dart';
+import 'domain/repositories/i_media_maintainer.dart';
+import 'domain/repositories/i_permission_service.dart';
 import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
 import 'providers/user_data_provider.dart';
@@ -80,7 +93,22 @@ void main() async {
     }
   }
 
-  // 5. 启动应用
+	// 5. 本地媒体数据库初始化
+	final localMediaDatabase = LocalMediaDatabase();
+	await localMediaDatabase.initialize();
+	final androidSafService = AndroidSafService();
+	final localThumbnailService = LocalThumbnailService(
+	  safService: androidSafService,
+	);
+
+		// 启动时扫描通过 IMediaMaintainer 触发
+		final selectedConfig = fileSourceBootstrap.selectedServer?.config;
+	final initialLocalRootPaths = (selectedConfig != null &&
+	        selectedConfig.type == MediaServiceType.local)
+	    ? List<String>.from(selectedConfig.localPaths)
+	    : const <String>[];
+
+  // 6. 启动应用
   runApp(
     DevicePreview(
       enabled: _isDevicePreviewEnabled(),
@@ -96,6 +124,10 @@ void main() async {
         initialSelectedServerId: fileSourceBootstrap.selectedServer?.id,
         sessionExpiredNotifier: sessionExpiredNotifier,
         localWatchHistoryDataSource: localWatchHistoryDataSource,
+        localMediaDatabase: localMediaDatabase,
+        localThumbnailService: localThumbnailService,
+        androidSafService: androidSafService,
+        initialLocalRootPaths: initialLocalRootPaths,
       ),
     ),
   );
@@ -112,19 +144,26 @@ class MeowHubApp extends StatefulWidget {
     required this.initialServers,
     required this.initialSelectedServerId,
     required this.sessionExpiredNotifier,
-    required this.localWatchHistoryDataSource, // 👈 增加这一项
+    required this.localWatchHistoryDataSource,
+    required this.localMediaDatabase,
+    required this.localThumbnailService,
+    required this.androidSafService,
+    this.initialLocalRootPaths = const [],
   });
 
   final SharedPreferences preferences;
   final CapabilityProber capabilityProber;
   final SecurityService securityService;
-  final IMediaServiceManager mediaServiceManager; // ✅ 统一使用接口
+  final IMediaServiceManager mediaServiceManager;
   final FileSourceStore fileSourceStore;
   final List<MediaServerInfo> initialServers;
   final String? initialSelectedServerId;
   final SessionExpiredNotifier sessionExpiredNotifier;
-  // ✅ 2. 必须在这里声明成员变量，否则外部传入的数据没地方存！
   final LocalWatchHistoryDataSource localWatchHistoryDataSource;
+  final LocalMediaDatabase localMediaDatabase;
+  final LocalThumbnailService localThumbnailService;
+  final AndroidSafService androidSafService;
+  final List<String> initialLocalRootPaths;
 
   @override
   State<MeowHubApp> createState() => _MeowHubAppState();
@@ -224,6 +263,10 @@ class _MeowHubAppState extends State<MeowHubApp> {
 
   @override
   Widget build(BuildContext context) {
+    final connectionTester = EmbyConnectionTester(
+      securityService: widget.securityService,
+      sessionExpiredNotifier: widget.sessionExpiredNotifier,
+    );
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(
@@ -238,10 +281,11 @@ class _MeowHubAppState extends State<MeowHubApp> {
         // ✅ 修改点：Manager 变回普通的 Provider (因为它现在只负责存取，不负责喊话)
         Provider<IMediaServiceManager>.value(value: widget.mediaServiceManager),
         Provider<MediaConfigValidator>.value(
-          value: _buildMediaConfigValidator(
-            securityService: widget.securityService,
-            sessionExpiredNotifier: widget.sessionExpiredNotifier,
-          ),
+          value: (config) => connectionTester.validate(config),
+        ),
+        Provider<IMediaConnectionTester>.value(value: connectionTester),
+        Provider<IPermissionService>.value(
+          value: const StoragePermissionService(),
         ),
         Provider<SecurityService>.value(value: widget.securityService),
         ChangeNotifierProvider<CapabilityProber>.value(
@@ -261,19 +305,23 @@ class _MeowHubAppState extends State<MeowHubApp> {
           EmbyApiClient?
         >(
           update: (context, appProvider, security, notifier, prober, previous) {
-            // 💡 重点：现在我们直接从 appProvider 拿配置
-            // 只要 AppProvider 因为 Stream 变动而 notifyListeners，这里就会触发更新
             final config = appProvider.selectedServer.config;
+            debugPrint('[Main][EmbyApiClient] ProxyProvider 更新: config=${config?.type.name ?? "null"}, previousConfig=${previous?.config.type.name ?? "null"}');
 
             if (config == null ||
                 (config.type != MediaServiceType.emby &&
                     config.type != MediaServiceType.jellyfin)) {
+              debugPrint('[Main][EmbyApiClient] -> 返回 null (类型不匹配或 config 为空)');
               return null;
             }
 
             // 只有配置真的变了才重刷，避免不必要的网络请求重启
-            if (previous?.config == config) return previous;
+            if (previous?.config == config) {
+              debugPrint('[Main][EmbyApiClient] -> 配置未变, 复用 previous');
+              return previous;
+            }
 
+            debugPrint('[Main][EmbyApiClient] -> 创建新 EmbyApiClient');
             return EmbyApiClient(
               config: config,
               securityService: security,
@@ -292,15 +340,25 @@ class _MeowHubAppState extends State<MeowHubApp> {
         >(
           update: (context, appProvider, apiClient, security, _) {
             final config = appProvider.selectedServer.config;
-            if (config == null) return const EmptyMediaRepositoryImpl();
-            if (_useMockRepository) return const MockMediaRepositoryImpl();
+            debugPrint('[LocalMedia][main] ProxyProvider<IMediaRepository> 更新: config=${config?.type.name ?? "null"}');
+            if (config == null) {
+              debugPrint('[LocalMedia][main] -> config 为 null, 返回 EmptyMediaRepositoryImpl');
+              return const EmptyMediaRepositoryImpl();
+            }
+            if (_useMockRepository) {
+              debugPrint('[LocalMedia][main] -> USE_MOCK_REPOSITORY=true, 返回 MockMediaRepositoryImpl');
+              return const MockMediaRepositoryImpl();
+            }
 
+            debugPrint('[LocalMedia][main] -> 调用工厂, localMediaDatabase=已注入');
             return MediaRepositoryFactory.createMediaRepository(
               config: config,
               securityService: security,
               localWatchHistoryDataSource:
                   widget.localWatchHistoryDataSource,
               embyApiClient: apiClient,
+              localMediaDatabase: widget.localMediaDatabase,
+              localThumbnailService: widget.localThumbnailService,
             );
           },
         ),
@@ -320,6 +378,8 @@ class _MeowHubAppState extends State<MeowHubApp> {
               localWatchHistoryDataSource:
                   widget.localWatchHistoryDataSource,
               embyApiClient: apiClient,
+              localMediaDatabase: widget.localMediaDatabase,
+              localThumbnailService: widget.localThumbnailService,
             );
           },
         ),
@@ -336,6 +396,28 @@ class _MeowHubAppState extends State<MeowHubApp> {
           },
         ),
 
+        // 本地媒体服务
+        Provider<LocalMediaDatabase>.value(value: widget.localMediaDatabase),
+        Provider<LocalThumbnailService>.value(value: widget.localThumbnailService),
+        Provider<IMediaMaintainer>(
+          create: (_) {
+            final maintainer = LocalMediaMaintainer(
+              database: widget.localMediaDatabase,
+              safService: widget.androidSafService,
+            );
+            if (widget.initialLocalRootPaths.isNotEmpty) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                maintainer.runScan(widget.initialLocalRootPaths);
+              });
+            }
+            return maintainer;
+          },
+          dispose: (_, maintainer) {
+            if (maintainer is LocalMediaMaintainer) {
+              maintainer.dispose();
+            }
+          },
+        ),
         // 3. 用户进度管理
         ChangeNotifierProxyProvider2<
           IMediaServiceManager,
@@ -363,10 +445,24 @@ class _MeowHubAppState extends State<MeowHubApp> {
 
         // 4. 媒体库管理
         ChangeNotifierProxyProvider<IMediaRepository, MediaLibraryProvider>(
-          create: (context) => MediaLibraryProvider(
-            mediaRepository: context.read<IMediaRepository>(),
-          )..loadInitialMedia(),
+          create: (context) {
+            debugPrint('[Main][MediaLibraryProvider] create: 首次创建');
+            final provider = MediaLibraryProvider(
+              mediaRepository: context.read<IMediaRepository>(),
+            );
+            final maintainer = context.read<IMediaMaintainer>();
+            maintainer.onScanCompleted = () {
+              debugPrint('[Main][MediaLibraryProvider] onScanCompleted 回调触发');
+              provider.refreshMedia();
+            };
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              debugPrint('[Main][MediaLibraryProvider] addPostFrameCallback: 调用 loadInitialMedia');
+              provider.loadInitialMedia();
+            });
+            return provider;
+          },
           update: (context, repo, previous) {
+            debugPrint('[Main][MediaLibraryProvider] update: previous=${previous != null ? "存在" : "null"}, repo=${repo.runtimeType}');
             final provider =
                 previous ?? MediaLibraryProvider(mediaRepository: repo);
             provider.updateRepository(repo);
@@ -414,31 +510,6 @@ class _MeowHubAppState extends State<MeowHubApp> {
 
 // --- 工厂方法（通过 MediaRepositoryFactory 静态方法，支持多后端） ---
 
-MediaConfigValidator _buildMediaConfigValidator({
-  required SecurityService securityService,
-  required SessionExpiredNotifier sessionExpiredNotifier,
-}) {
-  return (config) async {
-    // Jellyfin 与 Emby API 兼容，可统一校验
-    if (config.type != MediaServiceType.emby &&
-        config.type != MediaServiceType.jellyfin) {
-      return false;
-    }
-
-    try {
-      final apiClient = EmbyApiClient(
-        config: config,
-        securityService: securityService,
-        sessionExpiredNotifier: sessionExpiredNotifier,
-      );
-      await apiClient.authenticate();
-      await apiClient.getSystemInfo();
-      return true;
-    } catch (error) {
-      return false;
-    }
-  };
-}
 
 // --- 引导辅助函数 ---
 
