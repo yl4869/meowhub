@@ -16,19 +16,26 @@ class MediaWithUserDataProvider extends ChangeNotifier {
     _initialSync();
   }
 
+  static const Duration _updateCoalesceWindow = Duration(seconds: 2);
+
   MediaLibraryProvider _mediaLibraryProvider;
   UserDataProvider _userDataProvider;
 
   List<MediaItem> _cachedContinueWatching = [];
   List<MediaItem> _cachedRecentlyAdded = [];
   Map<String, List<MediaItem>> _cachedLibraryItems = {};
+  List<MediaItem> _cachedAllItems = [];
+  int _cachedFavoriteCount = 0;
+
+  DateTime _lastUpdateCacheTime = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _pendingUpdateCache = false;
 
   List<MediaLibraryInfo> get libraries => _mediaLibraryProvider.state.libraries;
   List<MediaItem> get continueWatching => _cachedContinueWatching;
   List<MediaItem> get recentlyAdded => _cachedRecentlyAdded;
   Map<String, List<MediaItem>> get libraryItems => _cachedLibraryItems;
-  List<MediaItem> get allItems =>
-      _cachedLibraryItems.values.expand((items) => items).toList(growable: false);
+  List<MediaItem> get allItems => _cachedAllItems;
+  int get favoriteCount => _cachedFavoriteCount;
   bool get isLoading => _mediaLibraryProvider.state.isLoading;
   String? get errorMessage => _mediaLibraryProvider.state.errorMessage;
 
@@ -51,37 +58,59 @@ class MediaWithUserDataProvider extends ChangeNotifier {
 
   void _attachListeners() {
     _mediaLibraryProvider.addListener(_handleLibraryUpdate);
-    _userDataProvider.addListener(_updateCache);
+    _userDataProvider.addListener(_scheduleUpdateCache);
   }
 
   void _detachListeners() {
     _mediaLibraryProvider.removeListener(_handleLibraryUpdate);
-    _userDataProvider.removeListener(_updateCache);
+    _userDataProvider.removeListener(_scheduleUpdateCache);
   }
 
   void _handleLibraryUpdate() {
     _initialSync();
-    _updateCache();
+    _doUpdateCache();
+  }
+
+  void _scheduleUpdateCache() {
+    final elapsed = DateTime.now().difference(_lastUpdateCacheTime);
+    if (elapsed >= _updateCoalesceWindow) {
+      _doUpdateCache();
+      return;
+    }
+    if (_pendingUpdateCache) return;
+    _pendingUpdateCache = true;
+    Future<void>.delayed(_updateCoalesceWindow - elapsed, () {
+      _pendingUpdateCache = false;
+      _doUpdateCache();
+    });
   }
 
   void _initialSync() {
-    final allLibraryItems = _mediaLibraryProvider.state.libraryItems.values
+    final allItems = _mediaLibraryProvider.state.libraryItems.values
         .expand((items) => items)
         .toList(growable: false);
     _userDataProvider.initializeProgress([
-      ...allLibraryItems,
+      ...allItems,
       ..._mediaLibraryProvider.state.continueWatching,
       ..._mediaLibraryProvider.state.recentlyAdded,
     ]);
   }
 
-  void _updateCache() {
+  void _doUpdateCache() {
+    _lastUpdateCacheTime = DateTime.now();
+
     _cachedRecentlyAdded =
         _enrichMediaItems(_mediaLibraryProvider.state.recentlyAdded);
 
     _cachedLibraryItems = _mediaLibraryProvider.state.libraryItems.map(
       (key, items) => MapEntry(key, _enrichMediaItems(items)),
     );
+
+    _cachedAllItems =
+        _cachedLibraryItems.values.expand((items) => items).toList(growable: false);
+
+    _cachedFavoriteCount =
+        _cachedAllItems.where((item) => item.isFavorite).length;
 
     final itemLookup = <String, MediaItem>{};
     for (final items in _cachedLibraryItems.values) {

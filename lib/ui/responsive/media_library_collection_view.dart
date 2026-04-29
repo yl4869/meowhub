@@ -31,6 +31,7 @@ class MediaLibraryCollectionView extends StatelessWidget {
     final mediaLibraryProvider = context.read<MediaLibraryProvider>();
     final items =
         mediaWithUserData.libraryItems[libraryInfo.id] ?? const [];
+    final isLoadingMore = mediaLibraryProvider.state.isLoadingMore;
     final continueWatchingMediaKeys = mediaWithUserData.continueWatching
         .map((item) => item.mediaKey)
         .toSet();
@@ -45,87 +46,112 @@ class MediaLibraryCollectionView extends StatelessWidget {
         builder: (context, constraints) {
           final gridMetrics = _GridMetrics.fromWidth(constraints.maxWidth);
 
-          return RefreshIndicator(
-            color: AppTheme.accentColor,
-            backgroundColor: AppTheme.cardColor,
-            onRefresh: mediaLibraryProvider.refreshMedia,
-            child: CustomScrollView(
-              physics: const BouncingScrollPhysics(
-                parent: AlwaysScrollableScrollPhysics(),
-              ),
-              slivers: [
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                    child: AppSurfaceCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            libraryInfo.name,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            '共 ${items.length} 部内容，卡片布局会根据屏幕宽度自动调整。',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+          return NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              if (notification is ScrollEndNotification &&
+                  notification.metrics.pixels >=
+                      notification.metrics.maxScrollExtent - 300) {
+                mediaLibraryProvider.fetchMoreItems(libraryInfo.id);
+              }
+              return false;
+            },
+            child: RefreshIndicator(
+              color: AppTheme.accentColor,
+              backgroundColor: AppTheme.cardColor,
+              onRefresh: mediaLibraryProvider.refreshMedia,
+              child: CustomScrollView(
+                physics: const BouncingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics(),
                 ),
-                if (mediaWithUserData.isLoading && items.isEmpty)
-                  _CollectionLoadingSliver(metrics: gridMetrics)
-                else if (mediaWithUserData.errorMessage != null &&
-                    items.isEmpty)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: _CollectionStateCard(
-                      icon: Icons.error_outline_rounded,
-                      message: mediaWithUserData.errorMessage!,
-                      buttonLabel: '重新加载',
-                      onPressed: mediaLibraryProvider.loadInitialMedia,
-                    ),
-                  )
-                else if (items.isEmpty)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: _CollectionStateCard(
-                      icon: Icons.video_library_outlined,
-                      message: '这个媒体库暂时还没有内容。',
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
-                    sliver: SliverGrid.builder(
-                      itemCount: items.length,
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: gridMetrics.crossAxisCount,
-                        mainAxisSpacing: gridMetrics.spacing,
-                        crossAxisSpacing: gridMetrics.spacing,
-                        childAspectRatio: gridMetrics.childAspectRatio,
+                slivers: [
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      child: AppSurfaceCard(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              libraryInfo.name,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '共 ${items.length} 部内容，卡片布局会根据屏幕宽度自动调整。',
+                              style: Theme.of(context).textTheme.bodyMedium,
+                            ),
+                          ],
+                        ),
                       ),
-                      itemBuilder: (context, index) {
-                        final mediaItem = items[index];
-                        return PosterCard(
-                          mediaItem: mediaItem,
-                          isFavorite: mediaItem.isFavorite,
-                          isContinueWatching: continueWatchingMediaKeys
-                              .contains(mediaItem.mediaKey),
-                          progress: mediaItem.playbackProgress?.fraction ?? 0,
-                          onTap: () {
-                            context.push(
-                              MediaDetailView.locationFor(mediaItem.id),
-                              extra: mediaItem,
-                            );
-                          },
-                        );
-                      },
                     ),
                   ),
-              ],
+                  if (mediaWithUserData.isLoading && items.isEmpty)
+                    _CollectionLoadingSliver(metrics: gridMetrics)
+                  else if (mediaWithUserData.errorMessage != null &&
+                      items.isEmpty)
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: _CollectionStateCard(
+                        icon: Icons.error_outline_rounded,
+                        message: mediaWithUserData.errorMessage!,
+                        buttonLabel: '重新加载',
+                        onPressed: mediaLibraryProvider.loadInitialMedia,
+                      ),
+                    )
+                  else if (items.isEmpty)
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: _CollectionStateCard(
+                        icon: Icons.video_library_outlined,
+                        message: '这个媒体库暂时还没有内容。',
+                      ),
+                    )
+                  else ...[
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+                      sliver: SliverGrid.builder(
+                        itemCount: items.length,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: gridMetrics.crossAxisCount,
+                          mainAxisSpacing: gridMetrics.spacing,
+                          crossAxisSpacing: gridMetrics.spacing,
+                          childAspectRatio: gridMetrics.childAspectRatio,
+                        ),
+                        itemBuilder: (context, index) {
+                          final mediaItem = items[index];
+                          return PosterCard(
+                            mediaItem: mediaItem,
+                            isFavorite: mediaItem.isFavorite,
+                            isContinueWatching: continueWatchingMediaKeys
+                                .contains(mediaItem.mediaKey),
+                            progress:
+                                mediaItem.playbackProgress?.fraction ?? 0,
+                            onTap: () {
+                              context.push(
+                                MediaDetailView.locationFor(mediaItem.id),
+                                extra: mediaItem,
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    if (isLoadingMore)
+                      const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Center(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ],
+              ),
             ),
           );
         },

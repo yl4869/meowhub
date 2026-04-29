@@ -127,11 +127,9 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final detailProvider = context.watch<MediaDetailProvider>();
-    final mediaWithUserDataProvider = context
-        .watch<MediaWithUserDataProvider>();
+    context.watch<MediaWithUserDataProvider>();
     final userDataProvider = context.watch<UserDataProvider>();
     final mediaItem = _resolveLiveMediaItem(
-      mediaWithUserDataProvider: mediaWithUserDataProvider,
       userDataProvider: userDataProvider,
     );
     final isLoading =
@@ -359,22 +357,13 @@ class _TabletMediaDetailScreenState extends State<TabletMediaDetailScreen> {
   }
 
   MediaItem _resolveLiveMediaItem({
-    required MediaWithUserDataProvider mediaWithUserDataProvider,
     required UserDataProvider userDataProvider,
   }) {
-    MediaItem? liveMediaItem;
-    for (final item in mediaWithUserDataProvider.allItems) {
-      if (item.mediaKey == widget.mediaItem.mediaKey) {
-        liveMediaItem = item;
-        break;
-      }
-    }
-
     return widget.mediaItem.copyWith(
-      isFavorite: liveMediaItem?.isFavorite ?? widget.isFavorite,
+      isFavorite: userDataProvider.isFavorite(widget.mediaItem.id) ||
+          widget.isFavorite,
       playbackProgress:
           userDataProvider.playbackProgressForItem(widget.mediaItem) ??
-          liveMediaItem?.playbackProgress ??
           widget.mediaItem.playbackProgress,
     );
   }

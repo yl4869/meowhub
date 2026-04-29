@@ -35,6 +35,20 @@ class MediaServerInfo {
     required MediaServiceConfig config,
     String? name,
   }) {
+    if (config.type == MediaServiceType.local) {
+      final sorted = List<String>.from(config.localPaths)..sort();
+      final id = 'local:${sorted.join('|').hashCode}';
+      final basePath =
+          config.localPaths.isNotEmpty ? config.localPaths.first : '';
+      return MediaServerInfo(
+        id: id,
+        name: name ?? '本地视频',
+        baseUrl: basePath,
+        type: config.type,
+        region: config.type.displayName,
+        config: config,
+      );
+    }
     final normalizedUrl = config.normalizedServerUrl;
     final normalizedUsername = config.username?.trim().toLowerCase() ?? '';
     return MediaServerInfo(
@@ -278,6 +292,7 @@ extension MediaServiceTypeDisplayName on MediaServiceType {
       MediaServiceType.emby => 'Emby',
       MediaServiceType.plex => 'Plex',
       MediaServiceType.jellyfin => 'Jellyfin',
+      MediaServiceType.local => '本地视频',
     };
   }
 }

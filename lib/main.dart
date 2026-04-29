@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:device_preview/device_preview.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +14,11 @@ import 'core/services/capability_prober.dart';
 import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
 import 'data/datasources/emby_api_client.dart';
+import 'data/datasources/local_media_database.dart';
+import 'data/services/storage_permission_service.dart';
+import 'data/datasources/local_media_scanner.dart';
+import 'data/datasources/local_thumbnail_service.dart';
+
 import 'data/datasources/local_watch_history_data_source.dart';
 import 'data/repositories/empty_media_repository_impl.dart';
 import 'data/repositories/media_repository_factory.dart';
@@ -24,7 +32,9 @@ import 'domain/repositories/i_media_service_manager.dart'; // ✅ 唯一接口
 import 'domain/repositories/playback_repository.dart';
 import 'domain/repositories/watch_history_repository.dart';
 import 'providers/app_provider.dart';
+
 import 'providers/media_detail_provider.dart';
+import 'providers/local_media_provider.dart';
 import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
 import 'providers/user_data_provider.dart';
@@ -80,7 +90,20 @@ void main() async {
     }
   }
 
-  // 5. 启动应用
+	// 5. 本地媒体数据库初始化
+	final localMediaDatabase = LocalMediaDatabase();
+	await localMediaDatabase.initialize();
+	final localThumbnailService = LocalThumbnailService();
+
+	// 启动时增量扫描
+	final selectedConfig = fileSourceBootstrap.selectedServer?.config;
+	if (selectedConfig != null &&
+	    selectedConfig.type == MediaServiceType.local &&
+	    selectedConfig.localPaths.isNotEmpty) {
+	  unawaited(_startupIncrementalScan(selectedConfig.localPaths, localMediaDatabase));
+	}
+
+  // 6. 启动应用
   runApp(
     DevicePreview(
       enabled: _isDevicePreviewEnabled(),
@@ -96,6 +119,8 @@ void main() async {
         initialSelectedServerId: fileSourceBootstrap.selectedServer?.id,
         sessionExpiredNotifier: sessionExpiredNotifier,
         localWatchHistoryDataSource: localWatchHistoryDataSource,
+        localMediaDatabase: localMediaDatabase,
+        localThumbnailService: localThumbnailService,
       ),
     ),
   );
@@ -112,19 +137,22 @@ class MeowHubApp extends StatefulWidget {
     required this.initialServers,
     required this.initialSelectedServerId,
     required this.sessionExpiredNotifier,
-    required this.localWatchHistoryDataSource, // 👈 增加这一项
+    required this.localWatchHistoryDataSource,
+    required this.localMediaDatabase,
+    required this.localThumbnailService,
   });
 
   final SharedPreferences preferences;
   final CapabilityProber capabilityProber;
   final SecurityService securityService;
-  final IMediaServiceManager mediaServiceManager; // ✅ 统一使用接口
+  final IMediaServiceManager mediaServiceManager;
   final FileSourceStore fileSourceStore;
   final List<MediaServerInfo> initialServers;
   final String? initialSelectedServerId;
   final SessionExpiredNotifier sessionExpiredNotifier;
-  // ✅ 2. 必须在这里声明成员变量，否则外部传入的数据没地方存！
   final LocalWatchHistoryDataSource localWatchHistoryDataSource;
+  final LocalMediaDatabase localMediaDatabase;
+  final LocalThumbnailService localThumbnailService;
 
   @override
   State<MeowHubApp> createState() => _MeowHubAppState();
@@ -292,15 +320,25 @@ class _MeowHubAppState extends State<MeowHubApp> {
         >(
           update: (context, appProvider, apiClient, security, _) {
             final config = appProvider.selectedServer.config;
-            if (config == null) return const EmptyMediaRepositoryImpl();
-            if (_useMockRepository) return const MockMediaRepositoryImpl();
+            debugPrint('[LocalMedia][main] ProxyProvider<IMediaRepository> 更新: config=${config?.type.name ?? "null"}');
+            if (config == null) {
+              debugPrint('[LocalMedia][main] -> config 为 null, 返回 EmptyMediaRepositoryImpl');
+              return const EmptyMediaRepositoryImpl();
+            }
+            if (_useMockRepository) {
+              debugPrint('[LocalMedia][main] -> USE_MOCK_REPOSITORY=true, 返回 MockMediaRepositoryImpl');
+              return const MockMediaRepositoryImpl();
+            }
 
+            debugPrint('[LocalMedia][main] -> 调用工厂, localMediaDatabase=已注入');
             return MediaRepositoryFactory.createMediaRepository(
               config: config,
               securityService: security,
               localWatchHistoryDataSource:
                   widget.localWatchHistoryDataSource,
               embyApiClient: apiClient,
+              localMediaDatabase: widget.localMediaDatabase,
+              localThumbnailService: widget.localThumbnailService,
             );
           },
         ),
@@ -320,6 +358,8 @@ class _MeowHubAppState extends State<MeowHubApp> {
               localWatchHistoryDataSource:
                   widget.localWatchHistoryDataSource,
               embyApiClient: apiClient,
+              localMediaDatabase: widget.localMediaDatabase,
+              localThumbnailService: widget.localThumbnailService,
             );
           },
         ),
@@ -334,6 +374,13 @@ class _MeowHubAppState extends State<MeowHubApp> {
               embyApiClient: apiClient,
             );
           },
+        ),
+
+        // 本地媒体服务
+        Provider<LocalMediaDatabase>.value(value: widget.localMediaDatabase),
+        Provider<LocalThumbnailService>.value(value: widget.localThumbnailService),
+        ChangeNotifierProvider<LocalMediaProvider>(
+          create: (_) => LocalMediaProvider(database: widget.localMediaDatabase),
         ),
 
         // 3. 用户进度管理
@@ -363,9 +410,15 @@ class _MeowHubAppState extends State<MeowHubApp> {
 
         // 4. 媒体库管理
         ChangeNotifierProxyProvider<IMediaRepository, MediaLibraryProvider>(
-          create: (context) => MediaLibraryProvider(
-            mediaRepository: context.read<IMediaRepository>(),
-          )..loadInitialMedia(),
+          create: (context) {
+            final provider = MediaLibraryProvider(
+              mediaRepository: context.read<IMediaRepository>(),
+            );
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              provider.loadInitialMedia();
+            });
+            return provider;
+          },
           update: (context, repo, previous) {
             final provider =
                 previous ?? MediaLibraryProvider(mediaRepository: repo);
@@ -412,6 +465,82 @@ class _MeowHubAppState extends State<MeowHubApp> {
   }
 }
 
+Future<void> _startupIncrementalScan(
+  List<String> rootPaths,
+  LocalMediaDatabase database,
+) async {
+  try {
+    if (!await StoragePermissionService.hasFullStorageAccess()) {
+      debugPrint('[LocalMedia][main] 启动扫描跳过: 无存储权限');
+      return;
+    }
+
+    final knownFiles = await database.getKnownFiles();
+
+    // Check if any root path exists
+    var hasExistingPath = false;
+    for (final path in rootPaths) {
+      if (Directory(path.trim()).existsSync()) {
+        hasExistingPath = true;
+        break;
+      }
+    }
+    if (!hasExistingPath) return;
+
+    // Run quick incremental scan
+    final result = await LocalMediaScanner.runInIsolate(rootPaths, knownFiles);
+
+    if (result.hasChanges) {
+      for (final file in result.newAndChanged) {
+        await database.upsertScannedFile({
+          'id': file.filePath.hashCode.toString(),
+          'file_path': file.filePath,
+          'file_name': file.fileName,
+          'file_size': file.fileSize,
+          'mtime': file.mtime,
+          'duration_ms': file.durationMs,
+          'width': file.width,
+          'height': file.height,
+          'media_type': file.mediaType,
+          'title': file.title,
+          'original_title': file.originalTitle,
+          'overview': file.overview,
+          'year': file.year,
+          'rating': file.rating,
+          'poster_path': file.posterPath,
+          'backdrop_path': file.backdropPath,
+          'series_id': file.seriesId,
+          'season_number': file.seasonNumber,
+          'episode_number': file.episodeNumber,
+          'parent_folder': file.parentFolder,
+          'nfo_path': file.nfoPath,
+        });
+      }
+      for (final series in result.newSeries) {
+        await database.upsertSeries({
+          'id': series.id,
+          'title': series.title,
+          'original_title': series.originalTitle,
+          'overview': series.overview,
+          'poster_path': series.posterPath,
+          'backdrop_path': series.backdropPath,
+          'year': series.year,
+          'rating': series.rating,
+          'folder_path': series.folderPath,
+        });
+      }
+      await database.deleteScannedFiles(result.deletedPaths);
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final path in rootPaths) {
+        await database.updateScanFolder(path, scannedAt: now);
+      }
+    }
+  } catch (_) {
+    // Silent failure on startup scan
+  }
+}
+
 // --- 工厂方法（通过 MediaRepositoryFactory 静态方法，支持多后端） ---
 
 MediaConfigValidator _buildMediaConfigValidator({
@@ -419,7 +548,15 @@ MediaConfigValidator _buildMediaConfigValidator({
   required SessionExpiredNotifier sessionExpiredNotifier,
 }) {
   return (config) async {
-    // Jellyfin 与 Emby API 兼容，可统一校验
+    if (config.type == MediaServiceType.local) {
+      if (config.localPaths.isEmpty) return false;
+      for (final path in config.localPaths) {
+        final dir = Directory(path.trim());
+        if (!await dir.exists()) return false;
+      }
+      return true;
+    }
+
     if (config.type != MediaServiceType.emby &&
         config.type != MediaServiceType.jellyfin) {
       return false;

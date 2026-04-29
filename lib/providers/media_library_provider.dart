@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 import '../domain/entities/media_item.dart';
 import '../domain/entities/media_library_info.dart';
@@ -11,7 +11,9 @@ class MediaLibraryState {
     this.recentlyAdded = const [],
     this.libraryItems = const {},
     this.isLoading = false,
+    this.isLoadingMore = false,
     this.errorMessage,
+    this.libraryTotalCounts = const {},
   });
 
   final List<MediaLibraryInfo> libraries;
@@ -19,7 +21,9 @@ class MediaLibraryState {
   final List<MediaItem> recentlyAdded;
   final Map<String, List<MediaItem>> libraryItems;
   final bool isLoading;
+  final bool isLoadingMore;
   final String? errorMessage;
+  final Map<String, int> libraryTotalCounts;
 
   MediaLibraryState copyWith({
     List<MediaLibraryInfo>? libraries,
@@ -27,7 +31,9 @@ class MediaLibraryState {
     List<MediaItem>? recentlyAdded,
     Map<String, List<MediaItem>>? libraryItems,
     bool? isLoading,
+    bool? isLoadingMore,
     Object? errorMessage = _sentinel,
+    Map<String, int>? libraryTotalCounts,
   }) {
     return MediaLibraryState(
       libraries: libraries ?? this.libraries,
@@ -35,9 +41,11 @@ class MediaLibraryState {
       recentlyAdded: recentlyAdded ?? this.recentlyAdded,
       libraryItems: libraryItems ?? this.libraryItems,
       isLoading: isLoading ?? this.isLoading,
+      isLoadingMore: isLoadingMore ?? this.isLoadingMore,
       errorMessage: identical(errorMessage, _sentinel)
           ? this.errorMessage
           : errorMessage as String?,
+      libraryTotalCounts: libraryTotalCounts ?? this.libraryTotalCounts,
     );
   }
 }
@@ -45,6 +53,9 @@ class MediaLibraryState {
 class MediaLibraryProvider extends ChangeNotifier {
   MediaLibraryProvider({required IMediaRepository mediaRepository})
     : _mediaRepository = mediaRepository;
+
+  static const int _initialPageSize = 20;
+  static const int _loadMorePageSize = 60;
 
   IMediaRepository _mediaRepository;
 
@@ -60,7 +71,7 @@ class MediaLibraryProvider extends ChangeNotifier {
     _mediaRepository = mediaRepository;
     _state = const MediaLibraryState();
     notifyListeners();
-    fetchAll();
+    WidgetsBinding.instance.addPostFrameCallback((_) => fetchAll());
   }
 
   Future<void> loadInitialMedia() async {
@@ -81,29 +92,24 @@ class MediaLibraryProvider extends ChangeNotifier {
     try {
       final libraries = await _mediaRepository.getMediaLibraries();
 
-      final results = await Future.wait([
-        _mediaRepository.getRecentWatching(limit: 50),
-        _mediaRepository.getItems(
-          includeItemTypes: 'Movie,Series',
-          sortBy: 'DateCreated',
-          sortOrder: 'Descending',
-          limit: 10,
-        ),
-        ...libraries.map(
-          (lib) => _mediaRepository.getItems(
-            libraryId: lib.id,
-            includeItemTypes: _itemTypesForCollection(lib.collectionType),
-            limit: 10000,
-          ),
-        ),
-      ]);
-
-      final continueWatching = results[0];
-      final recentlyAdded = results[1];
+      final continueWatching = await _mediaRepository.getRecentWatching(limit: 12);
+      final recentlyAdded = await _mediaRepository.getItems(
+        includeItemTypes: 'Movie,Series',
+        sortBy: 'DateCreated',
+        sortOrder: 'Descending',
+        limit: 8,
+      );
 
       final libraryItems = <String, List<MediaItem>>{};
-      for (var i = 0; i < libraries.length; i++) {
-        libraryItems[libraries[i].id] = results[2 + i];
+      final libraryTotalCounts = <String, int>{};
+      for (final lib in libraries) {
+        final items = await _mediaRepository.getItems(
+          libraryId: lib.id,
+          includeItemTypes: _itemTypesForCollection(lib.collectionType),
+          limit: _initialPageSize,
+        );
+        libraryItems[lib.id] = items;
+        libraryTotalCounts[lib.id] = items.length;
       }
 
       _state = _state.copyWith(
@@ -113,12 +119,67 @@ class MediaLibraryProvider extends ChangeNotifier {
         libraryItems: libraryItems,
         isLoading: false,
         errorMessage: null,
+        isLoadingMore: false,
+        libraryTotalCounts: libraryTotalCounts,
       );
     } catch (error) {
       _state = _state.copyWith(
         isLoading: false,
         errorMessage: '媒体库加载失败了，下拉刷新试试。',
       );
+    }
+
+    notifyListeners();
+  }
+
+  Future<void> fetchMoreItems(String libraryId) async {
+    if (_state.isLoadingMore) return;
+
+    final currentItems = _state.libraryItems[libraryId];
+    if (currentItems == null) return;
+
+    final lib = _state.libraries.where((l) => l.id == libraryId).firstOrNull;
+    if (lib == null) return;
+
+    final totalSoFar = _state.libraryTotalCounts[libraryId] ?? currentItems.length;
+    final startIndex = currentItems.length;
+
+    _state = _state.copyWith(isLoadingMore: true);
+    notifyListeners();
+
+    try {
+      final moreItems = await _mediaRepository.getItems(
+        libraryId: libraryId,
+        includeItemTypes: _itemTypesForCollection(lib.collectionType),
+        limit: _loadMorePageSize,
+        startIndex: startIndex,
+      );
+
+      if (moreItems.isEmpty) {
+        _state = _state.copyWith(isLoadingMore: false);
+        notifyListeners();
+        return;
+      }
+
+      final updatedItems = <String, List<MediaItem>>{};
+      for (final entry in _state.libraryItems.entries) {
+        if (entry.key == libraryId) {
+          updatedItems[entry.key] = [...entry.value, ...moreItems];
+        } else {
+          updatedItems[entry.key] = entry.value;
+        }
+      }
+
+      _state = _state.copyWith(
+        libraryItems: updatedItems,
+        isLoadingMore: false,
+        libraryTotalCounts: {
+          ..._state.libraryTotalCounts,
+          libraryId: totalSoFar + moreItems.length,
+        },
+      );
+    } catch (_) {
+      _state = _state.copyWith(isLoadingMore: false);
     }
 
     notifyListeners();

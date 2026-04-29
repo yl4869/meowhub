@@ -1,9 +1,8 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:shimmer/shimmer.dart';
 
 import '../../domain/entities/media_item.dart';
 import '../../theme/app_theme.dart';
+import 'media_image.dart';
 
 class PosterCard extends StatelessWidget {
   const PosterCard({
@@ -79,12 +78,7 @@ class PosterCard extends StatelessWidget {
       return const _PosterFallback();
     }
 
-    return CachedNetworkImage(
-      imageUrl: posterUrl,
-      fit: BoxFit.cover,
-      placeholder: (context, url) => const _PosterShimmer(),
-      errorWidget: (context, url, error) => const _PosterFallback(),
-    );
+    return MediaImage(url: posterUrl, fit: BoxFit.cover);
   }
 }
 
@@ -220,28 +214,6 @@ class _TitleOverlay extends StatelessWidget {
           shadows: const [
             Shadow(color: Colors.black87, blurRadius: 10, offset: Offset(0, 1)),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PosterShimmer extends StatelessWidget {
-  const _PosterShimmer();
-
-  @override
-  Widget build(BuildContext context) {
-    return Shimmer.fromColors(
-      baseColor: const Color(0xFF202020),
-      highlightColor: const Color(0xFF2C2C2C),
-      child: const DecoratedBox(
-        decoration: BoxDecoration(color: AppTheme.cardColor),
-        child: Center(
-          child: Icon(
-            Icons.movie_creation_outlined,
-            size: 34,
-            color: Colors.white24,
-          ),
         ),
       ),
     );

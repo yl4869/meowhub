@@ -92,7 +92,9 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
 
       setState(() {
         _verificationSuccess = isValid;
-        _verificationMessage = isValid ? '连接成功' : '连接失败，请检查配置';
+        _verificationMessage = _selectedType == MediaServiceType.local
+            ? (isValid ? '文件夹验证通过' : '部分文件夹不存在')
+            : (isValid ? '连接成功' : '连接失败，请检查配置');
       });
 
       if (isValid && mounted) {
@@ -182,6 +184,10 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
                   value: MediaServiceType.jellyfin,
                   label: Text('Jellyfin'),
                   enabled: false,
+                ),
+                ButtonSegment(
+                  value: MediaServiceType.local,
+                  label: Text('本地'),
                 ),
               ],
               selected: {_selectedType},

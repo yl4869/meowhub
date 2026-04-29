@@ -3,7 +3,7 @@ enum MediaServiceType {
   emby,
   plex,
   jellyfin,
-  // 未来可扩展的服务类型
+  local,
 }
 
 /// 媒体服务配置
@@ -14,6 +14,7 @@ class MediaServiceConfig {
     this.username,
     this.password,
     this.deviceId,
+    this.localPaths = const [],
   });
 
   /// 服务类型
@@ -31,6 +32,9 @@ class MediaServiceConfig {
   /// 设备ID（用于跟踪播放进度）
   final String? deviceId;
 
+  /// 本地视频文件夹路径列表
+  final List<String> localPaths;
+
   /// 验证配置是否有效
   bool get isValid {
     return switch (type) {
@@ -40,6 +44,8 @@ class MediaServiceConfig {
             (password?.trim().isNotEmpty ?? false),
       MediaServiceType.plex ||
       MediaServiceType.jellyfin => serverUrl.isNotEmpty,
+      MediaServiceType.local => localPaths.isNotEmpty &&
+          localPaths.every((p) => p.trim().isNotEmpty),
     };
   }
 
@@ -49,6 +55,10 @@ class MediaServiceConfig {
       : serverUrl;
 
   String get credentialNamespace {
+    if (type == MediaServiceType.local) {
+      final sorted = List<String>.from(localPaths)..sort();
+      return 'local:${sorted.join('|')}';
+    }
     final normalizedUser = username?.trim().toLowerCase() ?? '';
     return '${type.name}:${normalizedServerUrl.toLowerCase()}:$normalizedUser';
   }
@@ -60,6 +70,7 @@ class MediaServiceConfig {
       if (username != null) 'username': username,
       if (includePassword && password != null) 'password': password,
       if (deviceId != null) 'deviceId': deviceId,
+      if (localPaths.isNotEmpty) 'localPaths': localPaths,
     };
   }
 
@@ -70,12 +81,19 @@ class MediaServiceConfig {
       orElse: () => MediaServiceType.emby,
     );
 
+    final localPaths = (json['localPaths'] as List<dynamic>?)
+            ?.map((e) => e.toString().trim())
+            .where((e) => e.isNotEmpty)
+            .toList(growable: false) ??
+        const [];
+
     return MediaServiceConfig(
       type: type,
       serverUrl: json['serverUrl']?.toString().trim() ?? '',
       username: json['username']?.toString().trim(),
       password: json['password']?.toString(),
       deviceId: json['deviceId']?.toString().trim(),
+      localPaths: localPaths,
     );
   }
 
@@ -85,6 +103,7 @@ class MediaServiceConfig {
     String? username,
     String? password,
     String? deviceId,
+    List<String>? localPaths,
   }) {
     return MediaServiceConfig(
       type: type ?? this.type,
@@ -92,6 +111,7 @@ class MediaServiceConfig {
       username: username ?? this.username,
       password: password ?? this.password,
       deviceId: deviceId ?? this.deviceId,
+      localPaths: localPaths ?? this.localPaths,
     );
   }
 }

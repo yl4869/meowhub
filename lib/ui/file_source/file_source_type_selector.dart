@@ -25,6 +25,12 @@ class FileSourceTypeSelector extends StatelessWidget {
           type: MediaServiceType.jellyfin,
           enabled: false,
         ),
+        const SizedBox(height: 12),
+        _FileSourceTypeCard(
+          type: MediaServiceType.local,
+          enabled: true,
+          onTap: () => onSelected(MediaServiceType.local),
+        ),
       ],
     );
   }
@@ -91,6 +97,7 @@ class _FileSourceTypeCard extends StatelessWidget {
       MediaServiceType.emby => Icons.video_settings_rounded,
       MediaServiceType.plex => Icons.hub_rounded,
       MediaServiceType.jellyfin => Icons.live_tv_rounded,
+      MediaServiceType.local => Icons.folder_open_rounded,
     };
   }
 
@@ -99,6 +106,7 @@ class _FileSourceTypeCard extends StatelessWidget {
       MediaServiceType.emby => '填写 Emby 服务器地址、端口和账户信息',
       MediaServiceType.plex => '添加 Plex 文件源',
       MediaServiceType.jellyfin => '添加 Jellyfin 文件源',
+      MediaServiceType.local => '添加本地文件夹中的视频文件',
     };
   }
 }

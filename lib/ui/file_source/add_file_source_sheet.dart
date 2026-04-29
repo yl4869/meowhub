@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -7,10 +9,13 @@ import '../../core/session/session_expired_notifier.dart';
 import '../../data/datasources/emby_api_client.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../../providers/app_provider.dart';
+import '../../providers/local_media_provider.dart';
+import '../../providers/media_library_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
 import 'file_source_form_section.dart';
 import 'file_source_type_selector.dart';
+import 'local_file_source_form.dart';
 
 class AddFileSourceSheet extends StatefulWidget {
   const AddFileSourceSheet({super.key, this.initialServer});
@@ -25,6 +30,7 @@ enum _ConnectionTestState { idle, success, failure }
 
 class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
   final _embyFormKey = GlobalKey<FormState>();
+  final _localFormKey = GlobalKey<LocalFileSourceFormState>();
   final _serverNameController = TextEditingController();
   final _addressController = TextEditingController();
   final _portController = TextEditingController(text: '8096');
@@ -39,6 +45,10 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
   _ConnectionTestState _connectionTestState = _ConnectionTestState.idle;
   String? _connectionFeedback;
   String? _lastSuccessfulEndpointSignature;
+
+  // Local media state
+  final List<String> _localPaths = [];
+  final _localNameController = TextEditingController();
 
   bool get _isEditMode => widget.initialServer != null;
   String? get _editingServerId => widget.initialServer?.id;
@@ -56,6 +66,11 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     if (server?.config case final config?) {
       _selectedType = config.type;
       _serverNameController.text = server!.name;
+      if (config.type == MediaServiceType.local) {
+        _localPaths.addAll(config.localPaths);
+        _localNameController.text = server.name != '本地视频' ? server.name : '';
+        return;
+      }
       _usernameController.text = config.username ?? '';
       _passwordController.text = config.password ?? '';
       final uri = Uri.tryParse(config.normalizedServerUrl);
@@ -77,13 +92,16 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     _portController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
+    _localNameController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
-    final canSubmit = _selectedType == MediaServiceType.emby && !_isSaving;
+    final canSubmit = (_selectedType == MediaServiceType.emby ||
+            _selectedType == MediaServiceType.local) &&
+        !_isSaving;
 
     return SafeArea(
       child: Padding(
@@ -129,7 +147,9 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
                 switchOutCurve: Curves.easeInCubic,
                 child: _selectedType == null
                     ? _buildTypeSelector()
-                    : _buildEmbyManager(context),
+                    : _selectedType == MediaServiceType.local
+                        ? _buildLocalManager(context)
+                        : _buildEmbyManager(context),
               ),
               const SizedBox(height: 16),
               _ActionBar(
@@ -332,6 +352,19 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     );
   }
 
+  Widget _buildLocalManager(BuildContext context) {
+    return KeyedSubtree(
+      key: const ValueKey<String>('local-manager'),
+      child: LocalFileSourceForm(
+        key: _localFormKey,
+        initialPaths: _localPaths,
+        initialName: _localNameController.text.isNotEmpty
+            ? _localNameController.text
+            : widget.initialServer?.name,
+      ),
+    );
+  }
+
   Future<void> _testConnection() async {
     setState(() {
       _showValidation = true;
@@ -400,6 +433,60 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     setState(() {
       _showValidation = true;
     });
+
+    if (_selectedType == MediaServiceType.local) {
+      final localFormState = _localFormKey.currentState;
+      if (localFormState == null || !localFormState.isValid) {
+        debugPrint('[LocalMedia][Sheet] 表单无效, 取消保存');
+        return;
+      }
+
+      final config = localFormState.buildConfig();
+      final customName = localFormState.name;
+      debugPrint('[LocalMedia][Sheet] 构建配置: paths=${config.localPaths}, name=${customName ?? "默认"}');
+
+      setState(() {
+        _isSaving = true;
+      });
+
+      try {
+        final localMediaProvider = context.read<LocalMediaProvider>();
+        final mediaLibraryProvider = context.read<MediaLibraryProvider>();
+
+        await appProvider.saveConfiguredServer(
+          customName: customName,
+          config: config,
+          editingServerId: _editingServerId,
+        );
+        debugPrint('[LocalMedia][Sheet] 服务器配置已保存');
+        if (!mounted) return;
+
+        debugPrint('[LocalMedia][Sheet] 触发扫描: ${config.localPaths}');
+        unawaited(localMediaProvider.runFullScan(config.localPaths).then((_) {
+          debugPrint('[LocalMedia][Sheet] 扫描完成回调: 刷新媒体库');
+          mediaLibraryProvider.refreshMedia();
+        }));
+
+        scaffoldMessenger.showSnackBar(
+          SnackBar(content: Text(_isEditMode ? '服务器已更新' : '媒体源已添加')),
+        );
+        navigator.pop();
+      } catch (error) {
+        debugPrint('[LocalMedia][Sheet] 保存失败: $error');
+        if (!mounted) return;
+        scaffoldMessenger.showSnackBar(
+          SnackBar(content: Text(_describeSaveError(error))),
+        );
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isSaving = false;
+          });
+        }
+      }
+      return;
+    }
+
     final isValid = _embyFormKey.currentState?.validate() ?? false;
     if (!isValid || _selectedType != MediaServiceType.emby) {
       return;
