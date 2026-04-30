@@ -1,6 +1,10 @@
+import 'package:flutter/foundation.dart';
+
 import '../entities/scan_progress.dart';
 
 abstract class IMediaMaintainer {
+  VoidCallback? onScanCompleted;
+
   ScanProgress get currentProgress;
 
   Stream<ScanProgress> get progressStream;

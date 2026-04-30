@@ -5,9 +5,8 @@ import 'package:provider/provider.dart';
 
 import '../../domain/entities/media_service_config.dart';
 import '../../domain/repositories/i_media_connection_tester.dart';
+import '../../domain/repositories/i_media_maintainer.dart';
 import '../../providers/app_provider.dart';
-import '../../providers/media_library_provider.dart';
-import '../../providers/scan_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
 import 'file_source_form_section.dart';
@@ -455,17 +454,9 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
         );
         if (!mounted) return;
 
-        // Trigger scan via ScanProvider. After scan completes,
-        // refresh the media library so new files appear immediately.
-        final scanProvider = context.read<ScanProvider>();
-        scanProvider.progressStream
-            .firstWhere((p) => p.isCompleted || p.isError)
-            .then((_) {
-              if (mounted) {
-                context.read<MediaLibraryProvider>().refreshMedia();
-              }
-            });
-        unawaited(scanProvider.runScan(config.localPaths));
+        // Trigger scan. The onScanCompleted callback (set in main.dart)
+        // will refresh the media library when the scan finishes.
+        unawaited(context.read<IMediaMaintainer>().runScan(config.localPaths));
 
         scaffoldMessenger.showSnackBar(
           SnackBar(content: Text(_isEditMode ? '服务器已更新' : '媒体源已添加')),

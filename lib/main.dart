@@ -37,7 +37,6 @@ import 'data/services/storage_permission_service.dart';
 import 'domain/repositories/i_media_connection_tester.dart';
 import 'domain/repositories/i_media_maintainer.dart';
 import 'domain/repositories/i_permission_service.dart';
-import 'providers/scan_provider.dart';
 import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
 import 'providers/user_data_provider.dart';
@@ -405,13 +404,6 @@ class _MeowHubAppState extends State<MeowHubApp> {
             }
           },
         ),
-        ChangeNotifierProxyProvider<IMediaMaintainer, ScanProvider>(
-          create: (context) =>
-              ScanProvider(maintainer: context.read<IMediaMaintainer>()),
-          update: (context, maintainer, previous) =>
-              previous ?? ScanProvider(maintainer: maintainer),
-        ),
-
         // 3. 用户进度管理
         ChangeNotifierProxyProvider2<
           IMediaServiceManager,
@@ -443,6 +435,10 @@ class _MeowHubAppState extends State<MeowHubApp> {
             final provider = MediaLibraryProvider(
               mediaRepository: context.read<IMediaRepository>(),
             );
+            final maintainer = context.read<IMediaMaintainer>();
+            maintainer.onScanCompleted = () {
+              provider.refreshMedia();
+            };
             WidgetsBinding.instance.addPostFrameCallback((_) {
               provider.loadInitialMedia();
             });

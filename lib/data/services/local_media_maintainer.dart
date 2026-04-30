@@ -13,6 +13,9 @@ class LocalMediaMaintainer implements IMediaMaintainer {
   LocalMediaMaintainer({required LocalMediaDatabase database})
     : _database = database;
 
+  @override
+  VoidCallback? onScanCompleted;
+
   final LocalMediaDatabase _database;
 
   final StreamController<ScanProgress> _progressController =
@@ -81,6 +84,7 @@ class LocalMediaMaintainer implements IMediaMaintainer {
         newSeriesCount: result.newSeries.length,
       );
       _progressController.add(_currentProgress);
+      onScanCompleted?.call();
       debugPrint(
         '[LocalMedia][Maintainer] 扫描状态已设为 completed, '
         '消息: ${_currentProgress.message}',
@@ -93,6 +97,7 @@ class LocalMediaMaintainer implements IMediaMaintainer {
         message: '扫描失败: $error',
       );
       _progressController.add(_currentProgress);
+      onScanCompleted?.call();
     }
 
     _isScanning = false;

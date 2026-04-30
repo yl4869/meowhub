@@ -26,6 +26,10 @@ class LocalMediaScanner {
 
   static const _seasonFolderPattern = r'^[Ss](?:eason)?[_\s.-]*(\d{1,2})$';
   static const _tvEpisodePattern = r'[Ss](\d{1,2})[Ee](\d{1,2})';
+  static const _epPattern = r'(?:^|[. _\-\[\(])[Ee][Pp](\d{1,3})(?:$|[. _\-\]\)])';
+  static const _ePattern = r'(?:^|[. _\-\[\(])[Ee](\d{1,3})(?:$|[. _\-\]\)])';
+  static const _chineseEpisodePattern = r'第\s*(\d{1,3})\s*[集話话回]';
+  static const _bareNumberPattern = r'^(\d{1,3})$';
   static const _yearPattern = r'[[({.](\d{4})[\])}.]';
   static const _qualityTags = [
     '1080p', '720p', '480p', '2160p', '4k', '4K',
@@ -74,7 +78,22 @@ class LocalMediaScanner {
       debugPrint('[LocalMedia][Scanner]   文件: ${f.fileName} | type=${f.mediaType} | title="${f.title}" | seriesId=${f.seriesId ?? "无"} | S${f.seasonNumber}E${f.episodeNumber} | poster=${f.posterPath != null ? "有" : "无"} | nfo=${f.nfoPath != null ? "有" : "无"}');
     }
 
-    final series = scanner._detectSeries(newAndChangedFiles);
+    // Post-process: group unclassified files from multi-video folders into series
+    final groupedFiles = scanner._postProcessFolderGrouping(
+      newAndChangedFiles,
+      rootPaths,
+    );
+    final groupedCount = groupedFiles
+        .where((f) => f.mediaType == 'series' && f.seriesId != null)
+        .length;
+    final previouslySeriesCount = newAndChangedFiles
+        .where((f) => f.mediaType == 'series' && f.seriesId != null)
+        .length;
+    if (groupedCount > previouslySeriesCount) {
+      debugPrint('[LocalMedia][Scanner] 文件夹分组: 新增 ${groupedCount - previouslySeriesCount} 个系列文件');
+    }
+
+    final series = scanner._detectSeries(groupedFiles);
     debugPrint('[LocalMedia][Scanner] 系列检测完成: ${series.length} 个系列');
     for (final s in series) {
       debugPrint('[LocalMedia][Scanner]   系列: id=${s.id} | title="${s.title}" | poster=${s.posterPath != null ? "有" : "无"}');
@@ -84,10 +103,10 @@ class LocalMediaScanner {
     debugPrint('[LocalMedia][Scanner] ===== Isolate 扫描结束, 耗时: ${stopwatch.elapsed} =====');
     return LocalMediaScanResult(
       newFiles: diff.added
-          .map((e) => newAndChangedFiles.firstWhere((f) => f.filePath == e.path))
+          .map((e) => groupedFiles.firstWhere((f) => f.filePath == e.path))
           .toList(),
       changedFiles: diff.changed
-          .map((e) => newAndChangedFiles.firstWhere((f) => f.filePath == e.path))
+          .map((e) => groupedFiles.firstWhere((f) => f.filePath == e.path))
           .toList(),
       deletedPaths: diff.deleted,
       newSeries: series,
@@ -220,6 +239,12 @@ class LocalMediaScanner {
       seasonNumber = parsed.seasonNum;
       episodeNumber = parsed.episodeNum;
       debugPrint('[LocalMedia][Scanner]     类型判断: 文件名 SxxExx -> series');
+    } else if (parsed.episodeNum != null) {
+      // Episode number detected via EP##, E##, Chinese, or bare number patterns
+      mediaType = 'series';
+      seasonNumber = parsed.seasonNum ?? 1;
+      episodeNumber = parsed.episodeNum;
+      debugPrint('[LocalMedia][Scanner]     类型判断: 文件名剧集模式(EP/中文/数字) -> series, S${seasonNumber}E${episodeNumber}');
     } else if (seasonMatch != null) {
       mediaType = 'series';
       seasonNumber = int.tryParse(seasonMatch.group(1) ?? '');
@@ -231,12 +256,17 @@ class LocalMediaScanner {
     final foundSeriesFolder = _findSeriesFolder(entry.path);
     debugPrint('[LocalMedia][Scanner]     系列文件夹检测: ${foundSeriesFolder ?? "未找到"}');
 
-    final seriesId = seriesTitle != null
-        ? LocalFileResolver.stableHash(seriesTitle).toString()
-        : (foundSeriesFolder != null
-            ? LocalFileResolver.stableHash(foundSeriesFolder).toString()
-            : null);
-    debugPrint('[LocalMedia][Scanner]     最终 seriesId: ${seriesId ?? "null (不会出现在系列列表中)"}');
+    // Only set seriesId for files classified as series episodes.
+    // Standalone movies should not get a seriesId even if _findSeriesFolder
+    // returns a folder path (e.g., their own parent directory).
+    final seriesId = mediaType == 'series'
+        ? (seriesTitle != null
+            ? LocalFileResolver.stableHash(seriesTitle).toString()
+            : (foundSeriesFolder != null
+                ? LocalFileResolver.stableHash(foundSeriesFolder).toString()
+                : null))
+        : null;
+    debugPrint('[LocalMedia][Scanner]     最终 seriesId: ${seriesId ?? "null"}');
 
     final title = nfoMetadata?.title ??
         parsed.title ??
@@ -325,6 +355,182 @@ class LocalMediaScanner {
     return series.values.toList();
   }
 
+  /// Post-process: group unclassified files from multi-video folders into series.
+  /// This handles folders where videos don't have SxxExx/NFO metadata but are
+  /// clearly episodes of the same show based on folder grouping.
+  List<ScannedFileMetadata> _postProcessFolderGrouping(
+    List<ScannedFileMetadata> files,
+    List<String> rootPaths,
+  ) {
+    // Group unclassified files by parent folder
+    final unclassified = <String, List<int>>{};
+    for (var i = 0; i < files.length; i++) {
+      final file = files[i];
+      if (file.mediaType == 'movie' && file.seriesId == null) {
+        unclassified.putIfAbsent(file.parentFolder, () => []).add(i);
+      }
+    }
+
+    if (unclassified.isEmpty) {
+      debugPrint('[LocalMedia][Scanner] 文件夹分组: 无未分类文件');
+      return files;
+    }
+
+    debugPrint('[LocalMedia][Scanner] === 开始文件夹分组, ${unclassified.length} 个候选文件夹 ===');
+
+    final updated = List<ScannedFileMetadata>.of(files);
+    final rootPathSet = rootPaths.map((p) => p.endsWith('/') ? p : '$p/').toSet();
+
+    for (final entry in unclassified.entries) {
+      final folderPath = entry.key;
+      final indices = entry.value;
+
+      // Skip folders with only 1 file (standalone movies are fine as-is)
+      if (indices.length < 2) continue;
+
+      // Skip root paths themselves (videos directly in scan root)
+      final normalizedFolder = folderPath.endsWith('/') ? folderPath : '$folderPath/';
+      if (rootPathSet.any((rp) => normalizedFolder == rp)) continue;
+
+      final folderName = folderPath.split(Platform.pathSeparator).last;
+      final seriesId = LocalFileResolver.stableHash(folderPath).toString();
+
+      debugPrint('[LocalMedia][Scanner]   文件夹分组: "$folderName" ($folderPath), ${indices.length} 个文件');
+
+      final folderFiles = indices.map((i) => files[i]).toList();
+      final assignments = _assignEpisodeNumbers(folderFiles);
+
+      // Also scan folder for images to use as series poster
+      final folderDir = Directory(folderPath);
+      final seriesPoster = _findImageInDir(folderDir, isPoster: true);
+      final seriesBackdrop = _findImageInDir(folderDir, isPoster: false);
+
+      for (var j = 0; j < indices.length; j++) {
+        final idx = indices[j];
+        final oldFile = files[idx];
+        final episodeNum = assignments[j];
+
+        // Use series poster as fallback if individual file has no poster
+        final posterPath = oldFile.posterPath ?? seriesPoster;
+
+        updated[idx] = ScannedFileMetadata(
+          filePath: oldFile.filePath,
+          fileName: oldFile.fileName,
+          fileSize: oldFile.fileSize,
+          mtime: oldFile.mtime,
+          parentFolder: oldFile.parentFolder,
+          mediaType: 'series',
+          title: oldFile.title ?? oldFile.fileName,
+          originalTitle: oldFile.originalTitle,
+          overview: oldFile.overview,
+          year: oldFile.year,
+          rating: oldFile.rating,
+          posterPath: posterPath,
+          backdropPath: oldFile.backdropPath ?? seriesBackdrop,
+          seriesId: seriesId,
+          seasonNumber: 1,
+          episodeNumber: episodeNum,
+          nfoPath: oldFile.nfoPath,
+          durationMs: oldFile.durationMs,
+          width: oldFile.width,
+          height: oldFile.height,
+        );
+        debugPrint('[LocalMedia][Scanner]      -> ${oldFile.fileName}: S01E$episodeNum poster=${posterPath != null ? "有" : "无"}');
+      }
+    }
+
+    debugPrint('[LocalMedia][Scanner] === 文件夹分组完成 ===');
+    return updated;
+  }
+
+  /// Try to extract episode numbers from filenames. Missing numbers get
+  /// auto-assigned sequentially starting from 1, skipping already-used numbers.
+  List<int> _assignEpisodeNumbers(List<ScannedFileMetadata> files) {
+    final results = <int>[];
+    final usedNumbers = <int>{};
+
+    for (final file in files) {
+      final nameNoExt = file.fileName.contains('.')
+          ? file.fileName.substring(0, file.fileName.lastIndexOf('.'))
+          : file.fileName;
+
+      int? episodeNum;
+
+      // Try SxxExx
+      final tvMatch = RegExp(_tvEpisodePattern, caseSensitive: false).firstMatch(nameNoExt);
+      if (tvMatch != null) {
+        episodeNum = int.tryParse(tvMatch.group(2) ?? '');
+      }
+
+      // Try EP##
+      if (episodeNum == null) {
+        final epMatch = RegExp(_epPattern, caseSensitive: false).firstMatch(nameNoExt);
+        if (epMatch != null) {
+          episodeNum = int.tryParse(epMatch.group(1) ?? '');
+        }
+      }
+
+      // Try E## (with false-positive guard)
+      if (episodeNum == null) {
+        final eMatch = RegExp(_ePattern, caseSensitive: false).firstMatch(nameNoExt);
+        if (eMatch != null) {
+          final rawNum = eMatch.group(1) ?? '';
+          final num = int.tryParse(rawNum);
+          if (num != null && rawNum.length < 4) {
+            final beforeE = eMatch.start > 0 ? nameNoExt[eMatch.start - 1] : '';
+            if (!RegExp(r'[a-zA-Z]').hasMatch(beforeE)) {
+              episodeNum = num;
+            }
+          }
+        }
+      }
+
+      // Try Chinese episode pattern
+      if (episodeNum == null) {
+        final chMatch = RegExp(_chineseEpisodePattern).firstMatch(nameNoExt);
+        if (chMatch != null) {
+          episodeNum = int.tryParse(chMatch.group(1) ?? '');
+        }
+      }
+
+      // Try bare number as whole filename
+      if (episodeNum == null) {
+        final clean = _cleanTitle(nameNoExt);
+        final bareMatch = RegExp(_bareNumberPattern).firstMatch(clean);
+        if (bareMatch != null && clean.length <= 3) {
+          episodeNum = int.tryParse(bareMatch.group(1) ?? '');
+        }
+      }
+
+      // Try trailing number (e.g., "Title - 01")
+      if (episodeNum == null) {
+        final trailingMatch = RegExp(r'[_\-\s]+(\d{1,3})$').firstMatch(nameNoExt);
+        if (trailingMatch != null) {
+          episodeNum = int.tryParse(trailingMatch.group(1) ?? '');
+        }
+      }
+
+      results.add(episodeNum ?? -1);
+      if (episodeNum != null) {
+        usedNumbers.add(episodeNum);
+      }
+    }
+
+    // Fill in missing episode numbers sequentially
+    var nextNumber = 1;
+    for (var i = 0; i < results.length; i++) {
+      if (results[i] < 0) {
+        while (usedNumbers.contains(nextNumber)) {
+          nextNumber++;
+        }
+        results[i] = nextNumber;
+        usedNumbers.add(nextNumber);
+      }
+    }
+
+    return results;
+  }
+
   String? _findImage(File videoFile, {required bool isPoster}) {
     final dir = videoFile.parent;
     final basename = LocalNfoParser.basenameWithoutExtension(videoFile.path);
@@ -367,55 +573,35 @@ class LocalMediaScanner {
   }
 
   String? _findSeriesFolder(String filePath) {
-    // Walk up directories looking for the series root
-    // A series root is either:
-    // - A directory containing a tvshow.nfo
-    // - A directory whose parent contains season folders
+    // Walk up directories looking for the series root.
+    // Strategy: walk up from the video file. If a directory contains tvshow.nfo
+    // or its name doesn't match a season folder pattern, it's the series root.
+    // Season folders (e.g. "Season 1") are skipped by walking up.
     var current = File(filePath).parent;
     const maxDepth = 5;
     for (var i = 0; i < maxDepth; i++) {
       final dirName = current.path.split(Platform.pathSeparator).last;
       debugPrint('[LocalMedia][Scanner]       _findSeriesFolder depth=$i: 检查 "$dirName" (${current.path})');
 
+      // tvshow.nfo is the strongest signal
       if (File('${current.path}/tvshow.nfo').existsSync()) {
-        debugPrint('[LocalMedia][Scanner]         -> 找到 tvshow.nfo, 返回系列文件夹: ${current.path}');
+        debugPrint('[LocalMedia][Scanner]         -> 找到 tvshow.nfo, 返回: ${current.path}');
         return current.path;
       }
-      final parent = current.parent;
-      // Check if parent has season-like subdirectories
-      if (_hasSeasonSubdirs(parent)) {
-        debugPrint('[LocalMedia][Scanner]         -> 父目录有季文件夹, 返回系列文件夹: ${current.path}');
+
+      // If the directory name does NOT look like a season folder (e.g. "Season 1",
+      // "S01", etc.), it's the series root — whether at depth 0 (flat structure
+      // like /ShowName/Episode.mp4) or depth > 0 (walked past season subdir).
+      if (!RegExp(_seasonFolderPattern, caseSensitive: false).hasMatch(dirName)) {
+        debugPrint('[LocalMedia][Scanner]         -> 非季文件夹, 返回: ${current.path}');
         return current.path;
       }
-      // Check if current directory name looks like a series (not Season X)
-      final name = current.path.split(Platform.pathSeparator).last;
-      if (!RegExp(_seasonFolderPattern, caseSensitive: false).hasMatch(name)) {
-        // If current is not a season folder and parent has multiple video subdirs,
-        // current might be the series folder
-        if (i > 0) {
-          debugPrint('[LocalMedia][Scanner]         -> 深度>0且非季文件夹, 返回系列文件夹: ${current.path}');
-          return current.path;
-        }
-      }
-      current = parent;
+
+      // Directory name matches season pattern, walk up to parent
+      current = current.parent;
     }
     debugPrint('[LocalMedia][Scanner]       _findSeriesFolder: 未找到系列文件夹 (maxDepth=$maxDepth)');
     return null;
-  }
-
-  bool _hasSeasonSubdirs(Directory dir) {
-    if (!dir.existsSync()) return false;
-    try {
-      for (final entity in dir.listSync()) {
-        if (entity is Directory) {
-          final name = entity.path.split(Platform.pathSeparator).last;
-          if (RegExp(_seasonFolderPattern, caseSensitive: false).hasMatch(name)) {
-            return true;
-          }
-        }
-      }
-    } catch (_) {}
-    return false;
   }
 
   static String _extension(String path) {
@@ -450,6 +636,58 @@ class LocalMediaScanner {
       );
     }
 
+    // Try EP## pattern (e.g., "Show.Name.EP01")
+    final epMatch = RegExp(_epPattern, caseSensitive: false).firstMatch(nameNoExt);
+    if (epMatch != null) {
+      final episodeNum = int.tryParse(epMatch.group(1) ?? '');
+      final titlePart = nameNoExt.substring(0, epMatch.start).trim();
+      final cleanTitle = _cleanTitle(titlePart);
+      debugPrint('[LocalMedia][Scanner]         -> 匹配 EP##: EP$episodeNum, 标题部分="$titlePart", 清理后="$cleanTitle"');
+      return _ParsedFilename(
+        title: cleanTitle.isNotEmpty ? cleanTitle : null,
+        mediaType: 'series',
+        episodeNum: episodeNum,
+      );
+    }
+
+    // Try E## pattern (e.g., "Show.Name.E01"), but exclude false positives:
+    // - numbers that look like years (4 digits)
+    // - preceded by a letter (would form a word)
+    final eMatch = RegExp(_ePattern, caseSensitive: false).firstMatch(nameNoExt);
+    if (eMatch != null) {
+      final rawNum = eMatch.group(1) ?? '';
+      final episodeNum = int.tryParse(rawNum);
+      // Skip if number looks like a year
+      if (episodeNum != null && rawNum.length < 4) {
+        final beforeE = eMatch.start > 0 ? nameNoExt[eMatch.start - 1] : '';
+        // Skip if preceded by a letter (e.g., "Extended", "Edition")
+        if (!RegExp(r'[a-zA-Z]').hasMatch(beforeE)) {
+          final titlePart = nameNoExt.substring(0, eMatch.start).trim();
+          final cleanTitle = _cleanTitle(titlePart);
+          debugPrint('[LocalMedia][Scanner]         -> 匹配 E##: E$episodeNum, 标题部分="$titlePart", 清理后="$cleanTitle"');
+          return _ParsedFilename(
+            title: cleanTitle.isNotEmpty ? cleanTitle : null,
+            mediaType: 'series',
+            episodeNum: episodeNum,
+          );
+        }
+      }
+    }
+
+    // Try Chinese episode pattern (e.g., "第01集", "第01话")
+    final chMatch = RegExp(_chineseEpisodePattern).firstMatch(nameNoExt);
+    if (chMatch != null) {
+      final episodeNum = int.tryParse(chMatch.group(1) ?? '');
+      final titlePart = nameNoExt.substring(0, chMatch.start).trim();
+      final cleanTitle = _cleanTitle(titlePart);
+      debugPrint('[LocalMedia][Scanner]         -> 匹配中文集数: 第${episodeNum}集, 标题部分="$titlePart", 清理后="$cleanTitle"');
+      return _ParsedFilename(
+        title: cleanTitle.isNotEmpty ? cleanTitle : null,
+        mediaType: 'series',
+        episodeNum: episodeNum,
+      );
+    }
+
     // Try year extraction
     final yearMatch = RegExp(_yearPattern).firstMatch(nameNoExt);
     int? year;
@@ -463,6 +701,18 @@ class LocalMediaScanner {
 
     cleanTitle = _cleanTitle(cleanTitle);
     debugPrint('[LocalMedia][Scanner]         -> 清理后标题="$cleanTitle"');
+
+    // Try bare number (whole filename is just a number, e.g. "01.mkv")
+    final bareMatch = RegExp(_bareNumberPattern).firstMatch(cleanTitle);
+    if (bareMatch != null && cleanTitle.length <= 3) {
+      final episodeNum = int.tryParse(bareMatch.group(1) ?? '');
+      debugPrint('[LocalMedia][Scanner]         -> 匹配纯数字文件名: $episodeNum');
+      return _ParsedFilename(
+        title: null, // title will come from folder name
+        mediaType: 'series',
+        episodeNum: episodeNum,
+      );
+    }
 
     // Extract original title from patterns like "Chinese Title.English Title.2024"
     String? originalTitle;
