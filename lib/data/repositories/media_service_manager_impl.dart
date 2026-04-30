@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../../domain/repositories/i_media_service_manager.dart';
+import '../mappers/media_service_config_serializer.dart';
 
 class MediaServiceManagerImpl implements IMediaServiceManager {
   MediaServiceManagerImpl({required SharedPreferences preferences})
@@ -19,7 +20,7 @@ class MediaServiceManagerImpl implements IMediaServiceManager {
     final jsonStr = _prefs.getString(_configKey);
     if (jsonStr != null) {
       try {
-        _cachedConfig = MediaServiceConfig.fromJson(jsonDecode(jsonStr));
+        _cachedConfig = MediaServiceConfigSerializer.fromJson(jsonDecode(jsonStr));
       } catch (error) {
         _cachedConfig = null;
       }
@@ -58,7 +59,7 @@ class MediaServiceManagerImpl implements IMediaServiceManager {
   @override
   Future<void> setConfig(MediaServiceConfig config) async {
     _cachedConfig = config;
-    await _prefs.setString(_configKey, jsonEncode(config.toJson()));
+    await _prefs.setString(_configKey, jsonEncode(MediaServiceConfigSerializer.toJson(config)));
     // 🚀 向流中发送新配置，通知所有听众
     _configController.add(config);
   }

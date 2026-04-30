@@ -243,6 +243,7 @@ class LocalMediaDatabase {
     int? startIndex,
     String? sortBy,
     String? sortOrder,
+    bool excludeSeriesEpisodes = false,
   }) async {
     final db = await _database;
 
@@ -255,10 +256,14 @@ class LocalMediaDatabase {
     }
 
     if (includeItemTypes != null) {
-      final types = includeItemTypes.split(',');
+      final types = includeItemTypes.split(',').map((t) => t.trim().toLowerCase()).toList();
       final typePlaceholders = types.map((_) => '?').join(',');
       where.add('media_type IN ($typePlaceholders)');
       whereArgs.addAll(types);
+    }
+
+    if (excludeSeriesEpisodes) {
+      where.add('series_id IS NULL');
     }
 
     final whereClause = where.isNotEmpty ? 'WHERE ${where.join(' AND ')}' : '';
@@ -266,11 +271,50 @@ class LocalMediaDatabase {
     var orderBy = 'ORDER BY title';
     if (sortBy != null) {
       final safeSortBy = _safeColumn(sortBy) ?? 'title';
-      final safeSortOrder = sortOrder?.toUpperCase() == 'DESC' ? 'DESC' : 'ASC';
+      final safeSortOrder = (sortOrder?.toUpperCase() == 'DESC' || sortOrder?.toLowerCase() == 'descending') ? 'DESC' : 'ASC';
       orderBy = 'ORDER BY $safeSortBy $safeSortOrder';
     }
 
     var query = 'SELECT * FROM scanned_files $whereClause $orderBy';
+    if (limit != null) {
+      query += ' LIMIT ?';
+      whereArgs.add(limit);
+    }
+    if (startIndex != null) {
+      query += ' OFFSET ?';
+      whereArgs.add(startIndex);
+    }
+
+    return db.rawQuery(query, whereArgs);
+  }
+
+  Future<List<Map<String, dynamic>>> querySeriesEntries({
+    String? libraryId,
+    int? limit,
+    int? startIndex,
+    String? sortBy,
+    String? sortOrder,
+  }) async {
+    final db = await _database;
+
+    final where = <String>[];
+    final whereArgs = <dynamic>[];
+
+    if (libraryId != null && libraryId != 'local-all') {
+      where.add('folder_path LIKE ?');
+      whereArgs.add('$libraryId%');
+    }
+
+    final whereClause = where.isNotEmpty ? 'WHERE ${where.join(' AND ')}' : '';
+
+    var orderBy = 'ORDER BY title';
+    if (sortBy != null) {
+      final safeSortBy = _safeSeriesColumn(sortBy) ?? 'title';
+      final safeSortOrder = (sortOrder?.toUpperCase() == 'DESC' || sortOrder?.toLowerCase() == 'descending') ? 'DESC' : 'ASC';
+      orderBy = 'ORDER BY $safeSortBy $safeSortOrder';
+    }
+
+    var query = 'SELECT * FROM series $whereClause $orderBy';
     if (limit != null) {
       query += ' LIMIT ?';
       whereArgs.add(limit);
@@ -288,6 +332,22 @@ class LocalMediaDatabase {
       'title', 'year', 'rating', 'file_path', 'file_name', 'file_size',
       'mtime', 'duration_ms', 'media_type', 'season_number', 'episode_number',
     };
-    return allowed.contains(column) ? column : null;
+    // Map Emby-style sort field names to local DB columns
+    const aliases = {
+      'DateCreated': 'mtime',
+      'SortName': 'title',
+    };
+    final resolved = aliases[column] ?? column;
+    return allowed.contains(resolved) ? resolved : null;
+  }
+
+  String? _safeSeriesColumn(String column) {
+    const allowed = {'title', 'year', 'rating', 'folder_path'};
+    const aliases = {
+      'DateCreated': 'year',
+      'SortName': 'title',
+    };
+    final resolved = aliases[column] ?? column;
+    return allowed.contains(resolved) ? resolved : null;
   }
 }

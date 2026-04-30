@@ -63,40 +63,6 @@ class MediaServiceConfig {
     return '${type.name}:${normalizedServerUrl.toLowerCase()}:$normalizedUser';
   }
 
-  Map<String, dynamic> toJson({bool includePassword = false}) {
-    return <String, dynamic>{
-      'type': type.name,
-      'serverUrl': normalizedServerUrl,
-      if (username != null) 'username': username,
-      if (includePassword && password != null) 'password': password,
-      if (deviceId != null) 'deviceId': deviceId,
-      if (localPaths.isNotEmpty) 'localPaths': localPaths,
-    };
-  }
-
-  factory MediaServiceConfig.fromJson(Map<String, dynamic> json) {
-    final typeName = json['type']?.toString().trim();
-    final type = MediaServiceType.values.firstWhere(
-      (value) => value.name == typeName,
-      orElse: () => MediaServiceType.emby,
-    );
-
-    final localPaths = (json['localPaths'] as List<dynamic>?)
-            ?.map((e) => e.toString().trim())
-            .where((e) => e.isNotEmpty)
-            .toList(growable: false) ??
-        const [];
-
-    return MediaServiceConfig(
-      type: type,
-      serverUrl: json['serverUrl']?.toString().trim() ?? '',
-      username: json['username']?.toString().trim(),
-      password: json['password']?.toString(),
-      deviceId: json['deviceId']?.toString().trim(),
-      localPaths: localPaths,
-    );
-  }
-
   MediaServiceConfig copyWith({
     MediaServiceType? type,
     String? serverUrl,

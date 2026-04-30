@@ -21,7 +21,8 @@ class MediaLibraryCollectionView extends StatelessWidget {
 
   static const String routePath = '/library/:libraryId';
 
-  static String locationFor(String libraryId) => '/library/$libraryId';
+  static String locationFor(String libraryId) =>
+      '/library/${Uri.encodeComponent(libraryId)}';
 
   final MediaLibraryInfo libraryInfo;
 

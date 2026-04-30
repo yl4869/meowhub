@@ -1,7 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
-
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/media_library_info.dart';
 import '../../domain/entities/season_info.dart';
@@ -22,66 +20,41 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<List<MediaItem>> getMovies() async {
-    debugPrint('[LocalMedia][Repo] getMovies() 调用...');
     final rows = await _database.queryMovies();
-    debugPrint('[LocalMedia][Repo] getMovies() 返回: ${rows.length} 条');
-    final items = rows.map(_rowToMediaItem).toList(growable: false);
-    for (final item in items) {
-      debugPrint('[LocalMedia][Repo]   -> id=${item.id}, title="${item.title}", poster=${item.posterUrl != null ? "有" : "无"}');
-    }
-    return items;
+    return rows.map(_rowToMediaItem).toList(growable: false);
   }
 
   @override
   Future<List<MediaItem>> getSeries() async {
-    debugPrint('[LocalMedia][Repo] getSeries() 调用...');
     final rows = await _database.querySeries();
-    debugPrint('[LocalMedia][Repo] getSeries() 返回: ${rows.length} 条');
     return rows.map(_seriesRowToMediaItem).toList(growable: false);
   }
 
   @override
   Future<MediaItem> getMediaDetail(MediaItem item) async {
-    debugPrint('[LocalMedia][Repo] getMediaDetail() id=${item.id}, type=${item.type.name}');
     if (item.type == MediaType.series && item.seriesId == null) {
       final episodes = await getPlayableItems(item);
       return item.copyWith(playableItems: episodes);
     }
 
-    final id = item.sourceId ?? item.dataSourceId;
-    debugPrint('[LocalMedia][Repo] getMediaDetail: 查询 sourceId="$id"');
-    final row = await _database.getScannedFile(id);
+    final sourceId = item.sourceId ?? item.dataSourceId;
+    final stableId = LocalFileResolver.stableHash(sourceId).toString();
+    final row = await _database.getScannedFile(stableId);
     if (row != null) {
-      debugPrint('[LocalMedia][Repo] getMediaDetail: 找到 DB 记录');
       return _rowToMediaItem(row, existingProgress: item.playbackProgress);
     }
 
-    debugPrint('[LocalMedia][Repo] getMediaDetail: 未找到, 回退查询...');
-    final allRows = id.isNotEmpty
-        ? await _database.queryFiles(limit: 1)
-        : <Map<String, dynamic>>[];
-    for (final r in allRows) {
-      if (LocalFileResolver.stableHash(r['file_path'] as String).toString() ==
-          id.toString()) {
-        return _rowToMediaItem(r, existingProgress: item.playbackProgress);
-      }
-    }
-
-    debugPrint('[LocalMedia][Repo] getMediaDetail: 回退也失败, 返回原 item');
     return item;
   }
 
   @override
   Future<List<MediaItem>> getPlayableItems(MediaItem item) async {
-    debugPrint('[LocalMedia][Repo] getPlayableItems() id=${item.id}, type=${item.type.name}');
     if (item.type == MediaType.movie) {
       return [item];
     }
 
     final seriesId = item.sourceId ?? item.dataSourceId;
-    debugPrint('[LocalMedia][Repo] getPlayableItems: 查询系列 "$seriesId" 的剧集');
     final episodes = await _database.queryEpisodes(seriesId);
-    debugPrint('[LocalMedia][Repo] getPlayableItems: 找到 ${episodes.length} 集');
     if (episodes.isNotEmpty) {
       return episodes.map(_rowToMediaItem).toList(growable: false);
     }
@@ -91,17 +64,85 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<List<MediaItem>> getRecentWatching({int limit = 50}) async {
-    debugPrint('[LocalMedia][Repo] getRecentWatching() 返回空 (由 UserDataProvider 交叉引用)');
-    return const [];
+    // Fetch recent standalone movies (no series_id)
+    final movieRows = await _database.queryFiles(
+      includeItemTypes: 'movie',
+      limit: limit,
+      sortBy: 'mtime',
+      sortOrder: 'DESC',
+      excludeSeriesEpisodes: true,
+    );
+    final movies = movieRows.map((r) => _rowToMediaItem(r)).toList();
+
+    // Fetch recent episodes, consolidate by series
+    final episodeRows = await _database.queryFiles(
+      includeItemTypes: 'series',
+      limit: limit * 3,
+      sortBy: 'mtime',
+      sortOrder: 'DESC',
+    );
+
+    // Group episodes by series_id, pick the most recent per series
+    final seriesLatest = <String, Map<String, dynamic>>{};
+    for (final row in episodeRows) {
+      final sid = row['series_id'] as String?;
+      if (sid == null || sid.isEmpty) continue;
+      if (!seriesLatest.containsKey(sid) ||
+          (row['mtime'] as int) > (seriesLatest[sid]!['mtime'] as int)) {
+        seriesLatest[sid] = row;
+      }
+    }
+
+    // Fetch all series info in one query for resolved series IDs
+    Map<String, Map<String, dynamic>> seriesInfoMap = {};
+    if (seriesLatest.isNotEmpty) {
+      final allSeriesRows = await _database.querySeriesEntries();
+      for (final sr in allSeriesRows) {
+        seriesInfoMap[sr['id'] as String] = sr;
+      }
+    }
+
+    // Build series items from series table info + episode poster
+    final seriesItems = <MediaItem>[];
+    for (final entry in seriesLatest.entries) {
+      final epRow = entry.value;
+      final seriesRow = seriesInfoMap[entry.key];
+
+      if (seriesRow != null) {
+        seriesItems.add(_seriesRowToMediaItem(seriesRow));
+      } else {
+        final folderPath = entry.key;
+        final folderName = folderPath.split(Platform.pathSeparator).last;
+        seriesItems.add(MediaItem(
+          id: LocalFileResolver.stableHash(folderPath),
+          sourceId: folderPath,
+          title: folderName,
+          originalTitle: '',
+          type: MediaType.series,
+          sourceType: WatchSourceType.local,
+          posterUrl: _fileResolver.posterUrl(epRow),
+          year: epRow['year'] as int?,
+          overview: '',
+          seriesId: entry.key,
+        ));
+      }
+    }
+
+    // Merge and sort by time
+    final combined = <MediaItem>[...movies, ...seriesItems];
+    combined.sort((a, b) {
+      final aTime = a.lastPlayedAt?.millisecondsSinceEpoch ?? 0;
+      final bTime = b.lastPlayedAt?.millisecondsSinceEpoch ?? 0;
+      return bTime.compareTo(aTime);
+    });
+
+    return combined.take(limit).toList(growable: false);
   }
 
   @override
   Future<List<MediaLibraryInfo>> getMediaLibraries() async {
-    debugPrint('[LocalMedia][Repo] getMediaLibraries() 调用...');
     final folders = await _database.getScanFolders();
-    debugPrint('[LocalMedia][Repo] getMediaLibraries: 扫描文件夹=${folders.length} 个');
     if (folders.isEmpty) {
-      debugPrint('[LocalMedia][Repo] getMediaLibraries: 返回默认"全部本地视频"库');
       return const [
         MediaLibraryInfo(
           id: 'local-all',
@@ -123,9 +164,7 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<List<SeasonInfo>> getSeasons(String seriesId) async {
-    debugPrint('[LocalMedia][Repo] getSeasons("$seriesId") 调用...');
     final rows = await _database.querySeasons(seriesId);
-    debugPrint('[LocalMedia][Repo] getSeasons: 返回 ${rows.length} 季');
     return rows.map((row) {
       final seasonNum = row['season_number'] as int;
       return SeasonInfo(
@@ -145,17 +184,13 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
     String seriesId,
     int seasonNumber,
   ) async {
-    debugPrint('[LocalMedia][Repo] getEpisodesForSeason("$seriesId", S$seasonNumber)');
     final rows = await _database.queryEpisodesForSeason(seriesId, seasonNumber);
-    debugPrint('[LocalMedia][Repo] getEpisodesForSeason: 返回 ${rows.length} 集');
     return rows.map(_rowToMediaItem).toList(growable: false);
   }
 
   @override
   Future<List<MediaItem>> search(String query, {int limit = 50}) async {
-    debugPrint('[LocalMedia][Repo] search("$query") 调用...');
     final rows = await _database.search(query, limit: limit);
-    debugPrint('[LocalMedia][Repo] search: 返回 ${rows.length} 条');
     return rows.map(_rowToMediaItem).toList(growable: false);
   }
 
@@ -168,17 +203,75 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
     String? sortBy,
     String? sortOrder,
   }) async {
-    debugPrint('[LocalMedia][Repo] getItems() libraryId=$libraryId, types=$includeItemTypes');
-    final rows = await _database.queryFiles(
-      libraryId: libraryId,
-      includeItemTypes: includeItemTypes,
-      limit: limit,
-      startIndex: startIndex,
-      sortBy: sortBy,
-      sortOrder: sortOrder,
-    );
-    debugPrint('[LocalMedia][Repo] getItems: 返回 ${rows.length} 条');
-    return rows.map(_rowToMediaItem).toList(growable: false);
+    final types = (includeItemTypes ?? 'Movie,Series')
+        .split(',')
+        .map((t) => t.trim().toLowerCase())
+        .toSet();
+
+    final wantsSeries = types.contains('series');
+    final wantsMovies = types.contains('movie');
+
+    List<MediaItem> results = [];
+
+    // Query standalone movies from scanned_files (exclude series episodes)
+    if (wantsMovies) {
+      final movieRows = await _database.queryFiles(
+        libraryId: libraryId,
+        includeItemTypes: 'movie',
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+        excludeSeriesEpisodes: true,
+      );
+      for (final row in movieRows) {
+        results.add(_rowToMediaItem(row));
+      }
+    }
+
+    // Query series from the series table
+    if (wantsSeries) {
+      final seriesRows = await _database.querySeriesEntries(
+        libraryId: libraryId,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+      );
+      for (final row in seriesRows) {
+        results.add(_seriesRowToMediaItem(row));
+      }
+    }
+
+    // Sort combined results
+    if (sortBy != null) {
+      results.sort((a, b) {
+        int cmp;
+        switch (sortBy) {
+          case 'DateCreated':
+          case 'mtime':
+            cmp = 0; // series don't have mtime, keep order
+            break;
+          case 'SortName':
+          case 'title':
+            cmp = a.title.compareTo(b.title);
+            break;
+          case 'year':
+            cmp = (a.year ?? 0).compareTo(b.year ?? 0);
+            break;
+          case 'rating':
+            cmp = a.rating.compareTo(b.rating);
+            break;
+          default:
+            cmp = a.title.compareTo(b.title);
+        }
+        return sortOrder?.toUpperCase() == 'DESC' ||
+                sortOrder?.toLowerCase() == 'descending'
+            ? -cmp
+            : cmp;
+      });
+    }
+
+    // Apply pagination on combined results
+    final offset = startIndex ?? 0;
+    final end = limit != null ? offset + limit : results.length;
+    return results.sublist(offset.clamp(0, results.length), end.clamp(0, results.length));
   }
 
   // --- Mapping helpers ---

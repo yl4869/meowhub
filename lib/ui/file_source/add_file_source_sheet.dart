@@ -1,16 +1,13 @@
 import 'dart:async';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/services/security_service.dart';
-import '../../core/session/session_expired_notifier.dart';
-import '../../data/datasources/emby_api_client.dart';
 import '../../domain/entities/media_service_config.dart';
+import '../../domain/repositories/i_media_connection_tester.dart';
 import '../../providers/app_provider.dart';
-import '../../providers/local_media_provider.dart';
 import '../../providers/media_library_provider.dart';
+import '../../providers/scan_provider.dart';
 import '../../theme/app_theme.dart';
 import '../atoms/app_surface_card.dart';
 import 'file_source_form_section.dart';
@@ -361,6 +358,15 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
         initialName: _localNameController.text.isNotEmpty
             ? _localNameController.text
             : widget.initialServer?.name,
+        onBack: _isEditMode
+            ? null
+            : () {
+                setState(() {
+                  _selectedType = null;
+                  _connectionTestState = _ConnectionTestState.idle;
+                  _connectionFeedback = null;
+                });
+              },
       ),
     );
   }
@@ -384,38 +390,23 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     });
 
     try {
-      final apiClient = EmbyApiClient(
-        config: config,
-        securityService: context.read<SecurityService>(),
-        sessionExpiredNotifier: context.read<SessionExpiredNotifier>(),
-      );
-      final publicInfo = await apiClient.getPublicSystemInfo();
-      final serverName = publicInfo['ServerName']?.toString().trim();
-      final version = publicInfo['Version']?.toString().trim();
+      final tester = context.read<IMediaConnectionTester>();
+      final result = await tester.testConnection(config);
       setState(() {
-        _connectionTestState = _ConnectionTestState.success;
-        _connectionFeedback = [
-          if (serverName != null && serverName.isNotEmpty) serverName,
-          if (version != null && version.isNotEmpty) '版本 $version',
-          '连接测试成功',
-        ].join(' · ');
-        _lastSuccessfulEndpointSignature = endpointSignature;
+        _connectionTestState = result.success
+            ? _ConnectionTestState.success
+            : _ConnectionTestState.failure;
+        _connectionFeedback = result.displayMessage;
+        if (result.success) {
+          _lastSuccessfulEndpointSignature = endpointSignature;
+        } else {
+          _lastSuccessfulEndpointSignature = null;
+        }
       });
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text(_connectionFeedback!)));
-    } catch (error) {
-      final message = _describeConnectionError(error);
-      setState(() {
-        _connectionTestState = _ConnectionTestState.failure;
-        _connectionFeedback = message;
-        _lastSuccessfulEndpointSignature = null;
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) {
         setState(() {
@@ -436,8 +427,15 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
 
     if (_selectedType == MediaServiceType.local) {
       final localFormState = _localFormKey.currentState;
-      if (localFormState == null || !localFormState.isValid) {
-        debugPrint('[LocalMedia][Sheet] 表单无效, 取消保存');
+      if (localFormState == null) return;
+
+      if (!localFormState.isValid) {
+        scaffoldMessenger.showSnackBar(
+          const SnackBar(
+            content: Text('请至少添加一个视频文件夹'),
+            duration: Duration(seconds: 3),
+          ),
+        );
         return;
       }
 
@@ -450,22 +448,24 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
       });
 
       try {
-        final localMediaProvider = context.read<LocalMediaProvider>();
-        final mediaLibraryProvider = context.read<MediaLibraryProvider>();
-
         await appProvider.saveConfiguredServer(
           customName: customName,
           config: config,
           editingServerId: _editingServerId,
         );
-        debugPrint('[LocalMedia][Sheet] 服务器配置已保存');
         if (!mounted) return;
 
-        debugPrint('[LocalMedia][Sheet] 触发扫描: ${config.localPaths}');
-        unawaited(localMediaProvider.runFullScan(config.localPaths).then((_) {
-          debugPrint('[LocalMedia][Sheet] 扫描完成回调: 刷新媒体库');
-          mediaLibraryProvider.refreshMedia();
-        }));
+        // Trigger scan via ScanProvider. After scan completes,
+        // refresh the media library so new files appear immediately.
+        final scanProvider = context.read<ScanProvider>();
+        scanProvider.progressStream
+            .firstWhere((p) => p.isCompleted || p.isError)
+            .then((_) {
+              if (mounted) {
+                context.read<MediaLibraryProvider>().refreshMedia();
+              }
+            });
+        unawaited(scanProvider.runScan(config.localPaths));
 
         scaffoldMessenger.showSnackBar(
           SnackBar(content: Text(_isEditMode ? '服务器已更新' : '媒体源已添加')),
@@ -577,20 +577,6 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     }
 
     return null;
-  }
-
-  String _describeConnectionError(Object error) {
-    if (error is DioException) {
-      final statusCode = error.response?.statusCode;
-      if (statusCode != null) {
-        return '连接测试失败，服务器返回状态码 $statusCode';
-      }
-      if (error.type == DioExceptionType.connectionTimeout ||
-          error.type == DioExceptionType.receiveTimeout) {
-        return '连接测试超时，请确认地址与端口是否正确';
-      }
-    }
-    return '连接测试失败，请检查服务器地址、端口和网络环境';
   }
 
   String _describeSaveError(Object error) {

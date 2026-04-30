@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
+import 'local_file_resolver.dart';
+
 class LocalThumbnailService {
   LocalThumbnailService();
 
@@ -24,7 +26,7 @@ class LocalThumbnailService {
   }
 
   String _thumbnailFileName(String filePath) {
-    final hash = filePath.hashCode.toRadixString(36);
+    final hash = LocalFileResolver.stableHash(filePath).toRadixString(36);
     return 'thumb_$hash.jpg';
   }
 

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../../domain/utils/id_generator.dart';
+
 class LocalFileResolver {
   LocalFileResolver();
 
@@ -50,7 +52,7 @@ class LocalFileResolver {
 
   Future<String?> thumbnailPathFor(String filePath) async {
     final cacheDir = await cacheDirectory;
-    final hash = filePath.hashCode.toRadixString(36);
+    final hash = stableHash(filePath).toRadixString(36);
     final thumbPath = '${cacheDir.path}/thumb_$hash.jpg';
     final thumbFile = File(thumbPath);
     if (await thumbFile.exists()) {
@@ -81,16 +83,5 @@ class LocalFileResolver {
     return dot > 0 ? name.substring(0, dot) : name;
   }
 
-  /// Stable hash for generating numeric IDs from paths.
-  static int stableHash(String value) {
-    final parsed = int.tryParse(value);
-    if (parsed != null) return parsed;
-
-    var hash = 0x811C9DC5;
-    for (final codeUnit in value.codeUnits) {
-      hash ^= codeUnit;
-      hash = (hash * 0x01000193) & 0x7fffffff;
-    }
-    return hash;
-  }
+  static int stableHash(String value) => MediaIdGenerator.stableHash(value);
 }

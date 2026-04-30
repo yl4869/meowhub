@@ -1,8 +1,10 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
-import '../../data/services/storage_permission_service.dart';
+import 'package:provider/provider.dart';
+
 import '../../domain/entities/media_service_config.dart';
+import '../../domain/repositories/i_permission_service.dart';
 import '../atoms/app_surface_card.dart';
 import 'file_source_form_section.dart';
 
@@ -12,11 +14,13 @@ class LocalFileSourceForm extends StatefulWidget {
     this.initialPaths = const [],
     this.initialName,
     this.onScanRequested,
+    this.onBack,
   });
 
   final List<String> initialPaths;
   final String? initialName;
   final VoidCallback? onScanRequested;
+  final VoidCallback? onBack;
 
   @override
   State<LocalFileSourceForm> createState() => LocalFileSourceFormState();
@@ -40,9 +44,10 @@ class LocalFileSourceFormState extends State<LocalFileSourceForm> {
   }
 
   Future<void> _pickFolder() async {
-    if (!await StoragePermissionService.hasFullStorageAccess()) {
+    final permissionService = context.read<IPermissionService>();
+    if (!await permissionService.hasStorageAccess()) {
       if (!mounted) return;
-      final granted = await StoragePermissionService.requestStoragePermission();
+      final granted = await permissionService.requestStoragePermission();
       if (!granted) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -55,11 +60,21 @@ class LocalFileSourceFormState extends State<LocalFileSourceForm> {
       }
     }
 
-    final path = await FilePicker.platform.getDirectoryPath();
-    if (path != null && path.isNotEmpty && !_paths.contains(path)) {
-      setState(() {
-        _paths.add(path);
-      });
+    try {
+      final path = await FilePicker.platform.getDirectoryPath();
+      if (path != null && path.isNotEmpty && !_paths.contains(path)) {
+        setState(() {
+          _paths.add(path);
+        });
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('选择文件夹失败: $error'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -91,7 +106,7 @@ class LocalFileSourceFormState extends State<LocalFileSourceForm> {
         Row(
           children: [
             TextButton.icon(
-              onPressed: null,
+              onPressed: widget.onBack,
               icon: const Icon(Icons.arrow_back_rounded),
               label: const Text('更换类型'),
             ),

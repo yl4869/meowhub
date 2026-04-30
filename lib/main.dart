@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:device_preview/device_preview.dart';
 import 'package:flutter/foundation.dart';
@@ -15,8 +14,6 @@ import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
 import 'data/datasources/emby_api_client.dart';
 import 'data/datasources/local_media_database.dart';
-import 'data/services/storage_permission_service.dart';
-import 'data/datasources/local_media_scanner.dart';
 import 'data/datasources/local_thumbnail_service.dart';
 
 import 'data/datasources/local_watch_history_data_source.dart';
@@ -34,7 +31,13 @@ import 'domain/repositories/watch_history_repository.dart';
 import 'providers/app_provider.dart';
 
 import 'providers/media_detail_provider.dart';
-import 'providers/local_media_provider.dart';
+import 'data/services/emby_connection_tester.dart';
+import 'data/services/local_media_maintainer.dart';
+import 'data/services/storage_permission_service.dart';
+import 'domain/repositories/i_media_connection_tester.dart';
+import 'domain/repositories/i_media_maintainer.dart';
+import 'domain/repositories/i_permission_service.dart';
+import 'providers/scan_provider.dart';
 import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
 import 'providers/user_data_provider.dart';
@@ -95,13 +98,12 @@ void main() async {
 	await localMediaDatabase.initialize();
 	final localThumbnailService = LocalThumbnailService();
 
-	// 启动时增量扫描
-	final selectedConfig = fileSourceBootstrap.selectedServer?.config;
-	if (selectedConfig != null &&
-	    selectedConfig.type == MediaServiceType.local &&
-	    selectedConfig.localPaths.isNotEmpty) {
-	  unawaited(_startupIncrementalScan(selectedConfig.localPaths, localMediaDatabase));
-	}
+		// 启动时扫描通过 IMediaMaintainer 触发
+		final selectedConfig = fileSourceBootstrap.selectedServer?.config;
+	final initialLocalRootPaths = (selectedConfig != null &&
+	        selectedConfig.type == MediaServiceType.local)
+	    ? List<String>.from(selectedConfig.localPaths)
+	    : const <String>[];
 
   // 6. 启动应用
   runApp(
@@ -121,6 +123,7 @@ void main() async {
         localWatchHistoryDataSource: localWatchHistoryDataSource,
         localMediaDatabase: localMediaDatabase,
         localThumbnailService: localThumbnailService,
+        initialLocalRootPaths: initialLocalRootPaths,
       ),
     ),
   );
@@ -140,6 +143,7 @@ class MeowHubApp extends StatefulWidget {
     required this.localWatchHistoryDataSource,
     required this.localMediaDatabase,
     required this.localThumbnailService,
+    this.initialLocalRootPaths = const [],
   });
 
   final SharedPreferences preferences;
@@ -153,6 +157,7 @@ class MeowHubApp extends StatefulWidget {
   final LocalWatchHistoryDataSource localWatchHistoryDataSource;
   final LocalMediaDatabase localMediaDatabase;
   final LocalThumbnailService localThumbnailService;
+  final List<String> initialLocalRootPaths;
 
   @override
   State<MeowHubApp> createState() => _MeowHubAppState();
@@ -252,6 +257,10 @@ class _MeowHubAppState extends State<MeowHubApp> {
 
   @override
   Widget build(BuildContext context) {
+    final connectionTester = EmbyConnectionTester(
+      securityService: widget.securityService,
+      sessionExpiredNotifier: widget.sessionExpiredNotifier,
+    );
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(
@@ -266,10 +275,11 @@ class _MeowHubAppState extends State<MeowHubApp> {
         // ✅ 修改点：Manager 变回普通的 Provider (因为它现在只负责存取，不负责喊话)
         Provider<IMediaServiceManager>.value(value: widget.mediaServiceManager),
         Provider<MediaConfigValidator>.value(
-          value: _buildMediaConfigValidator(
-            securityService: widget.securityService,
-            sessionExpiredNotifier: widget.sessionExpiredNotifier,
-          ),
+          value: (config) => connectionTester.validate(config),
+        ),
+        Provider<IMediaConnectionTester>.value(value: connectionTester),
+        Provider<IPermissionService>.value(
+          value: const StoragePermissionService(),
         ),
         Provider<SecurityService>.value(value: widget.securityService),
         ChangeNotifierProvider<CapabilityProber>.value(
@@ -379,8 +389,27 @@ class _MeowHubAppState extends State<MeowHubApp> {
         // 本地媒体服务
         Provider<LocalMediaDatabase>.value(value: widget.localMediaDatabase),
         Provider<LocalThumbnailService>.value(value: widget.localThumbnailService),
-        ChangeNotifierProvider<LocalMediaProvider>(
-          create: (_) => LocalMediaProvider(database: widget.localMediaDatabase),
+        Provider<IMediaMaintainer>(
+          create: (_) {
+            final maintainer = LocalMediaMaintainer(database: widget.localMediaDatabase);
+            if (widget.initialLocalRootPaths.isNotEmpty) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                maintainer.runScan(widget.initialLocalRootPaths);
+              });
+            }
+            return maintainer;
+          },
+          dispose: (_, maintainer) {
+            if (maintainer is LocalMediaMaintainer) {
+              maintainer.dispose();
+            }
+          },
+        ),
+        ChangeNotifierProxyProvider<IMediaMaintainer, ScanProvider>(
+          create: (context) =>
+              ScanProvider(maintainer: context.read<IMediaMaintainer>()),
+          update: (context, maintainer, previous) =>
+              previous ?? ScanProvider(maintainer: maintainer),
         ),
 
         // 3. 用户进度管理
@@ -465,117 +494,8 @@ class _MeowHubAppState extends State<MeowHubApp> {
   }
 }
 
-Future<void> _startupIncrementalScan(
-  List<String> rootPaths,
-  LocalMediaDatabase database,
-) async {
-  try {
-    if (!await StoragePermissionService.hasFullStorageAccess()) {
-      debugPrint('[LocalMedia][main] 启动扫描跳过: 无存储权限');
-      return;
-    }
-
-    final knownFiles = await database.getKnownFiles();
-
-    // Check if any root path exists
-    var hasExistingPath = false;
-    for (final path in rootPaths) {
-      if (Directory(path.trim()).existsSync()) {
-        hasExistingPath = true;
-        break;
-      }
-    }
-    if (!hasExistingPath) return;
-
-    // Run quick incremental scan
-    final result = await LocalMediaScanner.runInIsolate(rootPaths, knownFiles);
-
-    if (result.hasChanges) {
-      for (final file in result.newAndChanged) {
-        await database.upsertScannedFile({
-          'id': file.filePath.hashCode.toString(),
-          'file_path': file.filePath,
-          'file_name': file.fileName,
-          'file_size': file.fileSize,
-          'mtime': file.mtime,
-          'duration_ms': file.durationMs,
-          'width': file.width,
-          'height': file.height,
-          'media_type': file.mediaType,
-          'title': file.title,
-          'original_title': file.originalTitle,
-          'overview': file.overview,
-          'year': file.year,
-          'rating': file.rating,
-          'poster_path': file.posterPath,
-          'backdrop_path': file.backdropPath,
-          'series_id': file.seriesId,
-          'season_number': file.seasonNumber,
-          'episode_number': file.episodeNumber,
-          'parent_folder': file.parentFolder,
-          'nfo_path': file.nfoPath,
-        });
-      }
-      for (final series in result.newSeries) {
-        await database.upsertSeries({
-          'id': series.id,
-          'title': series.title,
-          'original_title': series.originalTitle,
-          'overview': series.overview,
-          'poster_path': series.posterPath,
-          'backdrop_path': series.backdropPath,
-          'year': series.year,
-          'rating': series.rating,
-          'folder_path': series.folderPath,
-        });
-      }
-      await database.deleteScannedFiles(result.deletedPaths);
-
-      final now = DateTime.now().millisecondsSinceEpoch;
-      for (final path in rootPaths) {
-        await database.updateScanFolder(path, scannedAt: now);
-      }
-    }
-  } catch (_) {
-    // Silent failure on startup scan
-  }
-}
-
 // --- 工厂方法（通过 MediaRepositoryFactory 静态方法，支持多后端） ---
 
-MediaConfigValidator _buildMediaConfigValidator({
-  required SecurityService securityService,
-  required SessionExpiredNotifier sessionExpiredNotifier,
-}) {
-  return (config) async {
-    if (config.type == MediaServiceType.local) {
-      if (config.localPaths.isEmpty) return false;
-      for (final path in config.localPaths) {
-        final dir = Directory(path.trim());
-        if (!await dir.exists()) return false;
-      }
-      return true;
-    }
-
-    if (config.type != MediaServiceType.emby &&
-        config.type != MediaServiceType.jellyfin) {
-      return false;
-    }
-
-    try {
-      final apiClient = EmbyApiClient(
-        config: config,
-        securityService: securityService,
-        sessionExpiredNotifier: sessionExpiredNotifier,
-      );
-      await apiClient.authenticate();
-      await apiClient.getSystemInfo();
-      return true;
-    } catch (error) {
-      return false;
-    }
-  };
-}
 
 // --- 引导辅助函数 ---
 

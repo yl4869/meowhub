@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../providers/stable_id.dart';
 import '../../domain/entities/media_item.dart';
 import '../../domain/repositories/i_media_repository.dart';
 import '../../providers/media_library_provider.dart';
@@ -310,7 +311,7 @@ class _DebouncedSearchResultsState extends State<_DebouncedSearchResults> {
     if (seriesId != null && seriesId.isNotEmpty) {
       return item.copyWith(
         sourceId: seriesId,
-        id: seriesId.hashCode,
+        id: StableId.hash(seriesId),
         title: item.parentTitle ?? item.title,
         originalTitle: item.parentTitle ?? item.originalTitle,
         type: MediaType.series,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../providers/stable_id.dart';
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/media_library_info.dart';
 import '../../domain/entities/watch_history_item.dart';
@@ -504,7 +505,7 @@ class _MyTab extends StatelessWidget {
     final isEpisode = history.seriesId != null && history.seriesId!.isNotEmpty;
     final type = isEpisode ? MediaType.series : MediaType.movie;
     return MediaItem(
-      id: (isEpisode ? history.seriesId! : history.id).hashCode,
+      id: StableId.hash(isEpisode ? history.seriesId! : history.id),
       sourceId: isEpisode ? history.seriesId! : history.id,
       title: isEpisode ? (history.parentTitle ?? history.title) : history.title,
       originalTitle: history.originalTitle ?? history.title,
