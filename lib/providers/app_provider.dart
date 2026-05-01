@@ -35,6 +35,20 @@ class MediaServerInfo {
     required MediaServiceConfig config,
     String? name,
   }) {
+    if (config.type == MediaServiceType.local) {
+      final sorted = List<String>.from(config.localPaths)..sort();
+      final id = 'local:${sorted.join('|').hashCode}';
+      final basePath =
+          config.localPaths.isNotEmpty ? config.localPaths.first : '';
+      return MediaServerInfo(
+        id: id,
+        name: name ?? '本地视频',
+        baseUrl: basePath,
+        type: config.type,
+        region: config.type.displayName,
+        config: config,
+      );
+    }
     final normalizedUrl = config.normalizedServerUrl;
     final normalizedUsername = config.username?.trim().toLowerCase() ?? '';
     return MediaServerInfo(
@@ -86,6 +100,7 @@ class AppProvider extends ChangeNotifier {
 
   // 1. 定义订阅变量，用于后续销毁
   StreamSubscription<MediaServiceConfig?>? _configSubscription;
+  bool _isPersisting = false;
 
   AppProvider({
     required IMediaServiceManager mediaServiceManager, // ✅ 改为接口
@@ -97,8 +112,12 @@ class AppProvider extends ChangeNotifier {
        _fileSourceStore = fileSourceStore {
     // --- 🚀 新增：放置监听逻辑的位置 ---
     _configSubscription = _mediaServiceManager.configStream.listen((config) {
-      // 只要底层 Manager 的配置变了（无论是因为重连、过期更新还是切换）
-      // 都会触发此处的 UI 通知
+      // 持久化期间的 configStream 通知由 saveConfiguredServer 统一处理
+      if (_isPersisting) {
+        debugPrint('[AppProvider] configStream: 正在持久化中，跳过本次通知');
+        return;
+      }
+      debugPrint('[AppProvider] configStream: 外部配置变更, 通知监听器');
       notifyListeners();
     });
 
@@ -217,6 +236,8 @@ class AppProvider extends ChangeNotifier {
     required MediaServiceConfig config,
     String? editingServerId,
   }) async {
+    debugPrint('[AppProvider] saveConfiguredServer: type=${config.type.name}, editingId=$editingServerId, paths=${config.localPaths}');
+
     final updatedServer = MediaServerInfo.fromConfig(
       config: config,
       name: customName,
@@ -234,7 +255,9 @@ class AppProvider extends ChangeNotifier {
       _selectedServerId = updatedServer.id;
     }
 
+    debugPrint('[AppProvider] saveConfiguredServer: serverMap 已更新, selectedId=$_selectedServerId, 开始持久化');
     await _persistState();
+    debugPrint('[AppProvider] saveConfiguredServer: 通知监听器');
     notifyListeners();
   }
 
@@ -242,11 +265,18 @@ class AppProvider extends ChangeNotifier {
     final current = hasSelectedServer ? _serverMap[_selectedServerId] : null;
     final currentConfig = current?.config;
 
-    // 1. 激活配置到 Manager
-    if (currentConfig != null) {
-      await _mediaServiceManager.setConfig(currentConfig);
-    } else {
-      await _mediaServiceManager.clearConfig();
+    debugPrint('[AppProvider] _persistState: selectedId=$_selectedServerId, hasConfig=${currentConfig != null}');
+
+    // 1. 激活配置到 Manager（抑制期间 configStream 通知，由外层统一 notify）
+    _isPersisting = true;
+    try {
+      if (currentConfig != null) {
+        await _mediaServiceManager.setConfig(currentConfig);
+      } else {
+        await _mediaServiceManager.clearConfig();
+      }
+    } finally {
+      _isPersisting = false;
     }
 
     // 2. 提取所有有效的服务器进行持久化
@@ -261,6 +291,7 @@ class AppProvider extends ChangeNotifier {
         selectedSourceId: hasSelectedServer ? _selectedServerId : null,
       ),
     );
+    debugPrint('[AppProvider] _persistState: 持久化完成, sources=${persistedSources.length}');
   }
 
   @override
@@ -278,6 +309,7 @@ extension MediaServiceTypeDisplayName on MediaServiceType {
       MediaServiceType.emby => 'Emby',
       MediaServiceType.plex => 'Plex',
       MediaServiceType.jellyfin => 'Jellyfin',
+      MediaServiceType.local => '本地视频',
     };
   }
 }

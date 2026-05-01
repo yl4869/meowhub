@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../providers/stable_id.dart';
 import '../../domain/entities/media_item.dart';
 import '../../domain/repositories/i_media_repository.dart';
 import '../../providers/media_library_provider.dart';
@@ -52,31 +55,82 @@ class MeowSearchDelegate extends SearchDelegate<MediaItem?> {
     );
   }
 
-  @override
-  Widget buildResults(BuildContext context) {
-    return _SearchResults(
-      query: query,
-      onItemSelected: (item) => close(context, item),
-    );
-  }
+  static const Duration _debounceDelay = Duration(milliseconds: 300);
+  static const int _minQueryLength = 2;
+  static const int _localSearchMaxItems = 500;
 
   @override
   Widget buildSuggestions(BuildContext context) {
     if (query.trim().isEmpty) {
       return _SearchEmptyState();
     }
-    return _SearchResults(
+    if (query.trim().length < _minQueryLength) {
+      return const _SearchEmptyState(message: '请至少输入 2 个字符');
+    }
+    return _DebouncedSearchResults(
+      query: query,
+      onItemSelected: (item) => close(context, item),
+    );
+  }
+
+  @override
+  Widget buildResults(BuildContext context) {
+    if (query.trim().length < _minQueryLength) {
+      return const _SearchEmptyState(message: '请至少输入 2 个字符');
+    }
+    return _DebouncedSearchResults(
       query: query,
       onItemSelected: (item) => close(context, item),
     );
   }
 }
 
-class _SearchResults extends StatelessWidget {
-  const _SearchResults({required this.query, required this.onItemSelected});
+class _DebouncedSearchResults extends StatefulWidget {
+  const _DebouncedSearchResults({
+    required this.query,
+    required this.onItemSelected,
+  });
 
   final String query;
   final ValueChanged<MediaItem> onItemSelected;
+
+  @override
+  State<_DebouncedSearchResults> createState() =>
+      _DebouncedSearchResultsState();
+}
+
+class _DebouncedSearchResultsState extends State<_DebouncedSearchResults> {
+  Timer? _debounceTimer;
+  String _debouncedQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _debouncedQuery = widget.query;
+  }
+
+  @override
+  void didUpdateWidget(covariant _DebouncedSearchResults oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.query == _debouncedQuery) return;
+
+    _debounceTimer?.cancel();
+    if (widget.query.trim().isEmpty) {
+      setState(() => _debouncedQuery = widget.query);
+      return;
+    }
+    _debounceTimer = Timer(MeowSearchDelegate._debounceDelay, () {
+      if (mounted) {
+        setState(() => _debouncedQuery = widget.query);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -87,7 +141,10 @@ class _SearchResults extends StatelessWidget {
     return ValueListenableBuilder<int>(
       valueListenable: needsRefresh,
       builder: (context, refresh, child) {
-        final q = query.trim();
+        final q = _debouncedQuery.trim();
+        if (q.isEmpty || q.length < MeowSearchDelegate._minQueryLength) {
+          return const _SearchEmptyState(message: '请至少输入 2 个字符');
+        }
         return FutureBuilder<List<MediaItem>>(
           future: _searchAll(repository, libraryProvider, q),
           key: ValueKey('search_${q}_$refresh'),
@@ -136,7 +193,7 @@ class _SearchResults extends StatelessWidget {
                       mediaItem: item,
                       isFavorite: item.isFavorite,
                       progress: item.playbackProgress?.fraction ?? 0,
-                      onTap: () => onItemSelected(
+                      onTap: () => widget.onItemSelected(
                         _resolveNavigationTarget(item),
                       ),
                     );
@@ -185,6 +242,7 @@ class _SearchResults extends StatelessWidget {
 
     final allItems = provider.state.libraryItems.values
         .expand((items) => items)
+        .take(MeowSearchDelegate._localSearchMaxItems)
         .toList(growable: false);
 
     if (allItems.isEmpty) return const [];
@@ -253,7 +311,7 @@ class _SearchResults extends StatelessWidget {
     if (seriesId != null && seriesId.isNotEmpty) {
       return item.copyWith(
         sourceId: seriesId,
-        id: seriesId.hashCode,
+        id: StableId.hash(seriesId),
         title: item.parentTitle ?? item.title,
         originalTitle: item.parentTitle ?? item.originalTitle,
         type: MediaType.series,

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../data/mappers/media_service_config_serializer.dart';
 import '../../domain/entities/media_service_config.dart';
 
 class PersistedFileSource {
@@ -19,14 +20,14 @@ class PersistedFileSource {
   final MediaServiceConfig config;
 
   Map<String, dynamic> toJson() {
-    return <String, dynamic>{'id': id, 'name': name, 'config': config.toJson()};
+    return <String, dynamic>{'id': id, 'name': name, 'config': MediaServiceConfigSerializer.toJson(config)};
   }
 
   factory PersistedFileSource.fromJson(Map<String, dynamic> json) {
     return PersistedFileSource(
       id: json['id']?.toString().trim() ?? '',
       name: json['name']?.toString().trim() ?? '',
-      config: MediaServiceConfig.fromJson(
+      config: MediaServiceConfigSerializer.fromJson(
         (json['config'] as Map?)?.cast<String, dynamic>() ??
             const <String, dynamic>{},
       ),
