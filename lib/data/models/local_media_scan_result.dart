@@ -6,6 +6,7 @@ class LocalMediaScanResult {
     this.newSeries = const [],
     this.scanDuration = Duration.zero,
     this.totalScanned = 0,
+    this.errors = const [],
   });
 
   final List<ScannedFileMetadata> newFiles;
@@ -14,6 +15,7 @@ class LocalMediaScanResult {
   final List<SeriesMetadata> newSeries;
   final Duration scanDuration;
   final int totalScanned;
+  final List<String> errors;
 
   bool get hasChanges =>
       newFiles.isNotEmpty ||
@@ -30,6 +32,7 @@ class LocalMediaScanResult {
         'newSeries': newSeries.map((s) => s.toJson()).toList(),
         'scanDurationMs': scanDuration.inMilliseconds,
         'totalScanned': totalScanned,
+        'errors': errors,
       };
 
   factory LocalMediaScanResult.fromJson(Map<String, dynamic> json) {
@@ -57,6 +60,10 @@ class LocalMediaScanResult {
         milliseconds: (json['scanDurationMs'] as int?) ?? 0,
       ),
       totalScanned: (json['totalScanned'] as int?) ?? 0,
+      errors: (json['errors'] as List<dynamic>?)
+              ?.cast<String>()
+              .toList() ??
+          const [],
     );
   }
 }

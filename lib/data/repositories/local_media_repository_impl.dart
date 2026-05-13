@@ -32,7 +32,7 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<MediaItem> getMediaDetail(MediaItem item) async {
-    if (item.type == MediaType.series && item.seriesId == null) {
+    if (item.type == MediaType.series && item.playableItems.isEmpty) {
       final episodes = await getPlayableItems(item);
       return item.copyWith(playableItems: episodes);
     }

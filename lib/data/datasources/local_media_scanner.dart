@@ -50,6 +50,7 @@ class LocalMediaScanner {
   ) async {
     final stopwatch = Stopwatch()..start();
     final scanner = const LocalMediaScanner();
+    final errors = <String>[];
 
     debugPrint('[LocalMedia][Scanner] ===== Isolate 扫描开始 =====');
     debugPrint('[LocalMedia][Scanner] 根路径: $rootPaths');
@@ -58,10 +59,16 @@ class LocalMediaScanner {
     final enumerated = <_FileEntry>[];
     for (final rootPath in rootPaths) {
       final before = enumerated.length;
-      enumerated.addAll(scanner._enumerateFiles(rootPath, rootPath));
+      enumerated.addAll(scanner._enumerateFiles(rootPath, rootPath, errors));
       debugPrint('[LocalMedia][Scanner] 枚举路径 "$rootPath": 找到 ${enumerated.length - before} 个视频文件');
     }
     debugPrint('[LocalMedia][Scanner] 枚举总计: ${enumerated.length} 个视频文件');
+    if (errors.isNotEmpty) {
+      debugPrint('[LocalMedia][Scanner] 枚举过程中有 ${errors.length} 个错误:');
+      for (final e in errors) {
+        debugPrint('[LocalMedia][Scanner]   - $e');
+      }
+    }
 
     final diff = scanner._diff(enumerated, knownFiles);
     debugPrint('[LocalMedia][Scanner] Diff 结果: 新增=${diff.added.length}, 变更=${diff.changed.length}, 删除=${diff.deleted.length}');
@@ -112,6 +119,7 @@ class LocalMediaScanner {
       newSeries: series,
       scanDuration: stopwatch.elapsed,
       totalScanned: enumerated.length,
+      errors: errors,
     );
   }
 
@@ -125,11 +133,13 @@ class LocalMediaScanner {
 
   // --- Private implementation ---
 
-  List<_FileEntry> _enumerateFiles(String rootPath, String rootForRelative) {
+  List<_FileEntry> _enumerateFiles(String rootPath, String rootForRelative, List<String> errors) {
     final entries = <_FileEntry>[];
     final dir = Directory(rootPath);
     if (!dir.existsSync()) {
-      debugPrint('[LocalMedia][Scanner]   _enumerateFiles: 目录不存在, 跳过: $rootPath');
+      final msg = '目录不存在或无法访问: $rootPath';
+      debugPrint('[LocalMedia][Scanner]   _enumerateFiles: $msg');
+      errors.add(msg);
       return entries;
     }
 
@@ -156,12 +166,13 @@ class LocalMediaScanner {
             debugPrint('[LocalMedia][Scanner]     -> 跳过隐藏目录: $name');
             continue; // skip hidden dirs
           }
-          entries.addAll(_enumerateFiles(entity.path, rootForRelative));
+          entries.addAll(_enumerateFiles(entity.path, rootForRelative, errors));
         }
       }
     } catch (e) {
-      debugPrint('[LocalMedia][Scanner]   _enumerateFiles: 无法读取目录 "$rootPath": $e');
-      // Skip directories we cannot read
+      final msg = '无法读取目录 "$rootPath": $e';
+      debugPrint('[LocalMedia][Scanner]   _enumerateFiles: $msg');
+      errors.add(msg);
     }
 
     return entries;

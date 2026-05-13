@@ -7,6 +7,9 @@ import '../../domain/entities/media_item.dart';
 import '../../domain/entities/media_library_info.dart';
 import '../../domain/entities/watch_history_item.dart';
 import '../../providers/app_provider.dart';
+import '../../domain/entities/media_service_config.dart';
+import '../../domain/entities/scan_progress.dart';
+import '../../domain/repositories/i_media_maintainer.dart';
 import '../../providers/media_library_provider.dart';
 import '../../providers/media_with_user_data_provider.dart';
 import '../atoms/media_image.dart';
@@ -66,7 +69,11 @@ class _HomeViewState extends State<HomeView> {
         availableServers: availableServers,
         favoriteCount: favoriteCount,
         inProgressCount: inProgressCount,
+        scanProgress: mediaLibraryProvider.state.scanProgress,
         onRefresh: mediaLibraryProvider.refreshMedia,
+        onRescan: () => context.read<IMediaMaintainer>().runScan(
+              appProvider.selectedServer.config?.localPaths ?? const [],
+            ),
         onRetry: mediaLibraryProvider.loadInitialMedia,
         onMovieTap: (mediaItem) => _openMovie(context, mediaItem),
         onOpenLibraryCollection: (libraryInfo) =>
@@ -165,7 +172,9 @@ class _MediaLibraryTab extends StatelessWidget {
     required this.availableServers,
     required this.favoriteCount,
     required this.inProgressCount,
+    required this.scanProgress,
     required this.onRefresh,
+    required this.onRescan,
     required this.onRetry,
     required this.onMovieTap,
     required this.onOpenLibraryCollection,
@@ -186,7 +195,9 @@ class _MediaLibraryTab extends StatelessWidget {
   final List<MediaServerInfo> availableServers;
   final int favoriteCount;
   final int inProgressCount;
+  final ScanProgress scanProgress;
   final Future<void> Function() onRefresh;
+  final VoidCallback onRescan;
   final VoidCallback onRetry;
   final ValueChanged<MediaItem> onMovieTap;
   final ValueChanged<MediaLibraryInfo> onOpenLibraryCollection;
@@ -212,7 +223,9 @@ class _MediaLibraryTab extends StatelessWidget {
           availableServers: availableServers,
           favoriteCount: favoriteCount,
           inProgressCount: inProgressCount,
+          scanProgress: scanProgress,
           onRefresh: onRefresh,
+          onRescan: onRescan,
           onRetry: onRetry,
           onMovieTap: onMovieTap,
           onOpenLibraryCollection: onOpenLibraryCollection,
@@ -235,7 +248,9 @@ class _MediaLibraryTab extends StatelessWidget {
           availableServers: availableServers,
           favoriteCount: favoriteCount,
           inProgressCount: inProgressCount,
+          scanProgress: scanProgress,
           onRefresh: onRefresh,
+          onRescan: onRescan,
           onRetry: onRetry,
           onMovieTap: onMovieTap,
           onOpenLibraryCollection: onOpenLibraryCollection,
@@ -293,10 +308,27 @@ class _FileSourceTab extends StatelessWidget {
                 ),
                 if (hasSelectedServer) ...[
                   const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: onClearServerSelection,
-                    icon: const Icon(Icons.link_off_rounded),
-                    label: const Text('退出当前文件源'),
+                  Row(
+                    children: [
+                      if (selectedServer.type == MediaServiceType.local)
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            final paths = selectedServer.config?.localPaths ?? const [];
+                            if (paths.isNotEmpty) {
+                              context.read<IMediaMaintainer>().runScan(paths);
+                            }
+                          },
+                          icon: const Icon(Icons.refresh_rounded),
+                          label: const Text('重新扫描'),
+                        ),
+                      if (selectedServer.type == MediaServiceType.local)
+                        const SizedBox(width: 10),
+                      OutlinedButton.icon(
+                        onPressed: onClearServerSelection,
+                        icon: const Icon(Icons.link_off_rounded),
+                        label: const Text('退出当前文件源'),
+                      ),
+                    ],
                   ),
                 ],
               ],

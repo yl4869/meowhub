@@ -430,10 +430,11 @@ class _MeowHubAppState extends State<MeowHubApp> {
         ),
 
         // 4. 媒体库管理
-        ChangeNotifierProxyProvider<IMediaRepository, MediaLibraryProvider>(
+        ChangeNotifierProxyProvider2<IMediaRepository, IMediaMaintainer, MediaLibraryProvider>(
           create: (context) {
             final provider = MediaLibraryProvider(
               mediaRepository: context.read<IMediaRepository>(),
+              mediaMaintainer: context.read<IMediaMaintainer>(),
             );
             final maintainer = context.read<IMediaMaintainer>();
             maintainer.onScanCompleted = () {
@@ -444,9 +445,9 @@ class _MeowHubAppState extends State<MeowHubApp> {
             });
             return provider;
           },
-          update: (context, repo, previous) {
+          update: (context, repo, maintainer, previous) {
             final provider =
-                previous ?? MediaLibraryProvider(mediaRepository: repo);
+                previous ?? MediaLibraryProvider(mediaRepository: repo, mediaMaintainer: maintainer);
             provider.updateRepository(repo);
             return provider;
           },

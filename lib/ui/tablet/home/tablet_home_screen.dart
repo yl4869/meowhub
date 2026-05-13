@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../../domain/entities/media_item.dart';
 import '../../../domain/entities/media_library_info.dart';
+import '../../../domain/entities/scan_progress.dart';
 import '../../../providers/app_provider.dart';
 import '../../../providers/user_data_provider.dart';
 import '../../../theme/app_theme.dart';
@@ -28,7 +29,9 @@ class TabletHomeScreen extends StatelessWidget {
     required this.availableServers,
     required this.favoriteCount,
     required this.inProgressCount,
+    required this.scanProgress,
     required this.onRefresh,
+    required this.onRescan,
     required this.onRetry,
     required this.onMovieTap,
     required this.onOpenLibraryCollection,
@@ -50,7 +53,9 @@ class TabletHomeScreen extends StatelessWidget {
   final List<MediaServerInfo> availableServers;
   final int favoriteCount;
   final int inProgressCount;
+  final ScanProgress scanProgress;
   final Future<void> Function() onRefresh;
+  final VoidCallback onRescan;
   final VoidCallback onRetry;
   final ValueChanged<MediaItem> onMovieTap;
   final ValueChanged<MediaLibraryInfo> onOpenLibraryCollection;
@@ -176,6 +181,38 @@ class TabletHomeScreen extends StatelessWidget {
                       parent: AlwaysScrollableScrollPhysics(),
                     ),
                     slivers: [
+                      if (scanProgress.isScanning)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 14),
+                            child: _TabletScanStatusBanner(
+                              icon: Icons.refresh_rounded,
+                              message: scanProgress.message ?? '正在扫描文件夹...',
+                            ),
+                          ),
+                        )
+                      else if (scanProgress.isError)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 14),
+                            child: _TabletScanStatusBanner(
+                              icon: Icons.error_outline_rounded,
+                              message: scanProgress.message ?? '扫描失败',
+                              errors: scanProgress.errors,
+                            ),
+                          ),
+                        )
+                      else if (scanProgress.isCompleted && scanProgress.errors.isNotEmpty)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 14),
+                            child: _TabletScanStatusBanner(
+                              icon: Icons.warning_amber_rounded,
+                              message: scanProgress.message ?? '扫描完成，但有部分错误',
+                              errors: scanProgress.errors,
+                            ),
+                          ),
+                        ),
                       if (!hasSelectedServer)
                         SliverFillRemaining(
                           hasScrollBody: false,
@@ -728,6 +765,70 @@ class _TabletSearchButton extends StatelessWidget {
             child: const Icon(Icons.search_rounded, color: Colors.white70, size: 22),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _TabletScanStatusBanner extends StatelessWidget {
+  const _TabletScanStatusBanner({
+    required this.icon,
+    required this.message,
+    this.errors = const [],
+  });
+
+  final IconData icon;
+  final String message;
+  final List<String> errors;
+
+  bool get _isScanning => icon == Icons.refresh_rounded;
+
+  @override
+  Widget build(BuildContext context) {
+    final accentColor = _isScanning
+        ? AppTheme.accentColor
+        : const Color(0xFFFF8A65);
+
+    return AppSurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: _isScanning
+                    ? const CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppTheme.accentColor,
+                      )
+                    : Icon(icon, color: accentColor, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  message,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+            ],
+          ),
+          if (errors.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ...errors.map(
+              (e) => Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  e,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.white54,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

@@ -301,20 +301,20 @@ class LocalMediaDatabase {
     final whereArgs = <dynamic>[];
 
     if (libraryId != null && libraryId != 'local-all') {
-      where.add('folder_path LIKE ?');
+      where.add('s.folder_path LIKE ?');
       whereArgs.add('$libraryId%');
     }
 
     final whereClause = where.isNotEmpty ? 'WHERE ${where.join(' AND ')}' : '';
 
-    var orderBy = 'ORDER BY title';
+    var orderBy = 'ORDER BY s.title';
     if (sortBy != null) {
       final safeSortBy = _safeSeriesColumn(sortBy) ?? 'title';
       final safeSortOrder = (sortOrder?.toUpperCase() == 'DESC' || sortOrder?.toLowerCase() == 'descending') ? 'DESC' : 'ASC';
-      orderBy = 'ORDER BY $safeSortBy $safeSortOrder';
+      orderBy = 'ORDER BY s.$safeSortBy $safeSortOrder';
     }
 
-    var query = 'SELECT * FROM series $whereClause $orderBy';
+    var query = 'SELECT DISTINCT s.* FROM series s INNER JOIN scanned_files f ON f.series_id = s.id $whereClause $orderBy';
     if (limit != null) {
       query += ' LIMIT ?';
       whereArgs.add(limit);

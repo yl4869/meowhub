@@ -82,6 +82,7 @@ class LocalMediaMaintainer implements IMediaMaintainer {
         changedFilesCount: result.changedFiles.length,
         deletedFilesCount: result.deletedPaths.length,
         newSeriesCount: result.newSeries.length,
+        errors: result.errors,
       );
       _progressController.add(_currentProgress);
       onScanCompleted?.call();
