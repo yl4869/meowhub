@@ -11,12 +11,9 @@ import '../datasources/local_file_resolver.dart';
 class LocalMediaRepositoryImpl implements IMediaRepository {
   LocalMediaRepositoryImpl({
     required LocalMediaDatabase database,
-    LocalFileResolver? fileResolver,
-  }) : _database = database,
-       _fileResolver = fileResolver ?? LocalFileResolver();
+  }) : _database = database;
 
   final LocalMediaDatabase _database;
-  final LocalFileResolver _fileResolver;
 
   @override
   Future<List<MediaItem>> getMovies() async {
@@ -120,7 +117,7 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
           originalTitle: '',
           type: MediaType.series,
           sourceType: WatchSourceType.local,
-          posterUrl: _fileResolver.posterUrl(epRow),
+          posterUrl: LocalFileResolver.posterUrl(epRow),
           year: epRow['year'] as int?,
           overview: '',
           seriesId: entry.key,
@@ -292,8 +289,8 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
           ? MediaType.series
           : MediaType.movie,
       sourceType: WatchSourceType.local,
-      posterUrl: _fileResolver.posterUrl(row),
-      backdropUrl: _fileResolver.backdropUrl(row),
+      posterUrl: LocalFileResolver.posterUrl(row),
+      backdropUrl: LocalFileResolver.backdropUrl(row),
       rating: (row['rating'] as num?)?.toDouble() ?? 0,
       year: row['year'] as int?,
       overview: row['overview'] as String? ?? '',
@@ -315,10 +312,10 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
       originalTitle: (row['original_title'] as String?) ?? '',
       type: MediaType.series,
       sourceType: WatchSourceType.local,
-      posterUrl: _fileResolver.posterUrl({
+      posterUrl: LocalFileResolver.posterUrl({
         'poster_path': row['poster_path'],
       }),
-      backdropUrl: _fileResolver.backdropUrl({
+      backdropUrl: LocalFileResolver.backdropUrl({
         'backdrop_path': row['backdrop_path'],
       }),
       rating: (row['rating'] as num?)?.toDouble() ?? 0,

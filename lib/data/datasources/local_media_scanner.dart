@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 
@@ -8,7 +7,7 @@ import 'local_file_resolver.dart';
 import 'local_nfo_parser.dart';
 
 class LocalMediaScanner {
-  const LocalMediaScanner();
+  LocalMediaScanner._();
 
   static const _videoExtensions = {
     '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m4v',
@@ -49,7 +48,6 @@ class LocalMediaScanner {
     Map<String, int> knownFiles,
   ) async {
     final stopwatch = Stopwatch()..start();
-    final scanner = const LocalMediaScanner();
     final errors = <String>[];
 
     debugPrint('[LocalMedia][Scanner] ===== Isolate 扫描开始 =====');
@@ -59,7 +57,7 @@ class LocalMediaScanner {
     final enumerated = <_FileEntry>[];
     for (final rootPath in rootPaths) {
       final before = enumerated.length;
-      enumerated.addAll(scanner._enumerateFiles(rootPath, rootPath, errors));
+      enumerated.addAll(_enumerateFiles(rootPath, rootPath, errors));
       debugPrint('[LocalMedia][Scanner] 枚举路径 "$rootPath": 找到 ${enumerated.length - before} 个视频文件');
     }
     debugPrint('[LocalMedia][Scanner] 枚举总计: ${enumerated.length} 个视频文件');
@@ -70,13 +68,13 @@ class LocalMediaScanner {
       }
     }
 
-    final diff = scanner._diff(enumerated, knownFiles);
+    final diff = _diff(enumerated, knownFiles);
     debugPrint('[LocalMedia][Scanner] Diff 结果: 新增=${diff.added.length}, 变更=${diff.changed.length}, 删除=${diff.deleted.length}');
 
     final newAndChangedFiles = <ScannedFileMetadata>[];
 
     for (final entry in [...diff.added, ...diff.changed]) {
-      final metadata = scanner._extractMetadata(entry);
+      final metadata = _extractMetadata(entry);
       newAndChangedFiles.add(metadata);
     }
 
@@ -86,7 +84,7 @@ class LocalMediaScanner {
     }
 
     // Post-process: group unclassified files from multi-video folders into series
-    final groupedFiles = scanner._postProcessFolderGrouping(
+    final groupedFiles = _postProcessFolderGrouping(
       newAndChangedFiles,
       rootPaths,
     );
@@ -100,7 +98,7 @@ class LocalMediaScanner {
       debugPrint('[LocalMedia][Scanner] 文件夹分组: 新增 ${groupedCount - previouslySeriesCount} 个系列文件');
     }
 
-    final series = scanner._detectSeries(groupedFiles);
+    final series = _detectSeries(groupedFiles);
     debugPrint('[LocalMedia][Scanner] 系列检测完成: ${series.length} 个系列');
     for (final s in series) {
       debugPrint('[LocalMedia][Scanner]   系列: id=${s.id} | title="${s.title}" | poster=${s.posterPath != null ? "有" : "无"}');
@@ -123,17 +121,9 @@ class LocalMediaScanner {
     );
   }
 
-  /// Run scan in a separate Isolate to avoid blocking the UI.
-  static Future<LocalMediaScanResult> runInIsolate(
-    List<String> rootPaths,
-    Map<String, int> knownFiles,
-  ) async {
-    return Isolate.run(() => runScan(rootPaths, knownFiles));
-  }
-
   // --- Private implementation ---
 
-  List<_FileEntry> _enumerateFiles(String rootPath, String rootForRelative, List<String> errors) {
+  static List<_FileEntry> _enumerateFiles(String rootPath, String rootForRelative, List<String> errors) {
     final entries = <_FileEntry>[];
     final dir = Directory(rootPath);
     if (!dir.existsSync()) {
@@ -178,7 +168,7 @@ class LocalMediaScanner {
     return entries;
   }
 
-  _ScanDiff _diff(List<_FileEntry> enumerated, Map<String, int> knownFiles) {
+  static _ScanDiff _diff(List<_FileEntry> enumerated, Map<String, int> knownFiles) {
     final added = <_FileEntry>[];
     final changed = <_FileEntry>[];
     final enumeratedPaths = <String>{};
@@ -200,7 +190,7 @@ class LocalMediaScanner {
     return _ScanDiff(added: added, changed: changed, deleted: deleted);
   }
 
-  ScannedFileMetadata _extractMetadata(_FileEntry entry) {
+  static ScannedFileMetadata _extractMetadata(_FileEntry entry) {
     final file = File(entry.path);
     final fileName = entry.path.split(Platform.pathSeparator).last;
     final fileSize = entry.size;
@@ -305,7 +295,7 @@ class LocalMediaScanner {
     );
   }
 
-  List<SeriesMetadata> _detectSeries(List<ScannedFileMetadata> files) {
+  static List<SeriesMetadata> _detectSeries(List<ScannedFileMetadata> files) {
     debugPrint('[LocalMedia][Scanner] --- 开始系列检测, 候选文件: ${files.length} ---');
     final series = <String, SeriesMetadata>{};
 
@@ -369,7 +359,7 @@ class LocalMediaScanner {
   /// Post-process: group unclassified files from multi-video folders into series.
   /// This handles folders where videos don't have SxxExx/NFO metadata but are
   /// clearly episodes of the same show based on folder grouping.
-  List<ScannedFileMetadata> _postProcessFolderGrouping(
+  static List<ScannedFileMetadata> _postProcessFolderGrouping(
     List<ScannedFileMetadata> files,
     List<String> rootPaths,
   ) {
@@ -456,7 +446,7 @@ class LocalMediaScanner {
 
   /// Try to extract episode numbers from filenames. Missing numbers get
   /// auto-assigned sequentially starting from 1, skipping already-used numbers.
-  List<int> _assignEpisodeNumbers(List<ScannedFileMetadata> files) {
+  static List<int> _assignEpisodeNumbers(List<ScannedFileMetadata> files) {
     final results = <int>[];
     final usedNumbers = <int>{};
 
@@ -542,7 +532,7 @@ class LocalMediaScanner {
     return results;
   }
 
-  String? _findImage(File videoFile, {required bool isPoster}) {
+  static String? _findImage(File videoFile, {required bool isPoster}) {
     final dir = videoFile.parent;
     final basename = LocalNfoParser.basenameWithoutExtension(videoFile.path);
 
@@ -570,7 +560,7 @@ class LocalMediaScanner {
     return generic;
   }
 
-  String? _findImageInDir(Directory dir, {required bool isPoster}) {
+  static String? _findImageInDir(Directory dir, {required bool isPoster}) {
     final names = isPoster ? _imageNames : _fanartNames;
     try {
       for (final entity in dir.listSync()) {
@@ -583,7 +573,7 @@ class LocalMediaScanner {
     return null;
   }
 
-  String? _findSeriesFolder(String filePath) {
+  static String? _findSeriesFolder(String filePath) {
     // Walk up directories looking for the series root.
     // Strategy: walk up from the video file. If a directory contains tvshow.nfo
     // or its name doesn't match a season folder pattern, it's the series root.

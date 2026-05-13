@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 
@@ -58,9 +59,8 @@ class LocalMediaMaintainer implements IMediaMaintainer {
         message: '发现 ${knownFiles.length} 个已知文件，正在检测变更...',
       ));
 
-      final result = await LocalMediaScanner.runInIsolate(
-        rootPaths,
-        knownFiles,
+      final result = await Isolate.run(
+        () => LocalMediaScanner.runScan(rootPaths, knownFiles),
       );
       debugPrint(
         '[LocalMedia][Maintainer] Isolate 扫描完成, 耗时: ${result.scanDuration}',
@@ -103,12 +103,6 @@ class LocalMediaMaintainer implements IMediaMaintainer {
 
     _isScanning = false;
     debugPrint('[LocalMedia][Maintainer] ========== 扫描结束 ==========');
-  }
-
-  @override
-  Future<void> runIncrementalScan(List<String> rootPaths) async {
-    if (_isScanning) return;
-    await runScan(rootPaths);
   }
 
   void _emitProgress(ScanProgress progress) {

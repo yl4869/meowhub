@@ -14,8 +14,6 @@ import 'core/services/security_service.dart';
 import 'core/session/session_expired_notifier.dart';
 import 'data/datasources/emby_api_client.dart';
 import 'data/datasources/local_media_database.dart';
-import 'data/datasources/local_thumbnail_service.dart';
-
 import 'data/datasources/local_watch_history_data_source.dart';
 import 'data/repositories/empty_media_repository_impl.dart';
 import 'data/repositories/media_repository_factory.dart';
@@ -94,8 +92,6 @@ void main() async {
 
 	// 5. 本地媒体数据库初始化
 	final localMediaDatabase = LocalMediaDatabase();
-	await localMediaDatabase.initialize();
-	final localThumbnailService = LocalThumbnailService();
 
 		// 启动时扫描通过 IMediaMaintainer 触发
 		final selectedConfig = fileSourceBootstrap.selectedServer?.config;
@@ -121,7 +117,6 @@ void main() async {
         sessionExpiredNotifier: sessionExpiredNotifier,
         localWatchHistoryDataSource: localWatchHistoryDataSource,
         localMediaDatabase: localMediaDatabase,
-        localThumbnailService: localThumbnailService,
         initialLocalRootPaths: initialLocalRootPaths,
       ),
     ),
@@ -141,7 +136,6 @@ class MeowHubApp extends StatefulWidget {
     required this.sessionExpiredNotifier,
     required this.localWatchHistoryDataSource,
     required this.localMediaDatabase,
-    required this.localThumbnailService,
     this.initialLocalRootPaths = const [],
   });
 
@@ -155,7 +149,6 @@ class MeowHubApp extends StatefulWidget {
   final SessionExpiredNotifier sessionExpiredNotifier;
   final LocalWatchHistoryDataSource localWatchHistoryDataSource;
   final LocalMediaDatabase localMediaDatabase;
-  final LocalThumbnailService localThumbnailService;
   final List<String> initialLocalRootPaths;
 
   @override
@@ -343,11 +336,8 @@ class _MeowHubAppState extends State<MeowHubApp> {
             return MediaRepositoryFactory.createMediaRepository(
               config: config,
               securityService: security,
-              localWatchHistoryDataSource:
-                  widget.localWatchHistoryDataSource,
               embyApiClient: apiClient,
               localMediaDatabase: widget.localMediaDatabase,
-              localThumbnailService: widget.localThumbnailService,
             );
           },
         ),
@@ -364,11 +354,8 @@ class _MeowHubAppState extends State<MeowHubApp> {
             return MediaRepositoryFactory.createPlaybackRepository(
               config: config,
               securityService: security,
-              localWatchHistoryDataSource:
-                  widget.localWatchHistoryDataSource,
               embyApiClient: apiClient,
               localMediaDatabase: widget.localMediaDatabase,
-              localThumbnailService: widget.localThumbnailService,
             );
           },
         ),
@@ -387,7 +374,6 @@ class _MeowHubAppState extends State<MeowHubApp> {
 
         // 本地媒体服务
         Provider<LocalMediaDatabase>.value(value: widget.localMediaDatabase),
-        Provider<LocalThumbnailService>.value(value: widget.localThumbnailService),
         Provider<IMediaMaintainer>(
           create: (_) {
             final maintainer = LocalMediaMaintainer(database: widget.localMediaDatabase);
