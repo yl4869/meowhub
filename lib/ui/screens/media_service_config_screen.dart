@@ -175,20 +175,6 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
                   value: MediaServiceType.emby,
                   label: Text('Emby'),
                 ),
-                ButtonSegment(
-                  value: MediaServiceType.plex,
-                  label: Text('Plex'),
-                  enabled: false,
-                ),
-                ButtonSegment(
-                  value: MediaServiceType.jellyfin,
-                  label: Text('Jellyfin'),
-                  enabled: false,
-                ),
-                ButtonSegment(
-                  value: MediaServiceType.local,
-                  label: Text('本地'),
-                ),
               ],
               selected: {_selectedType},
               onSelectionChanged: (selected) {

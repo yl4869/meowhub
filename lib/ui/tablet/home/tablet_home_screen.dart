@@ -38,7 +38,6 @@ class TabletHomeScreen extends StatelessWidget {
     required this.onServerSelected,
     required this.onClearServerSelection,
     required this.onOpenFileSources,
-    required this.onOpenMobileSample,
   });
 
   final double maxWidth;
@@ -62,12 +61,9 @@ class TabletHomeScreen extends StatelessWidget {
   final ValueChanged<MediaServerInfo> onServerSelected;
   final VoidCallback onClearServerSelection;
   final VoidCallback onOpenFileSources;
-  final VoidCallback onOpenMobileSample;
 
   @override
   Widget build(BuildContext context) {
-    final allItems = libraryItems.values.expand((items) => items).toList();
-    final featured = allItems.isNotEmpty ? allItems.first : null;
     final sidebarWidth = maxWidth >= 1200 ? 340.0 : 300.0;
     final contentWidth = maxWidth - sidebarWidth - 56;
     final hasContent = libraryItems.values.any((items) => items.isNotEmpty);
@@ -105,33 +101,7 @@ class TabletHomeScreen extends StatelessWidget {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '平板端使用左侧信息面板 + 右侧内容海报墙，更适合高频浏览。',
-                      style: Theme.of(context).textTheme.bodyMedium,
-                    ),
                     const SizedBox(height: 18),
-                    AppSurfaceCard(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SectionHeader(
-                            title: '布局样例',
-                            subtitle: '保留响应式壳，单独强化手机端展示',
-                          ),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            child: FilledButton.icon(
-                              onPressed: onOpenMobileSample,
-                              icon: const Icon(Icons.phone_iphone_rounded),
-                              label: const Text('打开手机样例'),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
                     AppSurfaceCard(
                       child: Column(
                         children: [
@@ -157,16 +127,16 @@ class TabletHomeScreen extends StatelessWidget {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    AppSurfaceCard(
-                      padding: EdgeInsets.zero,
-                      child: _FeaturedPanel(
-                        featured: featured,
-                        onTap: featured == null
-                            ? onOpenMobileSample
-                            : () => onMovieTap(featured),
+                    if (continueWatching.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      AppSurfaceCard(
+                        padding: EdgeInsets.zero,
+                        child: _NowWatchingCard(
+                          item: continueWatching.first,
+                          onTap: () => onMovieTap(continueWatching.first),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -592,13 +562,13 @@ class _NoFileSourceSelectedPanel extends StatelessWidget {
               ),
               const SizedBox(height: 18),
               Text(
-                '媒体库暂未连接文件源',
+                '未连接文件源',
                 style: Theme.of(context).textTheme.headlineSmall,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 10),
               Text(
-                '你可以先去文件源页选择一个服务器，或稍后再回来。连接建立后，海报墙和续播状态会按当前服务器重新刷新。',
+                '请先添加文件源以浏览媒体内容',
                 style: Theme.of(context).textTheme.bodyMedium,
                 textAlign: TextAlign.center,
               ),
@@ -606,7 +576,7 @@ class _NoFileSourceSelectedPanel extends StatelessWidget {
               FilledButton.icon(
                 onPressed: onOpenFileSources,
                 icon: const Icon(Icons.dns_rounded),
-                label: const Text('去选择文件源'),
+                label: const Text('添加文件源'),
               ),
             ],
           ),
@@ -616,14 +586,19 @@ class _NoFileSourceSelectedPanel extends StatelessWidget {
   }
 }
 
-class _FeaturedPanel extends StatelessWidget {
-  const _FeaturedPanel({required this.featured, required this.onTap});
+class _NowWatchingCard extends StatelessWidget {
+  const _NowWatchingCard({required this.item, required this.onTap});
 
-  final MediaItem? featured;
+  final MediaItem item;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final progress = context.select<UserDataProvider, double>(
+      (provider) => provider.progressFractionForItem(item),
+    );
+    final normalizedProgress = progress.clamp(0.0, 1.0).toDouble();
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(24),
@@ -632,42 +607,71 @@ class _FeaturedPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('本周主推', style: Theme.of(context).textTheme.titleMedium),
+            Row(
+              children: [
+                const Icon(Icons.play_circle_filled_rounded,
+                    size: 18, color: AppTheme.accentColor),
+                const SizedBox(width: 8),
+                Text('继续播放', style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
             const SizedBox(height: 14),
-            AspectRatio(
-              aspectRatio: 1.25,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        AppTheme.accentColor.withValues(alpha: 0.28),
-                        const Color(0xFF161616),
-                      ],
-                    ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      AppTheme.accentColor.withValues(alpha: 0.28),
+                      const Color(0xFF161616),
+                    ],
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(18),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Spacer(),
-                        Text(
-                          featured?.title ?? '等待主推内容',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      if (item.overview.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         Text(
-                          featured?.overview ?? '加载成功后，这里会展示一张更适合大屏的主推卡片。',
-                          maxLines: 4,
+                          item.overview,
+                          maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                       ],
-                    ),
+                      const SizedBox(height: 14),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          minHeight: 6,
+                          value: normalizedProgress > 0
+                              ? normalizedProgress
+                              : 0.02,
+                          backgroundColor:
+                              Colors.white.withValues(alpha: 0.12),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            AppTheme.accentColor,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        normalizedProgress > 0
+                            ? '已看 ${(normalizedProgress * 100).toInt()}%'
+                            : '开始观看',
+                        style: Theme.of(context).textTheme.labelMedium,
+                      ),
+                    ],
                   ),
                 ),
               ),

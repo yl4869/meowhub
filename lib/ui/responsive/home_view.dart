@@ -20,7 +20,6 @@ import '../atoms/section_header.dart';
 import '../file_source/add_file_source_sheet.dart';
 import '../file_source/file_source_tile.dart';
 import '../mobile/home/mobile_home_screen.dart';
-import '../mobile/sample/mobile_ui_sample_view.dart';
 import '../tablet/home/tablet_home_screen.dart';
 import 'media_detail_view.dart';
 import 'media_library_collection_view.dart';
@@ -85,7 +84,6 @@ class _HomeViewState extends State<HomeView> {
             _currentIndex = 1;
           });
         },
-        onOpenMobileSample: () => _openMobileSample(context),
       ),
       _FileSourceTab(
         selectedServer: selectedServer,
@@ -144,10 +142,6 @@ class _HomeViewState extends State<HomeView> {
     context.push(MediaDetailView.locationFor(mediaItem.id), extra: mediaItem);
   }
 
-  void _openMobileSample(BuildContext context) {
-    context.push(MobileUiSampleView.routePath);
-  }
-
   void _openLibraryCollection(
     BuildContext context,
     MediaLibraryInfo libraryInfo,
@@ -181,7 +175,6 @@ class _MediaLibraryTab extends StatelessWidget {
     required this.onServerSelected,
     required this.onClearServerSelection,
     required this.onOpenFileSources,
-    required this.onOpenMobileSample,
   });
 
   final List<MediaLibraryInfo> libraries;
@@ -204,7 +197,6 @@ class _MediaLibraryTab extends StatelessWidget {
   final ValueChanged<MediaServerInfo> onServerSelected;
   final VoidCallback onClearServerSelection;
   final VoidCallback onOpenFileSources;
-  final VoidCallback onOpenMobileSample;
 
   @override
   Widget build(BuildContext context) {
@@ -257,7 +249,6 @@ class _MediaLibraryTab extends StatelessWidget {
           onServerSelected: onServerSelected,
           onClearServerSelection: onClearServerSelection,
           onOpenFileSources: onOpenFileSources,
-          onOpenMobileSample: onOpenMobileSample,
         );
       },
     );

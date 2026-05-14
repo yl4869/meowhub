@@ -237,14 +237,21 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     _disposeControllers();
     _resetPlaybackLifecycleState();
 
+    debugPrint('[MeowVideo][Init] url=${widget.url}');
+    debugPrint('[MeowVideo][Init] autoPlay=${widget.autoPlay} initialPosition=${widget.initialPosition}');
+
     // 确保底层已初始化（多平台安全）
     MediaKit.ensureInitialized();
+    debugPrint('[MeowVideo][Init] MediaKit.ensureInitialized done');
 
     final needsNativeSubtitleRendering = _needsNativeSubtitleRendering(widget);
+    debugPrint('[MeowVideo][Init] libass=$needsNativeSubtitleRendering');
     final player = Player(
       configuration: PlayerConfiguration(libass: needsNativeSubtitleRendering),
     );
+    debugPrint('[MeowVideo][Init] Player created');
     final videoController = VideoController(player);
+    debugPrint('[MeowVideo][Init] VideoController created');
 
     _player = player;
     _videoController = videoController;
@@ -256,10 +263,15 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
 
     _initializeVideoFuture = () async {
       // 打开媒体
+      debugPrint('[MeowVideo][Open] opening media: ${widget.url}');
       await player.open(
         Media(widget.url, httpHeaders: widget.httpHeaders),
         play: false,
       );
+      debugPrint('[MeowVideo][Open] media opened, tracks: audio=${player.state.tracks.audio.length} video=${player.state.tracks.video.length} subtitle=${player.state.tracks.subtitle.length}');
+      for (final t in player.state.tracks.video) {
+        debugPrint('[MeowVideo][Open]   video track: id=${t.id} codec=${t.codec} title=${t.title} language=${t.language}');
+      }
       // 1. 预热解码器（仅唤醒，不 seek）
       await _warmDecoder(player);
       // 2. 设置音轨/字幕（可能在内部重置解码器状态）
@@ -281,9 +293,13 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       if (widget.autoPlay) {
         try {
           await player.play();
-        } catch (_) {}
+          debugPrint('[MeowVideo][Init] autoPlay: play() called');
+        } catch (e) {
+          debugPrint('[MeowVideo][Init] autoPlay error: $e');
+        }
       }
 
+      debugPrint('[MeowVideo][Init] initialization complete, mounted=$mounted');
       if (!mounted) return;
       setState(() {});
     }();
@@ -395,15 +411,24 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   Future<void> _warmDecoder(Player player) async {
     try {
       await player.play();
-    } catch (_) {}
+      debugPrint('[MeowVideo][Warm] play() called, waiting for position > 0');
+    } catch (e) {
+      debugPrint('[MeowVideo][Warm] play() error: $e');
+    }
     try {
-      await player.stream.position
+      final pos = await player.stream.position
           .firstWhere((p) => p > Duration.zero)
           .timeout(const Duration(seconds: 8));
-    } catch (_) {}
+      debugPrint('[MeowVideo][Warm] got position: $pos');
+    } catch (e) {
+      debugPrint('[MeowVideo][Warm] wait for position error: $e');
+    }
     try {
       await player.pause();
-    } catch (_) {}
+      debugPrint('[MeowVideo][Warm] pause() done');
+    } catch (e) {
+      debugPrint('[MeowVideo][Warm] pause() error: $e');
+    }
   }
 
   /// 在解码器已预热、所有轨道已设置完毕后执行 seek，并通过 player.state.position
@@ -880,6 +905,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
         }
       }),
       player.stream.error.listen((error) {
+        debugPrint('[MeowVideo][Error] player stream error: $error');
         if (mounted && widget.onPlayerError != null) {
           widget.onPlayerError!(error.toString());
         }

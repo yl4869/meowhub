@@ -39,7 +39,6 @@ import 'providers/media_library_provider.dart';
 import 'providers/media_with_user_data_provider.dart';
 import 'providers/user_data_provider.dart';
 import 'theme/app_theme.dart';
-import 'ui/mobile/sample/mobile_ui_sample_view.dart';
 import 'ui/responsive/home_view.dart';
 import 'ui/responsive/media_detail_view.dart';
 import 'ui/responsive/media_library_collection_view.dart';
@@ -239,10 +238,6 @@ class _MeowHubAppState extends State<MeowHubApp> {
           }
           return PlayerView(mediaItem: payload);
         },
-      ),
-      GoRoute(
-        path: MobileUiSampleView.routePath,
-        builder: (context, state) => const MobileUiSampleView(),
       ),
     ],
   );

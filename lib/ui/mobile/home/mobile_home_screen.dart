@@ -798,7 +798,7 @@ class _HomeErrorState extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  '暂时没拿到海报墙数据',
+                  '加载失败',
                   textAlign: TextAlign.center,
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
