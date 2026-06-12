@@ -714,14 +714,10 @@ class UserDataProvider extends ChangeNotifier {
     }
     _isLoading = true;
     try {
-      final remoteHistory = await _watchHistoryRepository.getHistoryBySource(
-        WatchSourceType.emby,
-      );
-      _replaceWatchHistoryItemsForSource(
-        WatchSourceType.emby,
-        remoteHistory,
-        notify: false,
-      );
+      await Future.wait([
+        _loadWatchHistoryForSource(WatchSourceType.emby),
+        _loadWatchHistoryForSource(WatchSourceType.local),
+      ]);
       notifyListeners();
     } catch (e) {
       if (rethrowOnError) {
@@ -729,6 +725,15 @@ class UserDataProvider extends ChangeNotifier {
       }
     } finally {
       _isLoading = false;
+    }
+  }
+
+  Future<void> _loadWatchHistoryForSource(WatchSourceType sourceType) async {
+    try {
+      final history = await _watchHistoryRepository.getHistoryBySource(sourceType);
+      _replaceWatchHistoryItemsForSource(sourceType, history, notify: false);
+    } catch (_) {
+      // 单个源加载失败不影响另一个源
     }
   }
 

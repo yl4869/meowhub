@@ -67,6 +67,7 @@ class MediaWithUserDataProvider extends ChangeNotifier {
   }
 
   void _handleLibraryUpdate() {
+    debugPrint('[MediaWithUserData] _handleLibraryUpdate: 媒体库状态变更, libraries=${_mediaLibraryProvider.state.libraries.length}, totalItems=${_mediaLibraryProvider.state.libraryItems.values.expand((i) => i).length}');
     _initialSync();
     _doUpdateCache();
   }
@@ -136,6 +137,7 @@ class MediaWithUserDataProvider extends ChangeNotifier {
     }
     _cachedContinueWatching = resolvedContinueWatching;
 
+    debugPrint('[MediaWithUserData] _doUpdateCache: continueWatching=${_cachedContinueWatching.length}, recentlyAdded=${_cachedRecentlyAdded.length}, libraryItems=${_cachedLibraryItems.length}, allItems=${_cachedAllItems.length}, favorites=$_cachedFavoriteCount');
     notifyListeners();
   }
 
