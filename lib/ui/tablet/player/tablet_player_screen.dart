@@ -320,107 +320,139 @@ class _TabletPlayerScreenState extends State<TabletPlayerScreen> {
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: ListView(
-                    physics: const BouncingScrollPhysics(),
-                    children: [
-                      if (_hasPlayableUrl)
-                        MeowVideoPlayer(
-                          key: ObjectKey(widget.mediaItem.dataSourceId),
-                          url:
-                              widget.playUrlOverride ??
-                              widget.mediaItem.playUrl!,
-                          autoPlay: true,
-                          initialPosition: widget.initialPosition,
-                          onPlaybackStatusChanged: _handlePlaybackStatusChanged,
-                          onPlaybackStarted: _handlePlaybackStarted,
-                          onPlayerCreated: (p) async {
-                            _player = p;
-                          },
-                          overlayCcButton: widget.onShowTrackSelector != null,
-                          onTapCc: widget.onShowTrackSelector,
-                          subtitleUri: widget.subtitleUri,
-                          subtitleTitle: widget.subtitleTitle,
-                          subtitleLanguage: widget.subtitleLanguage,
-                          disableSubtitleTrack: widget.disableSubtitleTrack,
-                          subtitleStreamIndex:
-                              widget.subtitleStreamIndexForPlayer ??
-                              widget.subtitleStreamIndex,
-                          subtitleStreams: widget.subtitleStreams,
-                          audioStreamIndex: widget.audioStreamIndex,
-                          audioStreams: widget.audioStreams,
-                          onPlayerError: (error) {
-                            if (!mounted) return;
-                            setState(() {
-                              _playbackError = error;
-                              _isRetrying = false;
-                            });
-                          },
-                        )
-                      else
-                        _UnavailablePlayerCard(title: widget.mediaItem.title),
-                      if (widget.onShowTrackSelector != null) ...[
-                        const SizedBox(height: 12),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: OutlinedButton.icon(
-                            onPressed: widget.onShowTrackSelector,
-                            icon: const Icon(Icons.library_music_outlined),
-                            label: const Text('音轨/字幕'),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: CustomScrollView(
+                        physics: const BouncingScrollPhysics(),
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: _hasPlayableUrl
+                                ? AspectRatio(
+                                    aspectRatio: 16 / 9,
+                                    child: MeowVideoPlayer(
+                                      key: ObjectKey(
+                                          widget.mediaItem.dataSourceId),
+                                      url:
+                                          widget.playUrlOverride ??
+                                          widget.mediaItem.playUrl!,
+                                      autoPlay: true,
+                                      expandToFill: true,
+                                      fit: BoxFit.contain,
+                                      borderRadius: BorderRadius.zero,
+                                      initialPosition: widget.initialPosition,
+                                      onPlaybackStatusChanged:
+                                          _handlePlaybackStatusChanged,
+                                      onPlaybackStarted: _handlePlaybackStarted,
+                                      onPlayerCreated: (p) async {
+                                        _player = p;
+                                      },
+                                      overlayCcButton: widget
+                                              .onShowTrackSelector !=
+                                          null,
+                                      onTapCc: widget.onShowTrackSelector,
+                                      subtitleUri: widget.subtitleUri,
+                                      subtitleTitle: widget.subtitleTitle,
+                                      subtitleLanguage: widget.subtitleLanguage,
+                                      disableSubtitleTrack:
+                                          widget.disableSubtitleTrack,
+                                      subtitleStreamIndex:
+                                          widget.subtitleStreamIndexForPlayer ??
+                                              widget.subtitleStreamIndex,
+                                      subtitleStreams: widget.subtitleStreams,
+                                      audioStreamIndex: widget.audioStreamIndex,
+                                      audioStreams: widget.audioStreams,
+                                      onPlayerError: (error) {
+                                        if (!mounted) return;
+                                        setState(() {
+                                          _playbackError = error;
+                                          _isRetrying = false;
+                                        });
+                                      },
+                                    ),
+                                  )
+                                : _UnavailablePlayerCard(
+                                    title: widget.mediaItem.title),
                           ),
-                        ),
-                      ],
-                      const SizedBox(height: 20),
-                      Text(
-                        widget.mediaItem.title,
-                        style: Theme.of(context).textTheme.headlineLarge,
+                          if (widget.onShowTrackSelector != null)
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 12),
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: OutlinedButton.icon(
+                                    onPressed: widget.onShowTrackSelector,
+                                    icon: const Icon(
+                                        Icons.library_music_outlined),
+                                    label: const Text('音轨/字幕'),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 20),
+                              child: Text(
+                                widget.mediaItem.title,
+                                style:
+                                    Theme.of(context).textTheme.headlineLarge,
+                              ),
+                            ),
+                          ),
+                          if (widget.mediaItem.originalTitle.isNotEmpty &&
+                              widget.mediaItem.originalTitle !=
+                                  widget.mediaItem.title)
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Text(
+                                  widget.mediaItem.originalTitle,
+                                  style:
+                                      Theme.of(context).textTheme.bodyLarge,
+                                ),
+                              ),
+                            ),
+                          SliverToBoxAdapter(
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 18),
+                              child: AppSurfaceCard(
+                                child: Text(
+                                  widget.mediaItem.overview.isNotEmpty
+                                      ? widget.mediaItem.overview
+                                      : '暂无更多介绍',
+                                  style:
+                                      Theme.of(context).textTheme.bodyLarge,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                      if (widget.mediaItem.originalTitle.isNotEmpty &&
-                          widget.mediaItem.originalTitle !=
-                              widget.mediaItem.title) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          widget.mediaItem.originalTitle,
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
-                      ],
-                      const SizedBox(height: 18),
-                      AppSurfaceCard(
-                        child: Text(
-                          widget.mediaItem.overview.isNotEmpty
-                              ? widget.mediaItem.overview
-                              : '这部作品暂时没有更多介绍。',
-                          style: Theme.of(context).textTheme.bodyLarge,
-                        ),
+                    ),
+                    const SizedBox(width: 24),
+                    SizedBox(
+                      width: sideWidth,
+                      child: ListView(
+                        physics: const BouncingScrollPhysics(),
+                        children: [
+                          _PlaybackInfoCard(
+                            selectedServer: widget.selectedServer,
+                            playbackProgress: _currentPlaybackProgress,
+                            initialPosition: widget.initialPosition,
+                          ),
+                          const SizedBox(height: 16),
+                          _PlaybackHintCard(
+                            hasSavedProgress:
+                                _currentPlaybackProgress != null,
+                            overview: widget.mediaItem.overview,
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 24),
-                SizedBox(
-                  width: sideWidth,
-                  child: ListView(
-                    physics: const BouncingScrollPhysics(),
-                    children: [
-                      _PlaybackInfoCard(
-                        selectedServer: widget.selectedServer,
-                        playbackProgress: _currentPlaybackProgress,
-                        initialPosition: widget.initialPosition,
-                      ),
-                      const SizedBox(height: 16),
-                      _PlaybackHintCard(
-                        hasSavedProgress: _currentPlaybackProgress != null,
-                        overview: widget.mediaItem.overview,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+              ),
           if (_playbackError != null)
             Positioned.fill(
               child: PlaybackErrorOverlay(
@@ -513,7 +545,7 @@ class _PlaybackInfoCard extends StatelessWidget {
             value: playbackProgress != null
                 ? '${formatDurationLabel(playbackProgress!.position)} / '
                       '${formatDurationLabel(playbackProgress!.duration)}'
-                : '尚未生成播放记录',
+                : '未开始',
             isLast: true,
           ),
         ],
@@ -538,14 +570,14 @@ class _PlaybackHintCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            hasSavedProgress ? '已启用续播' : '首次播放',
+            hasSavedProgress ? '续播' : '开始播放',
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 10),
           Text(
             hasSavedProgress
-                ? '播放中会持续回写进度，适合在平板和手机之间无缝续播。'
-                : '这次播放会自动开始记录进度，之后可以直接恢复到上次位置。',
+                ? '跨设备自动同步播放进度'
+                : '将自动记录播放进度以便续播',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           if (overview.isNotEmpty) ...[

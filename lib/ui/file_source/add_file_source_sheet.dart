@@ -115,8 +115,8 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
               _Header(
                 title: _isEditMode ? '编辑服务器' : '添加服务器',
                 subtitle: _selectedType == null
-                    ? '选择一个媒体服务类型后，我们会用分组表单帮你完成连接配置。'
-                    : '你可以先测试连接再保存，但测试结果只作为辅助信息，不会影响保存。',
+                    ? '选择媒体服务类型开始配置'
+                    : '测试连接结果仅供验证参考，不影响保存',
                 onClose: () => Navigator.of(context).pop(),
               ),
               const SizedBox(height: 16),
@@ -128,8 +128,8 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
                     Expanded(
                       child: Text(
                         _isEditMode
-                            ? '正在编辑 ${widget.initialServer?.name ?? '服务器'}'
-                            : '当前表单会在保存后直接写入全局服务器列表。',
+                            ? '编辑 ${widget.initialServer?.name ?? '服务器'}'
+                            : '填写连接信息以添加新的文件源',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ),
@@ -240,7 +240,7 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
             const SizedBox(height: 12),
             FileSourceFormSection(
               title: '地址信息',
-              subtitle: '连接测试会使用这里的地址匿名访问 `/emby/System/Info/Public`。',
+              subtitle: '用于验证服务器是否可达',
               child: Column(
                 children: [
                   Align(
@@ -440,29 +440,22 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
 
       final config = localFormState.buildConfig();
       final customName = localFormState.name;
-      debugPrint('[AddSource][Sheet] ===== 提交本地文件源 =====');
-      debugPrint('[AddSource][Sheet] 路径数: ${config.localPaths.length}, 名称: ${customName ?? "默认"}, 编辑: $_isEditMode');
-      for (var i = 0; i < config.localPaths.length; i++) {
-        debugPrint('[AddSource][Sheet]   路径[$i]: ${config.localPaths[i]}');
-      }
+      debugPrint('[LocalMedia][Sheet] 构建配置: paths=${config.localPaths}, name=${customName ?? "默认"}');
 
       setState(() {
         _isSaving = true;
       });
 
       try {
-        debugPrint('[AddSource][Sheet] 步骤1: 调用 AppProvider.saveConfiguredServer...');
         await appProvider.saveConfiguredServer(
           customName: customName,
           config: config,
           editingServerId: _editingServerId,
         );
-        debugPrint('[AddSource][Sheet] 步骤1: saveConfiguredServer 完成');
         if (!mounted) return;
 
         // Trigger scan. The onScanCompleted callback (set in main.dart)
         // will refresh the media library when the scan finishes.
-        debugPrint('[AddSource][Sheet] 步骤2: 触发 runScan, 路径=${config.localPaths}');
         unawaited(context.read<IMediaMaintainer>().runScan(config.localPaths));
 
         scaffoldMessenger.showSnackBar(
@@ -497,15 +490,11 @@ class _AddFileSourceSheetState extends State<AddFileSourceSheet> {
     });
 
     try {
-      debugPrint('[AddSource][Sheet] ===== 提交 Emby 服务器 =====');
-      debugPrint('[AddSource][Sheet] 地址: $_protocol://${_addressController.text.trim()}:${_portController.text.trim()}, 编辑: $_isEditMode');
-      debugPrint('[AddSource][Sheet] 步骤1: 调用 AppProvider.saveConfiguredServer...');
       await appProvider.saveConfiguredServer(
         customName: _serverNameController.text.trim(),
         config: config,
         editingServerId: _editingServerId,
       );
-      debugPrint('[AddSource][Sheet] 步骤1: saveConfiguredServer 完成');
       if (!mounted) return;
       scaffoldMessenger.showSnackBar(
         SnackBar(content: Text(_isEditMode ? '服务器已更新' : '服务器已添加')),

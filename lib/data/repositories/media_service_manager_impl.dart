@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../../domain/repositories/i_media_service_manager.dart';
@@ -59,10 +58,9 @@ class MediaServiceManagerImpl implements IMediaServiceManager {
 
   @override
   Future<void> setConfig(MediaServiceConfig config) async {
-    debugPrint('[MediaServiceManager] setConfig: type=${config.type.name}');
     _cachedConfig = config;
     await _prefs.setString(_configKey, jsonEncode(MediaServiceConfigSerializer.toJson(config)));
-    debugPrint('[MediaServiceManager] setConfig: 发布到 configStream');
+    // 🚀 向流中发送新配置，通知所有听众
     _configController.add(config);
   }
 }

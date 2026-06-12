@@ -6,7 +6,7 @@ class ExpandableOverviewSection extends StatefulWidget {
     required this.overview,
     this.title = '剧情简介',
     this.collapsedMaxLines = 4,
-    this.emptyMessage = '暂时还没有这部作品的简介。',
+    this.emptyMessage = '暂无简介',
   });
 
   final String overview;

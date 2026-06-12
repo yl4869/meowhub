@@ -69,27 +69,13 @@ class LocalNfoParser {
   static NfoMetadata? tryParse(File nfoFile) {
     try {
       final content = nfoFile.readAsStringSync();
-      return tryParseString(content, parentDir: nfoFile.parent.path);
-    } catch (e) {
-      debugPrint('[LocalMedia][NFO] 解析异常: $e');
-      return null;
-    }
-  }
-
-  /// Parse NFO content from a raw XML string.
-  ///
-  /// This is the shared entry-point used by both the file-system scanner
-  /// (via [tryParse]) and the SAF scanner (which receives NFO content from
-  /// the native side).
-  static NfoMetadata? tryParseString(String content, {String? parentDir}) {
-    try {
-      debugPrint('[LocalMedia][NFO] 解析 XML 内容, 大小: ${content.length} bytes');
+      debugPrint('[LocalMedia][NFO] 读取 NFO 文件: ${nfoFile.path}, 大小: ${content.length} bytes');
       final document = XmlDocument.parse(content);
       final root = document.rootElement;
       debugPrint('[LocalMedia][NFO] XML 根元素: <${root.name.local}>');
-      return _parseElement(root, parentDir ?? '');
+      return _parseElement(root, nfoFile.parent.path);
     } catch (e) {
-      debugPrint('[LocalMedia][NFO] tryParseString 异常: $e');
+      debugPrint('[LocalMedia][NFO] 解析异常: $e');
       return null;
     }
   }

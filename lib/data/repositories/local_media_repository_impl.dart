@@ -1,7 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
-
 import '../../domain/entities/media_item.dart';
 import '../../domain/entities/media_library_info.dart';
 import '../../domain/entities/season_info.dart';
@@ -9,20 +7,13 @@ import '../../domain/entities/watch_history_item.dart';
 import '../../domain/repositories/i_media_repository.dart';
 import '../datasources/local_media_database.dart';
 import '../datasources/local_file_resolver.dart';
-import '../datasources/local_watch_history_data_source.dart';
 
 class LocalMediaRepositoryImpl implements IMediaRepository {
   LocalMediaRepositoryImpl({
     required LocalMediaDatabase database,
-    LocalFileResolver? fileResolver,
-    required LocalWatchHistoryDataSource watchHistoryDataSource,
-  }) : _database = database,
-       _fileResolver = fileResolver ?? LocalFileResolver(),
-       _watchHistoryDataSource = watchHistoryDataSource;
+  }) : _database = database;
 
   final LocalMediaDatabase _database;
-  final LocalFileResolver _fileResolver;
-  final LocalWatchHistoryDataSource _watchHistoryDataSource;
 
   @override
   Future<List<MediaItem>> getMovies() async {
@@ -38,7 +29,7 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<MediaItem> getMediaDetail(MediaItem item) async {
-    if (item.type == MediaType.series && item.seriesId == null) {
+    if (item.type == MediaType.series && item.playableItems.isEmpty) {
       final episodes = await getPlayableItems(item);
       return item.copyWith(playableItems: episodes);
     }
@@ -70,60 +61,85 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
 
   @override
   Future<List<MediaItem>> getRecentWatching({int limit = 50}) async {
-    final allHistory = await _watchHistoryDataSource.getHistory();
-    final localHistory = allHistory
-        .where((r) => r.sourceType == WatchSourceType.local)
-        .toList();
+    // Fetch recent standalone movies (no series_id)
+    final movieRows = await _database.queryFiles(
+      includeItemTypes: 'movie',
+      limit: limit,
+      sortBy: 'mtime',
+      sortOrder: 'DESC',
+      excludeSeriesEpisodes: true,
+    );
+    final movies = movieRows.map((r) => _rowToMediaItem(r)).toList();
 
-    if (localHistory.isEmpty) return [];
+    // Fetch recent episodes, consolidate by series
+    final episodeRows = await _database.queryFiles(
+      includeItemTypes: 'series',
+      limit: limit * 3,
+      sortBy: 'mtime',
+      sortOrder: 'DESC',
+    );
 
-    final results = <MediaItem>[];
-    final seenSeriesIds = <String>{};
-
-    for (final record in localHistory) {
-      if (results.length >= limit) break;
-
-      if (record.seriesId != null && record.seriesId!.isNotEmpty) {
-        if (seenSeriesIds.contains(record.seriesId)) continue;
-        seenSeriesIds.add(record.seriesId!);
-
-        final seriesId = LocalFileResolver.stableHash(record.seriesId!).toString();
-        final seriesRow = await _database.getSeriesEntry(seriesId);
-        if (seriesRow != null) {
-          final item = _seriesRowToMediaItem(seriesRow);
-          results.add(_attachProgress(item, record));
-        }
-      } else {
-        final stableId = LocalFileResolver.stableHash(record.id).toString();
-        final row = await _database.getScannedFile(stableId);
-        if (row != null) {
-          results.add(_attachProgress(_rowToMediaItem(row), record));
-        }
+    // Group episodes by series_id, pick the most recent per series
+    final seriesLatest = <String, Map<String, dynamic>>{};
+    for (final row in episodeRows) {
+      final sid = row['series_id'] as String?;
+      if (sid == null || sid.isEmpty) continue;
+      if (!seriesLatest.containsKey(sid) ||
+          (row['mtime'] as int) > (seriesLatest[sid]!['mtime'] as int)) {
+        seriesLatest[sid] = row;
       }
     }
 
-    return results;
-  }
+    // Fetch all series info in one query for resolved series IDs
+    Map<String, Map<String, dynamic>> seriesInfoMap = {};
+    if (seriesLatest.isNotEmpty) {
+      final allSeriesRows = await _database.querySeriesEntries();
+      for (final sr in allSeriesRows) {
+        seriesInfoMap[sr['id'] as String] = sr;
+      }
+    }
 
-  MediaItem _attachProgress(MediaItem item, dynamic record) {
-    return item.copyWith(
-      playbackProgress: MediaPlaybackProgress(
-        position: record.position as Duration,
-        duration: record.duration as Duration,
-      ),
-      lastPlayedAt: record.updatedAt as DateTime,
-    );
+    // Build series items from series table info + episode poster
+    final seriesItems = <MediaItem>[];
+    for (final entry in seriesLatest.entries) {
+      final epRow = entry.value;
+      final seriesRow = seriesInfoMap[entry.key];
+
+      if (seriesRow != null) {
+        seriesItems.add(_seriesRowToMediaItem(seriesRow));
+      } else {
+        final folderPath = entry.key;
+        final folderName = folderPath.split(Platform.pathSeparator).last;
+        seriesItems.add(MediaItem(
+          id: LocalFileResolver.stableHash(folderPath),
+          sourceId: folderPath,
+          title: folderName,
+          originalTitle: '',
+          type: MediaType.series,
+          sourceType: WatchSourceType.local,
+          posterUrl: LocalFileResolver.posterUrl(epRow),
+          year: epRow['year'] as int?,
+          overview: '',
+          seriesId: entry.key,
+        ));
+      }
+    }
+
+    // Merge and sort by time
+    final combined = <MediaItem>[...movies, ...seriesItems];
+    combined.sort((a, b) {
+      final aTime = a.lastPlayedAt?.millisecondsSinceEpoch ?? 0;
+      final bTime = b.lastPlayedAt?.millisecondsSinceEpoch ?? 0;
+      return bTime.compareTo(aTime);
+    });
+
+    return combined.take(limit).toList(growable: false);
   }
 
   @override
   Future<List<MediaLibraryInfo>> getMediaLibraries() async {
     final folders = await _database.getScanFolders();
-    debugPrint('[LocalRepo] getMediaLibraries: scanFolders 数量=${folders.length}');
-    for (final entry in folders.entries) {
-      debugPrint('[LocalRepo]   folder: ${entry.key}');
-    }
     if (folders.isEmpty) {
-      debugPrint('[LocalRepo] -> 返回默认 "全部本地视频" 库');
       return const [
         MediaLibraryInfo(
           id: 'local-all',
@@ -184,8 +200,6 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
     String? sortBy,
     String? sortOrder,
   }) async {
-    debugPrint('[LocalRepo] getItems: libraryId=$libraryId, types=$includeItemTypes, limit=$limit');
-
     final types = (includeItemTypes ?? 'Movie,Series')
         .split(',')
         .map((t) => t.trim().toLowerCase())
@@ -205,7 +219,6 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
         sortOrder: sortOrder,
         excludeSeriesEpisodes: true,
       );
-      debugPrint('[LocalRepo]   movies 查询: ${movieRows.length} 条');
       for (final row in movieRows) {
         results.add(_rowToMediaItem(row));
       }
@@ -218,7 +231,6 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
         sortBy: sortBy,
         sortOrder: sortOrder,
       );
-      debugPrint('[LocalRepo]   series 查询: ${seriesRows.length} 条');
       for (final row in seriesRows) {
         results.add(_seriesRowToMediaItem(row));
       }
@@ -277,14 +289,12 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
           ? MediaType.series
           : MediaType.movie,
       sourceType: WatchSourceType.local,
-      posterUrl: _fileResolver.posterUrl(row),
-      backdropUrl: _fileResolver.backdropUrl(row),
+      posterUrl: LocalFileResolver.posterUrl(row),
+      backdropUrl: LocalFileResolver.backdropUrl(row),
       rating: (row['rating'] as num?)?.toDouble() ?? 0,
       year: row['year'] as int?,
       overview: row['overview'] as String? ?? '',
-      playUrl: filePath.startsWith('content://')
-          ? filePath
-          : Uri.file(filePath).toString(),
+      playUrl: Uri.file(filePath).toString(),
       seriesId: row['series_id'] as String?,
       indexNumber: row['episode_number'] as int?,
       parentIndexNumber: row['season_number'] as int?,
@@ -302,10 +312,10 @@ class LocalMediaRepositoryImpl implements IMediaRepository {
       originalTitle: (row['original_title'] as String?) ?? '',
       type: MediaType.series,
       sourceType: WatchSourceType.local,
-      posterUrl: _fileResolver.posterUrl({
+      posterUrl: LocalFileResolver.posterUrl({
         'poster_path': row['poster_path'],
       }),
-      backdropUrl: _fileResolver.backdropUrl({
+      backdropUrl: LocalFileResolver.backdropUrl({
         'backdrop_path': row['backdrop_path'],
       }),
       rating: (row['rating'] as num?)?.toDouble() ?? 0,

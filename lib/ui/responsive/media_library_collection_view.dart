@@ -78,7 +78,7 @@ class MediaLibraryCollectionView extends StatelessWidget {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              '共 ${items.length} 部内容，卡片布局会根据屏幕宽度自动调整。',
+                              '共 ${items.length} 部',
                               style: Theme.of(context).textTheme.bodyMedium,
                             ),
                           ],
@@ -104,7 +104,7 @@ class MediaLibraryCollectionView extends StatelessWidget {
                       hasScrollBody: false,
                       child: _CollectionStateCard(
                         icon: Icons.video_library_outlined,
-                        message: '这个媒体库暂时还没有内容。',
+                        message: '暂无内容',
                       ),
                     )
                   else ...[

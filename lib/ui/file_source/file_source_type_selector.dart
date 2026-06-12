@@ -15,21 +15,7 @@ class FileSourceTypeSelector extends StatelessWidget {
       children: [
         _FileSourceTypeCard(
           type: MediaServiceType.emby,
-          enabled: true,
           onTap: () => onSelected(MediaServiceType.emby),
-        ),
-        const SizedBox(height: 12),
-        const _FileSourceTypeCard(type: MediaServiceType.plex, enabled: false),
-        const SizedBox(height: 12),
-        const _FileSourceTypeCard(
-          type: MediaServiceType.jellyfin,
-          enabled: false,
-        ),
-        const SizedBox(height: 12),
-        _FileSourceTypeCard(
-          type: MediaServiceType.local,
-          enabled: true,
-          onTap: () => onSelected(MediaServiceType.local),
         ),
       ],
     );
@@ -37,55 +23,45 @@ class FileSourceTypeSelector extends StatelessWidget {
 }
 
 class _FileSourceTypeCard extends StatelessWidget {
-  const _FileSourceTypeCard({
-    required this.type,
-    required this.enabled,
-    this.onTap,
-  });
+  const _FileSourceTypeCard({required this.type, this.onTap});
 
   final MediaServiceType type;
-  final bool enabled;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Opacity(
-      opacity: enabled ? 1 : 0.55,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          borderRadius: BorderRadius.circular(24),
-          child: AppSurfaceCard(
-            child: Row(
-              children: [
-                Icon(_iconFor(type), color: Colors.white70),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        type.displayName,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        enabled ? _descriptionFor(type) : '即将支持',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: AppSurfaceCard(
+          child: Row(
+            children: [
+              Icon(_iconFor(type), color: Colors.white70),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      type.displayName,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _descriptionFor(type),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
                 ),
-                Icon(
-                  enabled
-                      ? Icons.arrow_forward_ios_rounded
-                      : Icons.schedule_rounded,
-                  size: 18,
-                  color: Colors.white54,
-                ),
-              ],
-            ),
+              ),
+              const Icon(
+                Icons.arrow_forward_ios_rounded,
+                size: 18,
+                color: Colors.white54,
+              ),
+            ],
           ),
         ),
       ),

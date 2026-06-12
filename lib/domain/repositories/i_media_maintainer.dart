@@ -10,6 +10,4 @@ abstract class IMediaMaintainer {
   Stream<ScanProgress> get progressStream;
 
   Future<void> runScan(List<String> rootPaths);
-
-  Future<void> runIncrementalScan(List<String> rootPaths);
 }

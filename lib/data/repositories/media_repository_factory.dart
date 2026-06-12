@@ -10,7 +10,6 @@ import '../../domain/repositories/watch_history_repository.dart';
 import '../datasources/emby_api_client.dart';
 import '../datasources/emby_watch_history_remote_data_source.dart';
 import '../datasources/local_media_database.dart';
-import '../datasources/local_thumbnail_service.dart';
 import '../datasources/local_watch_history_data_source.dart';
 import 'emby_media_repository_impl.dart';
 import 'emby_playback_repository_impl.dart';
@@ -44,10 +43,8 @@ class MediaRepositoryFactory {
   static IMediaRepository createMediaRepository({
     MediaServiceConfig? config,
     required SecurityService securityService,
-    required LocalWatchHistoryDataSource localWatchHistoryDataSource,
     EmbyApiClient? embyApiClient,
     LocalMediaDatabase? localMediaDatabase,
-    LocalThumbnailService? localThumbnailService,
   }) {
     if (config == null) {
       debugPrint('[LocalMedia][Factory] createMediaRepository: config=null -> EmptyMediaRepositoryImpl');
@@ -73,7 +70,6 @@ class MediaRepositoryFactory {
           debugPrint('[LocalMedia][Factory] -> LocalMediaRepositoryImpl');
           return LocalMediaRepositoryImpl(
             database: localMediaDatabase,
-            watchHistoryDataSource: localWatchHistoryDataSource,
           );
         }
         debugPrint('[LocalMedia][Factory] ⚠️ local 类型但 localMediaDatabase 为 null -> EmptyMediaRepositoryImpl (数据库未注入, 查询将返回空)');
@@ -87,10 +83,8 @@ class MediaRepositoryFactory {
   static PlaybackRepository createPlaybackRepository({
     MediaServiceConfig? config,
     required SecurityService securityService,
-    required LocalWatchHistoryDataSource localWatchHistoryDataSource,
     EmbyApiClient? embyApiClient,
     LocalMediaDatabase? localMediaDatabase,
-    LocalThumbnailService? localThumbnailService,
   }) {
     if (config == null) {
       debugPrint('[LocalMedia][Factory] createPlaybackRepository: config=null -> UnavailablePlaybackRepository');

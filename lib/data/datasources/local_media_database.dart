@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -92,26 +91,12 @@ class LocalMediaDatabase {
     ''');
   }
 
-  Future<void> initialize() async {
-    await _database;
-    debugPrint('[LocalMedia][DB] 数据库初始化完成');
-  }
-
   // --- Scan folder operations ---
 
   Future<Map<String, int>> getKnownFiles() async {
     final db = await _database;
     final rows = await db.rawQuery(
       'SELECT file_path, mtime FROM scanned_files',
-    );
-    return {for (final row in rows) row['file_path'] as String: row['mtime'] as int};
-  }
-
-  Future<Map<String, int>> getKnownFilesByFolder(String folderPath) async {
-    final db = await _database;
-    final rows = await db.rawQuery(
-      'SELECT file_path, mtime FROM scanned_files WHERE parent_folder = ?',
-      [folderPath],
     );
     return {for (final row in rows) row['file_path'] as String: row['mtime'] as int};
   }
@@ -132,11 +117,6 @@ class LocalMediaDatabase {
       batch.insert('scanned_files', row, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
-  }
-
-  Future<void> deleteScannedFile(String filePath) async {
-    final db = await _database;
-    await db.delete('scanned_files', where: 'file_path = ?', whereArgs: [filePath]);
   }
 
   Future<void> deleteScannedFiles(List<String> paths) async {
@@ -236,15 +216,6 @@ class LocalMediaDatabase {
     return rows.isNotEmpty ? rows.first : null;
   }
 
-  Future<Map<String, dynamic>?> getSeriesEntry(String id) async {
-    final db = await _database;
-    final rows = await db.rawQuery(
-      'SELECT * FROM series WHERE id = ?',
-      [id],
-    );
-    return rows.isNotEmpty ? rows.first : null;
-  }
-
   Future<List<Map<String, dynamic>>> queryFiles({
     String? libraryId,
     String? includeItemTypes,
@@ -310,20 +281,20 @@ class LocalMediaDatabase {
     final whereArgs = <dynamic>[];
 
     if (libraryId != null && libraryId != 'local-all') {
-      where.add('folder_path LIKE ?');
+      where.add('s.folder_path LIKE ?');
       whereArgs.add('$libraryId%');
     }
 
     final whereClause = where.isNotEmpty ? 'WHERE ${where.join(' AND ')}' : '';
 
-    var orderBy = 'ORDER BY title';
+    var orderBy = 'ORDER BY s.title';
     if (sortBy != null) {
       final safeSortBy = _safeSeriesColumn(sortBy) ?? 'title';
       final safeSortOrder = (sortOrder?.toUpperCase() == 'DESC' || sortOrder?.toLowerCase() == 'descending') ? 'DESC' : 'ASC';
-      orderBy = 'ORDER BY $safeSortBy $safeSortOrder';
+      orderBy = 'ORDER BY s.$safeSortBy $safeSortOrder';
     }
 
-    var query = 'SELECT * FROM series $whereClause $orderBy';
+    var query = 'SELECT DISTINCT s.* FROM series s INNER JOIN scanned_files f ON f.series_id = s.id $whereClause $orderBy';
     if (limit != null) {
       query += ' LIMIT ?';
       whereArgs.add(limit);

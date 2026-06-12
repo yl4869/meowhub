@@ -10,6 +10,7 @@ class ScanProgress {
     this.changedFilesCount = 0,
     this.deletedFilesCount = 0,
     this.newSeriesCount = 0,
+    this.errors = const [],
   });
 
   final ScanPhase phase;
@@ -20,6 +21,7 @@ class ScanProgress {
   final int changedFilesCount;
   final int deletedFilesCount;
   final int newSeriesCount;
+  final List<String> errors;
 
   bool get isScanning => phase == ScanPhase.scanning;
   bool get isCompleted => phase == ScanPhase.completed;
@@ -34,6 +36,7 @@ class ScanProgress {
     int? changedFilesCount,
     int? deletedFilesCount,
     int? newSeriesCount,
+    List<String>? errors,
   }) {
     return ScanProgress(
       phase: phase ?? this.phase,
@@ -45,6 +48,7 @@ class ScanProgress {
       changedFilesCount: changedFilesCount ?? this.changedFilesCount,
       deletedFilesCount: deletedFilesCount ?? this.deletedFilesCount,
       newSeriesCount: newSeriesCount ?? this.newSeriesCount,
+      errors: errors ?? this.errors,
     );
   }
 }

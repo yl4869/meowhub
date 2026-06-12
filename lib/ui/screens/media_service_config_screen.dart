@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import '../../core/session/session_expired_notifier.dart';
 import '../../domain/entities/media_service_config.dart';
 import '../../domain/repositories/i_media_service_manager.dart';
-import '../../providers/app_provider.dart';
 import '../responsive/home_view.dart';
 
 /// 媒体服务配置屏幕
@@ -99,11 +98,7 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
       });
 
       if (isValid && mounted) {
-        debugPrint('[ConfigScreen] 配置验证通过, 通过 AppProvider 保存...');
-        await context.read<AppProvider>().saveConfiguredServer(
-          customName: null,
-          config: config,
-        );
+        await _manager.setConfig(config);
         if (mounted) {
           context.read<SessionExpiredNotifier>().markAuthenticated();
           ScaffoldMessenger.of(
@@ -179,20 +174,6 @@ class _MediaServiceConfigScreenState extends State<MediaServiceConfigScreen> {
                 ButtonSegment(
                   value: MediaServiceType.emby,
                   label: Text('Emby'),
-                ),
-                ButtonSegment(
-                  value: MediaServiceType.plex,
-                  label: Text('Plex'),
-                  enabled: false,
-                ),
-                ButtonSegment(
-                  value: MediaServiceType.jellyfin,
-                  label: Text('Jellyfin'),
-                  enabled: false,
-                ),
-                ButtonSegment(
-                  value: MediaServiceType.local,
-                  label: Text('本地'),
                 ),
               ],
               selected: {_selectedType},

@@ -17,11 +17,7 @@ class LocalPlaybackRepositoryImpl implements PlaybackRepository {
     String? playSessionId,
     bool preferTranscoding = false,
   }) async {
-    // content:// URIs pass through directly; filesystem paths get file:// scheme.
-    final url = item.playUrl ??
-        (item.sourceId != null && item.sourceId!.startsWith('content://')
-            ? item.sourceId!
-            : 'file://${item.sourceId ?? ''}');
+    final url = item.playUrl ?? 'file://${item.sourceId ?? ''}';
     debugPrint('[LocalMedia][Playback] getPlaybackPlan: url=$url, sourceId=${item.sourceId}, playUrl=${item.playUrl}');
     return PlaybackPlan(
       url: url,
