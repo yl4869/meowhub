@@ -43,9 +43,7 @@ class CapabilitySnapshot {
       TargetPlatform.macOS ||
       TargetPlatform.windows ||
       TargetPlatform.linux => true,
-      TargetPlatform.android ||
-      TargetPlatform.iOS ||
-      TargetPlatform.fuchsia => false,
+      _ => false,
     };
   }
 
@@ -96,9 +94,7 @@ class CapabilitySnapshot {
       TargetPlatform.macOS ||
       TargetPlatform.windows ||
       TargetPlatform.linux => true,
-      TargetPlatform.android ||
-      TargetPlatform.iOS ||
-      TargetPlatform.fuchsia => false,
+      _ => false,
     };
     final defaultSize = isDesktopClass
         ? const Size(1440, 900)
@@ -225,9 +221,7 @@ class CapabilitySnapshot {
           TargetPlatform.macOS ||
           TargetPlatform.windows ||
           TargetPlatform.linux => true,
-          TargetPlatform.android ||
-          TargetPlatform.iOS ||
-          TargetPlatform.fuchsia => false,
+          _ => false,
         };
 
     if (longestPhysicalEdgePx >= 3200 && shortestPhysicalEdgePx >= 1800) {
@@ -271,7 +265,7 @@ class CapabilitySnapshot {
       TargetPlatform.linux => baseBitrate,
       TargetPlatform.android => (baseBitrate * 0.85).round(),
       TargetPlatform.iOS => (baseBitrate * 0.75).round(),
-      TargetPlatform.fuchsia => baseBitrate,
+      _ => baseBitrate,
     };
   }
 

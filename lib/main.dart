@@ -561,9 +561,7 @@ bool _isDevicePreviewEnabled() {
     TargetPlatform.macOS ||
     TargetPlatform.windows ||
     TargetPlatform.linux => true,
-    TargetPlatform.android ||
-    TargetPlatform.iOS ||
-    TargetPlatform.fuchsia => false,
+    _ => false,
   };
 }
 

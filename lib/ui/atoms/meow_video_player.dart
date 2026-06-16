@@ -1057,13 +1057,28 @@ class _NativeRendererShell extends StatelessWidget {
         ? widget.androidNativeBuilder
         : widget.harmonyNativeBuilder;
 
+    final modeLabel = switch (widget.renderMode) {
+      MeowVideoRenderMode.androidNative => 'Android Native',
+      MeowVideoRenderMode.harmonyNative => 'HarmonyOS Native',
+      MeowVideoRenderMode.flutter => 'Flutter',
+    };
+
     return ClipRRect(
       borderRadius: widget.borderRadius,
       child: AspectRatio(
         aspectRatio: fallbackAspectRatio,
         child:
             builder?.call(context, config) ??
-            const Center(child: Text('不支持的原生渲染')),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  '$modeLabel renderer not configured.\nProvide a native builder widget.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white54, fontSize: 14),
+                ),
+              ),
+            ),
       ),
     );
   }

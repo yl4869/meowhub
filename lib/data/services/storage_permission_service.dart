@@ -7,9 +7,19 @@ import '../../domain/repositories/i_permission_service.dart';
 class StoragePermissionService implements IPermissionService {
   const StoragePermissionService();
 
+  bool get _needsPermissionSystem =>
+      Platform.isAndroid || Platform.operatingSystem == 'ohos';
+
   @override
   Future<bool> hasStorageAccess() async {
-    if (!Platform.isAndroid) return true;
+    if (!_needsPermissionSystem) return true;
+
+    if (Platform.operatingSystem == 'ohos') {
+      // HarmonyOS permission model: caller should use ohos.permission.READ_MEDIA
+      // and ohos.permission.WRITE_MEDIA via the OHOS permission_handler adapter.
+      // Returning true as a fallback — replace with actual OHOS permission check.
+      return true;
+    }
 
     final manage = await Permission.manageExternalStorage.status;
     if (manage.isGranted) return true;
@@ -24,7 +34,13 @@ class StoragePermissionService implements IPermissionService {
 
   @override
   Future<bool> requestStoragePermission() async {
-    if (!Platform.isAndroid) return true;
+    if (!_needsPermissionSystem) return true;
+
+    if (Platform.operatingSystem == 'ohos') {
+      // HarmonyOS: request ohos.permission.READ_MEDIA / WRITE_MEDIA.
+      // Returning true as a fallback — replace with actual OHOS permission request.
+      return true;
+    }
 
     final manage = await Permission.manageExternalStorage.request();
     if (manage.isGranted) return true;

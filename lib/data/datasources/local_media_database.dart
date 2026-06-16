@@ -17,7 +17,7 @@ class LocalMediaDatabase {
   }
 
   Future<Database> _initDatabase() async {
-    if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
+    if (Platform.isLinux || Platform.isMacOS || Platform.isWindows || Platform.operatingSystem == 'ohos') {
       sqfliteFfiInit();
       databaseFactory = databaseFactoryFfi;
     }
