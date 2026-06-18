@@ -6,28 +6,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shimmer/shimmer.dart';
 import '../../domain/entities/playback_plan.dart';
 
-// --- 保留你原有且优秀的架构定义 ---
-
-enum MeowVideoRenderMode { flutter, androidNative, harmonyNative }
-
-class MeowVideoNativeRenderConfig {
-  const MeowVideoNativeRenderConfig({
-    required this.url,
-    required this.autoPlay,
-    required this.looping,
-    required this.aspectRatio,
-    required this.borderRadius,
-  });
-
-  final String url;
-  final bool autoPlay;
-  final bool looping;
-  final double aspectRatio;
-  final BorderRadius borderRadius;
-}
-
-typedef MeowVideoNativeRendererBuilder =
-    Widget Function(BuildContext context, MeowVideoNativeRenderConfig config);
+// --- 播放状态定义 ---
 
 class MeowVideoPlaybackStatus {
   const MeowVideoPlaybackStatus({
@@ -59,13 +38,10 @@ class MeowVideoPlayer extends StatefulWidget {
     this.aspectRatio,
     this.autoPlay = false,
     this.looping = false,
-    this.renderMode = MeowVideoRenderMode.flutter,
     this.fit = BoxFit.contain,
     this.expandToFill = false,
     this.borderRadius = const BorderRadius.all(Radius.circular(24)),
     this.httpHeaders = const {},
-    this.androidNativeBuilder,
-    this.harmonyNativeBuilder,
     this.initialPosition = Duration.zero,
     this.onPlaybackStatusChanged,
     this.onPlaybackStarted,
@@ -87,13 +63,10 @@ class MeowVideoPlayer extends StatefulWidget {
   final double? aspectRatio;
   final bool autoPlay;
   final bool looping;
-  final MeowVideoRenderMode renderMode;
   final BoxFit fit;
   final bool expandToFill;
   final BorderRadius borderRadius;
   final Map<String, String> httpHeaders;
-  final MeowVideoNativeRendererBuilder? androidNativeBuilder;
-  final MeowVideoNativeRendererBuilder? harmonyNativeBuilder;
   final Duration initialPosition;
   final MeowVideoPlaybackStatusChanged? onPlaybackStatusChanged;
   final MeowVideoPlaybackStatusChanged? onPlaybackStarted;
@@ -132,8 +105,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   bool _applyingAudioSelection = false;
   bool _applyingSubtitleSelection = false;
 
-  bool get _usesFlutterRenderer =>
-      widget.renderMode == MeowVideoRenderMode.flutter;
   double get _fallbackAspectRatio => widget.aspectRatio ?? 16 / 9;
 
   static const _subtitleViewConfig = SubtitleViewConfiguration(
@@ -165,11 +136,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   @override
   void didUpdateWidget(covariant MeowVideoPlayer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 渲染模式变化需要重配；仅 URL 变化时在同一 Player 上 reopen，避免重建导致双音轨
-    if (oldWidget.renderMode != widget.renderMode) {
-      _configureRenderer();
-      return;
-    }
     if (_needsNativeSubtitleRendering(oldWidget) !=
         _needsNativeSubtitleRendering(widget)) {
       _configureRenderer();
@@ -223,14 +189,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   }
 
   void _configureRenderer() {
-    if (_usesFlutterRenderer) {
-      _initializeFlutterPlayer();
-    } else {
-      _disposeControllers();
-      setState(() {
-        _initializeVideoFuture = null;
-      });
-    }
+    _initializeFlutterPlayer();
   }
 
   Future<void> _initializeFlutterPlayer() async {
@@ -309,11 +268,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
     required String url,
     Duration? seekTo,
   }) async {
-    // 仅 Flutter 渲染下在同一实例上切源；其他渲染模式仍交给外层重配
-    if (!_usesFlutterRenderer) {
-      _configureRenderer();
-      return;
-    }
     final player = _player;
     if (player == null) {
       // 若尚未完成初始化，退回到常规初始化流程
@@ -481,7 +435,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
   ///   否则在内部轨道列表中按 index 匹配。
   Future<void> _applySubtitleSelection({Player? player}) async {
     final target = player ?? _player;
-    if (target == null || !_usesFlutterRenderer) return;
+    if (target == null) return;
     if (_applyingSubtitleSelection) return;
     _applyingSubtitleSelection = true;
     try {
@@ -575,9 +529,7 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
 
   Future<void> _applyAudioSelection({Player? player}) async {
     final target = player ?? _player;
-    if (target == null || !_usesFlutterRenderer) {
-      return;
-    }
+    if (target == null) return;
     if (_applyingAudioSelection) {
       return;
     }
@@ -686,7 +638,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
       'title=${track.title ?? ''}',
       'lang=${track.language ?? ''}',
       'codec=${track.codec ?? ''}',
-      'default=${track.isDefault ?? false}',
       'uri=${track.uri}',
       'data=${track.data}',
     ];
@@ -953,14 +904,6 @@ class _MeowVideoPlayerState extends State<MeowVideoPlayer> {
 
   @override
   Widget build(BuildContext context) {
-    // 原生渲染模式分支保持不变
-    if (!_usesFlutterRenderer) {
-      return _NativeRendererShell(
-        widget: widget,
-        fallbackAspectRatio: _fallbackAspectRatio,
-      );
-    }
-
     final video = FutureBuilder<void>(
       future: _initializeVideoFuture,
       builder: (context, snapshot) {
@@ -1033,53 +976,3 @@ class _VideoLoadingState extends StatelessWidget {
   }
 }
 
-// 移除专用错误组件（media_kit 内部会抛出异常，可在上层捕获并渲染）
-
-// 保留原有的 NativeShell 逻辑
-class _NativeRendererShell extends StatelessWidget {
-  const _NativeRendererShell({
-    required this.widget,
-    required this.fallbackAspectRatio,
-  });
-  final MeowVideoPlayer widget;
-  final double fallbackAspectRatio;
-
-  @override
-  Widget build(BuildContext context) {
-    final config = MeowVideoNativeRenderConfig(
-      url: widget.url,
-      autoPlay: widget.autoPlay,
-      looping: widget.looping,
-      aspectRatio: fallbackAspectRatio,
-      borderRadius: widget.borderRadius,
-    );
-    final builder = widget.renderMode == MeowVideoRenderMode.androidNative
-        ? widget.androidNativeBuilder
-        : widget.harmonyNativeBuilder;
-
-    final modeLabel = switch (widget.renderMode) {
-      MeowVideoRenderMode.androidNative => 'Android Native',
-      MeowVideoRenderMode.harmonyNative => 'HarmonyOS Native',
-      MeowVideoRenderMode.flutter => 'Flutter',
-    };
-
-    return ClipRRect(
-      borderRadius: widget.borderRadius,
-      child: AspectRatio(
-        aspectRatio: fallbackAspectRatio,
-        child:
-            builder?.call(context, config) ??
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  '$modeLabel renderer not configured.\nProvide a native builder widget.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white54, fontSize: 14),
-                ),
-              ),
-            ),
-      ),
-    );
-  }
-}

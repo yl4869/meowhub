@@ -30,7 +30,7 @@ class MediaImage extends StatelessWidget {
         fit: fit ?? BoxFit.cover,
         width: width,
         height: height,
-        errorBuilder: (_, _2, _3) => const _Fallback(),
+        errorBuilder: (_, _, _) => const _Fallback(),
       );
     }
 
@@ -39,8 +39,8 @@ class MediaImage extends StatelessWidget {
       fit: fit ?? BoxFit.cover,
       width: width,
       height: height,
-      placeholder: (_, _2) => const _Shimmer(),
-      errorWidget: (_, _2, _3) => const _Fallback(),
+      placeholder: (_, _) => const _Shimmer(),
+      errorWidget: (_, _, _) => const _Fallback(),
     );
   }
 }

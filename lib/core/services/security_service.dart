@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_secure_storage_ohos/flutter_secure_storage_ohos.dart' as ohos;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 敏感信息安全存储封装。
@@ -7,16 +10,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 class SecurityService {
   SecurityService({
     FlutterSecureStorage? secureStorage,
+    ohos.FlutterSecureStorage? ohosSecureStorage,
     required SharedPreferences preferences,
-  }) : _secureStorage = secureStorage ?? const FlutterSecureStorage(),
+  }) : _ohosSecureStorage = ohosSecureStorage ?? const ohos.FlutterSecureStorage(),
+       _secureStorage = secureStorage,
        _preferences = preferences;
 
   static const String _accessTokenKey = 'access_token';
   static const String _userIdKey = 'user_id';
   static const String _passwordKey = 'password';
 
-  final FlutterSecureStorage _secureStorage;
+  final FlutterSecureStorage? _secureStorage;
+  final ohos.FlutterSecureStorage _ohosSecureStorage;
   final SharedPreferences _preferences;
+
+  bool get _isOhos => Platform.operatingSystem == 'ohos';
 
   String _webScopedKey(String key) => 'web_secure_$key';
 
@@ -31,8 +39,10 @@ class SecurityService {
     try {
       if (kIsWeb) {
         await _preferences.setString(_webScopedKey(key), value);
+      } else if (_isOhos) {
+        await _ohosSecureStorage.write(key: key, value: value);
       } else {
-        await _secureStorage.write(key: key, value: value);
+        await _secureStorage!.write(key: key, value: value);
       }
     } catch (error) {
       rethrow;
@@ -41,10 +51,13 @@ class SecurityService {
 
   Future<String?> read(String key) async {
     try {
-      final value = kIsWeb
-          ? _preferences.getString(_webScopedKey(key))
-          : await _secureStorage.read(key: key);
-      return value;
+      if (kIsWeb) {
+        return _preferences.getString(_webScopedKey(key));
+      } else if (_isOhos) {
+        return await _ohosSecureStorage.read(key: key);
+      } else {
+        return await _secureStorage!.read(key: key);
+      }
     } catch (error) {
       rethrow;
     }
@@ -54,8 +67,10 @@ class SecurityService {
     try {
       if (kIsWeb) {
         await _preferences.remove(_webScopedKey(key));
+      } else if (_isOhos) {
+        await _ohosSecureStorage.delete(key: key);
       } else {
-        await _secureStorage.delete(key: key);
+        await _secureStorage!.delete(key: key);
       }
     } catch (error) {
       rethrow;

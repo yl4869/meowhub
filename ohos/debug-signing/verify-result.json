@@ -1,0 +1,27 @@
+{
+  "verifiedPassed": true,
+  "message": "OK",
+  "content": {
+    "version-name": "2.0.0",
+    "version-code": 2,
+    "app-distribution-type": "os_integration",
+    "uuid": "00000000-0000-0000-0000-000000000001",
+    "validity": {
+      "not-before": 1781625307,
+      "not-after": 1813247707
+    },
+    "type": "debug",
+    "bundle-info": {
+      "developer-id": "",
+      "development-certificate": "",
+      "distribution-certificate": "",
+      "bundle-name": "com.meowhub.app",
+      "apl": "normal",
+      "app-feature": "hos_normal_app"
+    },
+    "baseapp-info": {},
+    "permissions": {},
+    "acls": {},
+    "issuer": "meowhub-debug"
+  }
+}

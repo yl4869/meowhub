@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.4
+  sdk: ^3.9.2
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -43,15 +43,27 @@ dependencies:
   device_preview: ^1.3.1
   dio: ^5.9.0
   flutter_secure_storage: ^9.2.4
+  flutter_secure_storage_ohos:
+    git:
+      url: https://atomgit.com/CPF-Flutter/fluttertpc_flutter_secure_storage.git
+      path: flutter_secure_storage_ohos
   json_annotation: ^4.11.0
   path_provider: ^2.1.5
   shared_preferences: ^2.2.2
   audio_video_progress_bar: ^2.0.3
-  # media_kit 播放内核（替换 video_player + chewie）
-  media_kit: any
-  media_kit_video: any
-  # 平台二进制：完整 video/audio native libraries（包含 Android libmpv）
-  media_kit_libs_video: any
+  # media_kit 播放内核 (鸿蒙移植版)
+  media_kit:
+    git:
+      url: https://atomgit.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: media_kit
+  media_kit_video:
+    git:
+      url: https://atomgit.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: media_kit_video
+  media_kit_libs_ohos_video:
+    git:
+      url: https://atomgit.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: libs/ohos/media_kit_libs_ohos_video
   # 本地视频支持
   sqflite: ^2.4.2
   sqflite_common_ffi: ^2.3.4
@@ -77,6 +89,11 @@ dev_dependencies:
 dependency_overrides:
   media_kit_libs_android_video:
     path: third_party/media_kit_libs_android_video
+  media_kit:
+    git:
+      url: https://atomgit.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: media_kit
+  json_annotation: ^4.9.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

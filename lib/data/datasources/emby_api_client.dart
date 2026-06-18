@@ -170,6 +170,7 @@ class EmbyApiClient {
       final response = await _dio.get<T>(
         path,
         queryParameters: queryParameters,
+        options: Options(extra: {'withToken': withToken}),
       );
       return response;
     } catch (error) {

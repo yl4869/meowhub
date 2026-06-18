@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:device_preview/device_preview.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 
 import 'core/persistence/file_source_store.dart';
 import 'core/services/capability_prober.dart';
@@ -53,8 +56,45 @@ const String _devicePreviewMode = String.fromEnvironment(
 );
 const bool _useMockRepository = bool.fromEnvironment('USE_MOCK_REPOSITORY');
 
+/// HarmonyOS / 无原生插件环境: 用内存 mock 替代 shared_preferences 和 path_provider.
+void _setupOhosFallbacks() {
+  SharedPreferencesStorePlatform.instance = InMemorySharedPreferencesStore.empty();
+  PathProviderPlatform.instance = _OhosPathProvider();
+}
+
+class _OhosPathProvider extends PathProviderPlatform {
+  static const String _baseDir = '/data/storage/el2/base/haps/entry/files';
+
+  @override
+  Future<String?> getTemporaryPath() async => '$_baseDir/tmp';
+
+  @override
+  Future<String?> getApplicationSupportPath() async => _baseDir;
+
+  @override
+  Future<String?> getApplicationDocumentsPath() async => _baseDir;
+
+  @override
+  Future<String?> getApplicationCachePath() async => '$_baseDir/cache';
+
+  @override
+  Future<String?> getLibraryPath() async => _baseDir;
+
+  @override
+  Future<String?> getExternalStoragePath() async => _baseDir;
+
+  @override
+  Future<List<String>?> getExternalCachePaths() async => <String>['$_baseDir/cache'];
+
+  @override
+  Future<String?> getDownloadsPath() async => _baseDir;
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 鸿蒙/无原生插件环境：用内存 mock 替代平台插件
+  _setupOhosFallbacks();
 
   // 1. 基础基础设施初始化
   final preferences = await SharedPreferences.getInstance();
